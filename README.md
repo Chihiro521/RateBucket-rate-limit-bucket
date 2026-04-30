@@ -56,7 +56,8 @@ It can also observe page fetch responses for the same usage endpoints. Intercept
 
 - These platforms use internal APIs that may change without notice.
 - ChatGPT fields are expected to be the least stable.
-- Codex usage is attempted from `https://chatgpt.com/codex/settings/usage`; if that route returns HTML instead of JSON in a given session, it will be ignored as unavailable.
+- Codex usage is primarily parsed from `https://chatgpt.com/backend-api/wham/usage`, which can be requested from any `chatgpt.com/*` page with the current login session. The Codex analytics UI route `https://chatgpt.com/codex/cloud/settings/analytics#usage` is a same-origin page route, not treated as a JSON API.
+- Codex usage is also attempted from `https://chatgpt.com/codex/settings/usage`; if that route returns HTML instead of JSON in a given session, it will be ignored as unavailable.
 - Claude and Grok usage response shapes may also change.
 - Estimate mode only counts local send actions in the current browser and is not accurate quota data.
 - This extension is not designed for multiple accounts, team plans, enterprise plans, cross-device sync, or Chrome Web Store publication.

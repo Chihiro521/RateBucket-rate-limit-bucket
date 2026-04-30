@@ -67,6 +67,35 @@ describe("chatgpt normalizer", () => {
     expect(meters[1].usedPercent).toBe(85);
   });
 
+  it("normalizes codex-named usage data from wham usage", () => {
+    const meters = normalizeChatGptWhamUsage({
+      codex_usage: {
+        remaining: 7,
+        limit: 20,
+        reset_at: 1_775_000_000
+      },
+      code_review_rate_limit: {
+        primary_window: {
+          used_percent: 12,
+          reset_at: 1_775_001_000
+        }
+      }
+    });
+
+    const codexMeter = meters.find(
+      (meter) => meter.rawKind === "codex.settings.usage"
+    );
+    expect(codexMeter).toMatchObject({
+      label: "Codex usage",
+      remaining: 7,
+      total: 20,
+      used: 13
+    });
+    expect(meters.some((meter) => meter.key.includes("code_review.codex"))).toBe(
+      false
+    );
+  });
+
   it("normalizes credits", () => {
     const meters = normalizeChatGptWhamUsage({
       credits: {
@@ -185,6 +214,53 @@ describe("chatgpt normalizer", () => {
     expect(snapshot.meters.some((meter) => meter.rawKind === "codex.settings.usage")).toBe(
       true
     );
+  });
+
+  it("does not surface optional wham failures as red errors when other meters exist", async () => {
+    const okConversation: BridgeResponse = {
+      source: "ai-usage-floating-monitor",
+      direction: "main-to-content",
+      requestId: "1",
+      ok: true,
+      platform: "chatgpt",
+      endpointKey: "chatgpt:conversationInit",
+      json: {
+        limits_progress: [{ feature_name: "file_upload", remaining: 3 }]
+      }
+    };
+    const unauthorizedWham: BridgeResponse = {
+      source: "ai-usage-floating-monitor",
+      direction: "main-to-content",
+      requestId: "2",
+      ok: false,
+      platform: "chatgpt",
+      endpointKey: "chatgpt:whamUsage",
+      error: { status: 401, message: "Unauthorized" }
+    };
+    const notFound: BridgeResponse = {
+      source: "ai-usage-floating-monitor",
+      direction: "main-to-content",
+      requestId: "3",
+      ok: false,
+      platform: "chatgpt",
+      endpointKey: "chatgpt:whamTasksRateLimit",
+      error: { status: 404, message: "not found" }
+    };
+    const fetcher: UsageEndpointFetcher = async (endpointKey) => {
+      if (endpointKey === "chatgpt:conversationInit") {
+        return okConversation;
+      }
+      if (endpointKey === "chatgpt:whamUsage") {
+        return unauthorizedWham;
+      }
+      return notFound;
+    };
+
+    const snapshot = await fetchChatGptUsage(fetcher);
+
+    expect(snapshot.status).toBe("partial");
+    expect(snapshot.meters).toHaveLength(1);
+    expect(snapshot.errorMessage).toBeUndefined();
   });
 
   it("tolerates missing fields", () => {

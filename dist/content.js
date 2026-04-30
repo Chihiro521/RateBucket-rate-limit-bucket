@@ -939,7 +939,66 @@ button {
         });
       }
     }
+    meters.push(...normalizeWhamCodexNamedUsage(root, source));
     return meters;
+  }
+  function normalizeWhamCodexNamedUsage(root, source) {
+    const codexRoots = collectCodexNamedSubtrees(root);
+    const meters = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const item of codexRoots) {
+      for (const meter of normalizeCodexUsageRecordTree(
+        item.record,
+        `wham.${item.path}`,
+        source
+      )) {
+        if (seen.has(meter.key)) {
+          continue;
+        }
+        seen.add(meter.key);
+        meters.push(meter);
+      }
+    }
+    return meters;
+  }
+  function collectCodexNamedSubtrees(root) {
+    const queue = [
+      { path: "root", value: root, depth: 0 }
+    ];
+    const matches = [];
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item || item.depth > 4) {
+        continue;
+      }
+      const record = asRecord(item.value);
+      if (!record) {
+        continue;
+      }
+      for (const [key, value] of Object.entries(record)) {
+        const path = `${item.path}.${key}`;
+        const childRecord = asRecord(value);
+        if (childRecord) {
+          if (isCodexPath(path)) {
+            matches.push({ path, record: childRecord });
+          }
+          queue.push({ path, value, depth: item.depth + 1 });
+        } else if (Array.isArray(value)) {
+          value.forEach((entry, index) => {
+            queue.push({
+              path: `${path}.${index}`,
+              value: entry,
+              depth: item.depth + 1
+            });
+          });
+        }
+      }
+    }
+    return matches;
+  }
+  function isCodexPath(path) {
+    const normalized = path.toLowerCase();
+    return normalized.includes("codex") && !normalized.includes("code_review");
   }
   function normalizeTasksRateLimit(json, source = "api") {
     const root = asRecord(json);
@@ -964,7 +1023,10 @@ button {
     if (!root) {
       return [];
     }
-    const candidates = collectCodexUsageCandidates(root);
+    return normalizeCodexUsageRecordTree(root, "codex", source);
+  }
+  function normalizeCodexUsageRecordTree(root, rootPath, source) {
+    const candidates = collectCodexUsageCandidates(root, rootPath);
     const meters = [];
     const seen = /* @__PURE__ */ new Set();
     for (const candidate of candidates) {
@@ -977,9 +1039,9 @@ button {
     }
     return meters;
   }
-  function collectCodexUsageCandidates(root) {
+  function collectCodexUsageCandidates(root, rootPath) {
     const queue = [
-      { path: "codex", value: root, depth: 0 }
+      { path: rootPath, value: root, depth: 0 }
     ];
     const candidates = [];
     while (queue.length > 0) {
@@ -1084,7 +1146,8 @@ button {
   }
   async function fetchChatGptUsage(fetcher) {
     const meters = [];
-    const failures = [];
+    const requiredFailures = [];
+    const optionalFailures = [];
     let defaultModelSlug;
     let blockedFeatures = [];
     const conversation = await fetcher("chatgpt:conversationInit");
@@ -1094,30 +1157,36 @@ button {
       defaultModelSlug = normalized.defaultModelSlug;
       blockedFeatures = normalized.blockedFeatures;
     } else {
-      failures.push(responseFailure$2(conversation));
+      requiredFailures.push(responseFailure$2(conversation));
     }
     const wham = await fetcher("chatgpt:whamUsage");
     if (wham.ok) {
       meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
     } else {
-      failures.push(responseFailure$2(wham));
+      optionalFailures.push(responseFailure$2(wham));
     }
     const tasks = await fetcher("chatgpt:whamTasksRateLimit");
     if (tasks.ok) {
       meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
+    } else {
+      optionalFailures.push(responseFailure$2(tasks));
     }
     const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
     if (codexUsage.ok) {
       meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
+    } else {
+      optionalFailures.push(responseFailure$2(codexUsage));
     }
     const hasBlocking = blockedFeatures.length > 0;
+    const hasOptionalFailures = optionalFailures.length > 0;
+    const firstFailure = requiredFailures[0] ?? optionalFailures[0];
     return {
       platform: "chatgpt",
       meters,
       source: meters.length > 0 ? "api" : "unknown",
       updatedAt: Date.now(),
-      status: meters.length > 0 ? failures.length > 0 || hasBlocking ? "partial" : "ok" : failures.length > 0 ? "error" : "unknown",
-      errorMessage: hasBlocking ? "部分功能被限制" : failures.length > 0 ? failures[0] : void 0,
+      status: meters.length > 0 ? hasOptionalFailures || hasBlocking ? "partial" : "ok" : firstFailure ? "error" : "unknown",
+      errorMessage: hasBlocking ? "部分功能被限制" : meters.length === 0 && firstFailure ? firstFailure : void 0,
       debug: {
         endpoint: "chatgpt:conversationInit,chatgpt:whamUsage,chatgpt:codexSettingsUsage",
         parser: defaultModelSlug ? `chatgpt.default_model=${defaultModelSlug}` : "chatgpt"
