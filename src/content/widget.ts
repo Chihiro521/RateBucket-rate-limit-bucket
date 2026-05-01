@@ -11,6 +11,58 @@ const PLATFORM_LABEL: Record<PlatformId, string> = {
   chatgpt: "GPT"
 };
 
+const GPT_SECTION_ORDER = [
+  "input",
+  "features",
+  "windows",
+  "codex",
+  "other"
+] as const;
+
+type GptSectionKey = (typeof GPT_SECTION_ORDER)[number];
+
+const GPT_SECTION_LABELS: Record<GptSectionKey, string> = {
+  input: "输入与附件",
+  features: "GPT 功能额度",
+  windows: "用量窗口",
+  codex: "余额 / Codex",
+  other: "其他"
+};
+
+const SOURCE_LABEL: Record<string, string> = {
+  api: "接口",
+  intercepted: "捕获",
+  estimate: "估算",
+  unknown: "未知"
+};
+
+const CONFIDENCE_LABEL: Record<string, string> = {
+  high: "高",
+  medium: "中",
+  low: "低"
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  ok: "正常",
+  partial: "部分可用",
+  unknown: "未知",
+  error: "错误"
+};
+
+const METER_LABELS: Record<string, string> = {
+  "File Upload": "文件上传",
+  "Paste Text To File": "粘贴文本转文件",
+  Dictation: "听写",
+  "Deep Research": "深度研究",
+  "Image Generation": "图像生成",
+  "Primary window": "主窗口",
+  "Weekly window": "每周窗口",
+  "Tasks rate limit": "任务限额",
+  "Code Review": "代码审查",
+  Credits: "余额",
+  "Credits (unlimited)": "余额（无限）"
+};
+
 export class UsageWidget {
   private readonly host = document.createElement("div");
   private readonly shadow = this.host.attachShadow({ mode: "open" });
@@ -86,7 +138,7 @@ export class UsageWidget {
     const button = el("button", "gpt-restore-chip");
     button.type = "button";
     this.applyChipPosition();
-    button.setAttribute("aria-label", "Restore GPT usage panel");
+    button.setAttribute("aria-label", "恢复 GPT 用量面板");
     this.installChipDrag(button);
     button.append(
       el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
@@ -207,22 +259,22 @@ export class UsageWidget {
 
   private renderChatGptCollapsed(): HTMLElement {
     const panel = el("section", "gpt-collapsed-panel");
-    const title = textEl("div", "gpt-title", "GPT usage");
+    const title = textEl("div", "gpt-title", "GPT 用量");
     const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
     const actions = el("div", "gpt-actions");
 
     const refresh = this.renderActionButton(
       this.loading ? "..." : "↻",
-      "Refresh usage",
+      "刷新用量",
       () => this.onRefresh()
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
-    const expand = this.renderActionButton("+", "Expand usage panel", () => {
+    const expand = this.renderActionButton("+", "展开用量面板", () => {
       this.expanded = true;
       this.render();
     });
-    const close = this.renderActionButton("×", "Hide usage panel", () => {
+    const close = this.renderActionButton("×", "隐藏用量面板", () => {
       this.hidden = true;
       this.render();
     });
@@ -244,23 +296,23 @@ export class UsageWidget {
 
   private renderChatGptHeader(): HTMLElement {
     const header = el("div", "header gpt-header");
-    const title = textEl("div", "title gpt-title", "GPT usage");
+    const title = textEl("div", "title gpt-title", "GPT 用量");
     const right = el("div", "gpt-header-right");
-    right.append(textEl("span", "gpt-alerts", `${this.alertCount()} alerts`));
+    right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
 
     const actions = el("div", "actions gpt-actions");
     const refresh = this.renderActionButton(
       this.loading ? "..." : "↻",
-      "Refresh usage",
+      "刷新用量",
       () => this.onRefresh()
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
-    const collapse = this.renderActionButton("−", "Collapse usage panel", () => {
+    const collapse = this.renderActionButton("−", "折叠用量面板", () => {
       this.expanded = false;
       this.render();
     });
-    const close = this.renderActionButton("×", "Hide usage panel", () => {
+    const close = this.renderActionButton("×", "隐藏用量面板", () => {
       this.hidden = true;
       this.render();
     });
@@ -278,13 +330,22 @@ export class UsageWidget {
     }
     const meters = this.chatGptMeters();
     if (meters.length === 0) {
-      content.append(textEl("div", "empty", "No usage data available yet"));
+      content.append(textEl("div", "empty", "暂无用量数据"));
       return content;
     }
-    for (const meter of meters) {
-      content.append(this.renderMeter(meter));
+    for (const section of groupChatGptMeters(meters)) {
+      content.append(this.renderMeterSection(section.label, section.meters));
     }
     return content;
+  }
+
+  private renderMeterSection(label: string, meters: UsageMeter[]): HTMLElement {
+    const section = el("section", "meter-section");
+    section.append(textEl("div", "meter-section-title", label));
+    for (const meter of meters) {
+      section.append(this.renderMeter(meter));
+    }
+    return section;
   }
 
   private renderActionButton(
@@ -303,7 +364,7 @@ export class UsageWidget {
   private renderCollapsed(): HTMLElement {
     const button = el("button", "collapsed");
     button.type = "button";
-    button.setAttribute("aria-label", `Open ${PLATFORM_LABEL[this.platform]} usage`);
+    button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
     button.addEventListener("click", () => {
       this.expanded = true;
       this.render();
@@ -334,20 +395,20 @@ export class UsageWidget {
 
   private renderHeader(): HTMLElement {
     const header = el("div", "header");
-    const title = textEl("div", "title", `${PLATFORM_LABEL[this.platform]} usage`);
+    const title = textEl("div", "title", `${PLATFORM_LABEL[this.platform]} 用量`);
     const actions = el("div", "actions");
 
     const refresh = textEl("button", "icon-button", this.loading ? "..." : "↻");
     refresh.type = "button";
-    refresh.setAttribute("aria-label", "Refresh usage");
-    refresh.title = "Refresh usage";
+    refresh.setAttribute("aria-label", "刷新用量");
+    refresh.title = "刷新用量";
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
     refresh.addEventListener("click", this.onRefresh);
 
     const close = textEl("button", "icon-button", "×");
     close.type = "button";
-    close.setAttribute("aria-label", "Collapse usage widget");
-    close.title = "Collapse";
+    close.setAttribute("aria-label", "收起用量组件");
+    close.title = "收起";
     close.addEventListener("click", () => {
       this.expanded = false;
       this.render();
@@ -361,15 +422,15 @@ export class UsageWidget {
   private renderMeta(): HTMLElement {
     const meta = el("div", "meta");
     const updated = this.snapshot
-      ? `updated ${formatAge(this.snapshot.updatedAt)}`
-      : "not updated";
+      ? `更新于 ${formatAge(this.snapshot.updatedAt)}`
+      : "尚未更新";
     const right =
       this.backoffRemainingMs() > 0
-        ? `wait ${Math.ceil(this.backoffRemainingMs() / 1000)}s`
+        ? `等待 ${Math.ceil(this.backoffRemainingMs() / 1000)}秒`
         : this.snapshot?.cacheAgeMs !== undefined
-          ? `cache ${Math.floor(this.snapshot.cacheAgeMs / 1000)}s`
+          ? `缓存 ${Math.floor(this.snapshot.cacheAgeMs / 1000)}秒`
           : this.loading
-            ? "loading"
+            ? "加载中"
             : "";
     meta.append(textEl("span", "", updated), textEl("span", "", right));
     return meta;
@@ -383,7 +444,7 @@ export class UsageWidget {
     const meta = el("div", "model-meta");
     const value = textEl("span", "model-value", summary);
     value.title = summary;
-    meta.append(textEl("span", "model-label", "model"), value);
+    meta.append(textEl("span", "model-label", "模型"), value);
     return meta;
   }
 
@@ -394,7 +455,7 @@ export class UsageWidget {
     }
     const meters = this.snapshot?.meters ?? [];
     if (meters.length === 0) {
-      content.append(textEl("div", "empty", "No usage data available yet"));
+      content.append(textEl("div", "empty", "暂无用量数据"));
       return content;
     }
     for (const meter of meters) {
@@ -407,7 +468,7 @@ export class UsageWidget {
     const row = el("div", "meter");
     const top = el("div", "meter-top");
     top.append(
-      textEl("div", "meter-label", meter.label),
+      textEl("div", "meter-label", formatMeterLabel(meter)),
       textEl("div", "meter-value", formatMeterValue(meter))
     );
 
@@ -420,7 +481,11 @@ export class UsageWidget {
     const bottom = el("div", "meter-bottom");
     const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
     bottom.append(
-      textEl("span", "badge", `${meter.source} · ${meter.confidence}${age}`),
+      textEl(
+        "span",
+        "badge",
+        `${sourceLabel(meter.source)} · ${confidenceLabel(meter.confidence)}${age}`
+      ),
       textEl("span", "", formatReset(meter))
     );
 
@@ -464,15 +529,15 @@ export class UsageWidget {
         .filter((meter) => typeof meter.remaining === "number")
         .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
     if (!alert) {
-      return this.snapshot?.status ?? "unknown";
+      return statusLabel(this.snapshot?.status ?? "unknown");
     }
     if (typeof alert.usedPercent === "number") {
-      return `${shortLabel(alert.label)} ${Math.round(alert.usedPercent)}%`;
+      return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.usedPercent)}%`;
     }
     if (typeof alert.remaining === "number") {
-      return `${shortLabel(alert.label)} ${alert.remaining} left`;
+      return `${shortLabel(formatMeterLabel(alert))} 剩余 ${alert.remaining}`;
     }
-    return shortLabel(alert.label);
+    return shortLabel(formatMeterLabel(alert));
   }
 
   private chatGptMeters(): UsageMeter[] {
@@ -518,15 +583,42 @@ function formatMeterValue(meter: UsageMeter): string {
     return `${meter.remaining}/${meter.total}`;
   }
   if (typeof meter.remaining === "number") {
-    return `${meter.remaining} left`;
+    return `剩余 ${meter.remaining}`;
   }
   if (typeof meter.used === "number" && typeof meter.total === "number") {
-    return `${meter.used}/${meter.total} used`;
+    return `已用 ${meter.used}/${meter.total}`;
   }
   if (typeof meter.usedPercent === "number") {
-    return `${Math.round(meter.usedPercent)}% used`;
+    return `${Math.round(meter.usedPercent)}% 已用`;
   }
-  return "unknown";
+  return "未知";
+}
+
+function formatMeterLabel(meter: UsageMeter): string {
+  const direct = METER_LABELS[meter.label];
+  if (direct) {
+    return direct;
+  }
+  return meter.label
+    .replace(/\bquery limit\b/gi, "查询额度")
+    .replace(/\btoken limit\b/gi, "token 额度")
+    .replace(/\bLow \/ Fast \/ Normal\b/g, "低 / 快速 / 普通")
+    .replace(/\bHigh \/ Thinking \/ Expert\b/g, "高 / 思考 / 专家")
+    .replace(/\bCodex usage\b/gi, "Codex 用量")
+    .replace(/\bPrimary window\b/gi, "主窗口")
+    .replace(/\bWeekly window\b/gi, "每周窗口");
+}
+
+function sourceLabel(source: string): string {
+  return SOURCE_LABEL[source] ?? source;
+}
+
+function confidenceLabel(confidence: string): string {
+  return CONFIDENCE_LABEL[confidence] ?? confidence;
+}
+
+function statusLabel(status: string): string {
+  return STATUS_LABEL[status] ?? status;
 }
 
 function meterProgress(meter: UsageMeter): number {
@@ -583,6 +675,64 @@ function chatGptMeterPriority(meter: UsageMeter): number {
     return 50;
   }
   return 80;
+}
+
+function groupChatGptMeters(
+  meters: UsageMeter[]
+): Array<{ label: string; meters: UsageMeter[] }> {
+  const groups: Record<GptSectionKey, UsageMeter[]> = {
+    input: [],
+    features: [],
+    windows: [],
+    codex: [],
+    other: []
+  };
+  for (const meter of meters) {
+    groups[chatGptMeterSection(meter)].push(meter);
+  }
+  return GPT_SECTION_ORDER.map((key) => ({
+    label: GPT_SECTION_LABELS[key],
+    meters: groups[key]
+  })).filter((section) => section.meters.length > 0);
+}
+
+function chatGptMeterSection(meter: UsageMeter): GptSectionKey {
+  const key = meter.key.toLowerCase();
+  const rawKind = meter.rawKind?.toLowerCase() ?? "";
+  const label = meter.label.toLowerCase();
+
+  if (
+    key.includes("codex") ||
+    rawKind === "codex.settings.usage" ||
+    rawKind === "credits" ||
+    key === "wham:credits"
+  ) {
+    return "codex";
+  }
+  if (
+    key.startsWith("wham:") ||
+    key.startsWith("tasks:") ||
+    rawKind.includes("rate_limit") ||
+    rawKind.includes("window")
+  ) {
+    return "windows";
+  }
+  if (rawKind === "limits_progress" || key.startsWith("limits_progress:")) {
+    return isInputOrAttachmentMeter(key, label) ? "input" : "features";
+  }
+  return "other";
+}
+
+function isInputOrAttachmentMeter(key: string, label: string): boolean {
+  return (
+    key.includes("file_upload") ||
+    key.includes("paste_text") ||
+    key.includes("dictation") ||
+    key.includes("upload") ||
+    label.includes("file upload") ||
+    label.includes("paste text") ||
+    label.includes("dictation")
+  );
 }
 
 function grokMeterPriority(meter: UsageMeter): number {

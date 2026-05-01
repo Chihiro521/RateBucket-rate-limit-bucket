@@ -301,6 +301,27 @@ button {
   padding: 11px 0;
 }
 
+.meter-section {
+  border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  padding: 8px 0 2px;
+}
+
+.meter-section:first-child {
+  border-top: 0;
+}
+
+.meter-section-title {
+  color: color-mix(in srgb, CanvasText 58%, transparent);
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0;
+  padding: 3px 0 2px;
+}
+
+.meter-section .meter:first-of-type {
+  border-top: 0;
+}
+
 .meter:first-child {
   border-top: 0;
 }

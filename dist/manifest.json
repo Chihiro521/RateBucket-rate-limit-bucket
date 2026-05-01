@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Usage Floating Monitor",
+  "name": "AI 用量浮窗",
   "version": "0.1.0",
-  "description": "Floating usage monitor for Grok, Claude, and ChatGPT.",
+  "description": "用于 Grok、Claude 和 ChatGPT 的浮动用量监控器。",
   "permissions": ["storage", "scripting"],
   "host_permissions": [
     "https://grok.com/*",
