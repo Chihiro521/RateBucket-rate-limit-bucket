@@ -160,8 +160,9 @@ export class UsageWidget {
     bar.append(fill);
 
     const bottom = el("div", "meter-bottom");
+    const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
     bottom.append(
-      textEl("span", "badge", `${meter.source} · ${meter.confidence}`),
+      textEl("span", "badge", `${meter.source} · ${meter.confidence}${age}`),
       textEl("span", "", formatReset(meter))
     );
 

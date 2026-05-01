@@ -19,6 +19,17 @@
         "https://claude.ai/*",
         "https://chatgpt.com/*"
       ],
+      "js": ["mainWorldBridge.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://grok.com/*",
+        "https://claude.ai/*",
+        "https://chatgpt.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

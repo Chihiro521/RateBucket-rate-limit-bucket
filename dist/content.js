@@ -58,13 +58,16 @@
     pending = /* @__PURE__ */ new Map();
     interceptHandlers = /* @__PURE__ */ new Set();
     onMessage = (event) => {
-      if (event.source !== window || event.origin !== window.location.origin) {
+      if (event.origin !== window.location.origin) {
         return;
       }
       if (isInterceptedUsageMessage(event.data)) {
         for (const handler of this.interceptHandlers) {
           handler(event.data);
         }
+        return;
+      }
+      if (event.source !== window) {
         return;
       }
       if (!isBridgeResponse(event.data)) {
@@ -142,6 +145,29 @@
       return crypto.randomUUID();
     }
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
+  const CODEX_ANALYTICS_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
+  function probeCodexAnalyticsUsage() {
+    const iframe = document.createElement("iframe");
+    iframe.src = CODEX_ANALYTICS_URL;
+    iframe.title = "Codex usage probe";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.position = "fixed";
+    iframe.style.width = "1px";
+    iframe.style.height = "1px";
+    iframe.style.opacity = "0";
+    iframe.style.pointerEvents = "none";
+    iframe.style.border = "0";
+    iframe.style.left = "-9999px";
+    iframe.style.top = "-9999px";
+    document.documentElement.append(iframe);
+    const timeoutId = window.setTimeout(() => {
+      iframe.remove();
+    }, 15e3);
+    return () => {
+      window.clearTimeout(timeoutId);
+      iframe.remove();
+    };
   }
   const CACHE_TTL_MS = 6e4;
   const MIN_REFRESH_INTERVAL_MS = 3e4;
@@ -705,8 +731,9 @@ button {
       fill.style.width = `${progress}%`;
       bar.append(fill);
       const bottom = el("div", "meter-bottom");
+      const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
       bottom.append(
-        textEl("span", "badge", `${meter.source} · ${meter.confidence}`),
+        textEl("span", "badge", `${meter.source} · ${meter.confidence}${age}`),
         textEl("span", "", formatReset(meter))
       );
       row.append(top, bar, bottom);
@@ -1531,6 +1558,85 @@ button {
     }
     return normalizeChatGptIntercepted(args.url, args.json);
   }
+  const MERGED_METER_TTL_MS = 30 * 6e4;
+  function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
+    const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
+    if (!existing || existing.platform !== incoming.platform) {
+      return {
+        ...normalizedIncoming,
+        cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
+      };
+    }
+    const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+    const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
+    const retainedExisting = normalizedExisting.meters.filter((meter) => {
+      if (incomingKeys.has(meter.key)) {
+        return false;
+      }
+      const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
+      return now - observedAt <= MERGED_METER_TTL_MS;
+    });
+    const meters = [...retainedExisting, ...normalizedIncoming.meters];
+    const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
+    return {
+      platform: incoming.platform,
+      meters,
+      source: normalizedIncoming.source,
+      updatedAt,
+      cacheAgeMs: Math.max(0, now - updatedAt),
+      status: mergedStatus(normalizedExisting, normalizedIncoming, meters.length),
+      errorMessage: mergedErrorMessage(normalizedExisting, normalizedIncoming, meters.length),
+      debug: {
+        endpoint: joinDebugField(
+          normalizedExisting.debug?.endpoint,
+          normalizedIncoming.debug?.endpoint
+        ),
+        parser: joinDebugField(
+          normalizedExisting.debug?.parser,
+          normalizedIncoming.debug?.parser
+        )
+      }
+    };
+  }
+  function withObservedAt(snapshot, fallbackObservedAt) {
+    return {
+      ...snapshot,
+      meters: snapshot.meters.map((meter) => ({
+        ...meter,
+        observedAt: meter.observedAt ?? fallbackObservedAt
+      }))
+    };
+  }
+  function mergedStatus(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.status !== "unknown" ? incoming.status : existing.status;
+    }
+    if (incoming.status === "error") {
+      return "partial";
+    }
+    if (incoming.status === "partial" || existing.status === "partial") {
+      return "partial";
+    }
+    return "ok";
+  }
+  function mergedErrorMessage(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.errorMessage ?? existing.errorMessage;
+    }
+    if (incoming.errorMessage === "部分功能被限制") {
+      return incoming.errorMessage;
+    }
+    return void 0;
+  }
+  function joinDebugField(existing, incoming) {
+    const values = [existing, incoming].filter(
+      (value) => Boolean(value)
+    );
+    if (values.length === 0) {
+      return void 0;
+    }
+    return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
+  }
   function isDebugEnabled() {
     try {
       return globalThis.localStorage?.getItem("aiUsageDebug") === "1";
@@ -1560,13 +1666,19 @@ button {
     let currentSnapshot = null;
     let refreshing = false;
     let pendingEstimatorRefresh = 0;
+    let codexProbeStarted = false;
+    let stopCodexProbe = null;
+    const maybeStartCodexProbe = (snapshot) => {
+      if (platformId !== "chatgpt" || codexProbeStarted || hasCodexMeter(snapshot)) {
+        return;
+      }
+      codexProbeStarted = true;
+      stopCodexProbe = probeCodexAnalyticsUsage();
+    };
     const applySnapshot = async (snapshot) => {
-      currentSnapshot = {
-        ...snapshot,
-        cacheAgeMs: Math.max(0, Date.now() - snapshot.updatedAt)
-      };
+      currentSnapshot = mergeUsageSnapshots(currentSnapshot, snapshot);
       widget.setSnapshot(currentSnapshot);
-      await setCachedSnapshot(snapshot);
+      await setCachedSnapshot(currentSnapshot);
     };
     const refreshUsage = async (options) => {
       if (refreshing) {
@@ -1602,6 +1714,7 @@ button {
         );
         snapshot = await withEstimateFallback(platformId, snapshot);
         await applySnapshot(snapshot);
+        maybeStartCodexProbe(snapshot);
         await updateFailureState(platformId, snapshot, widget);
       } catch (error) {
         const snapshot = await withEstimateFallback(platformId, {
@@ -1640,6 +1753,10 @@ button {
       if (snapshot.meters.length === 0) {
         return;
       }
+      if (hasCodexMeter(snapshot)) {
+        stopCodexProbe?.();
+        stopCodexProbe = null;
+      }
       void applySnapshot(snapshot).catch((error) => {
         debugLog("failed to cache intercepted usage", error);
       });
@@ -1661,6 +1778,9 @@ button {
       debugLog("main world bridge injection failed", error);
     }
     await refreshUsage({ force: false });
+    window.addEventListener("pagehide", () => {
+      stopCodexProbe?.();
+    });
   }
   async function injectMainWorld() {
     const response = await new Promise(
@@ -1711,5 +1831,10 @@ button {
     await setFailureCount(platform2, nextFailures);
     await setBackoffUntil(platform2, backoffUntil);
     widget.setBackoffUntil(backoffUntil);
+  }
+  function hasCodexMeter(snapshot) {
+    return snapshot.meters.some(
+      (meter) => meter.rawKind === "codex.settings.usage" || meter.key.toLowerCase().includes("codex")
+    );
   }
 })();

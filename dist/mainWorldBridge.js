@@ -19,6 +19,7 @@
   const FETCH_TIMEOUT_MS = 1e4;
   if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
     window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
+    installFetchIntercept();
     window.addEventListener("message", (event) => {
       if (event.source !== window || event.origin !== window.location.origin) {
         return;
@@ -226,6 +227,21 @@
               },
               window.location.origin
             );
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage(
+                {
+                  source: SOURCE,
+                  direction: "main-to-content",
+                  kind: "interceptedUsage",
+                  platform: info.platform,
+                  endpointKey: info.endpointKey,
+                  url: sanitizeUrl(url),
+                  json,
+                  ts: Date.now()
+                },
+                window.location.origin
+              );
+            }
           }).catch(() => void 0);
         }
       } catch {

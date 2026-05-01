@@ -23,7 +23,7 @@ export class BridgeClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly interceptHandlers = new Set<InterceptHandler>();
   private readonly onMessage = (event: MessageEvent<unknown>): void => {
-    if (event.source !== window || event.origin !== window.location.origin) {
+    if (event.origin !== window.location.origin) {
       return;
     }
 
@@ -31,6 +31,10 @@ export class BridgeClient {
       for (const handler of this.interceptHandlers) {
         handler(event.data);
       }
+      return;
+    }
+
+    if (event.source !== window) {
       return;
     }
 

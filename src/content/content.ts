@@ -1,9 +1,11 @@
 import { BridgeClient } from "./bridgeClient";
+import { probeCodexAnalyticsUsage } from "./codexProbe";
 import { getEstimateSnapshot, installSendEstimator } from "./estimator";
 import { UsageWidget } from "./widget";
 import { detectPlatform } from "../platforms/detect";
 import { fetchPlatformUsage } from "../platforms";
 import { normalizeInterceptedUsage } from "../platforms/intercepted";
+import { mergeUsageSnapshots } from "../platforms/merge";
 import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
@@ -34,14 +36,25 @@ async function start(platformId: PlatformId): Promise<void> {
   let currentSnapshot: UsageSnapshot | null = null;
   let refreshing = false;
   let pendingEstimatorRefresh = 0;
+  let codexProbeStarted = false;
+  let stopCodexProbe: (() => void) | null = null;
+
+  const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
+    if (
+      platformId !== "chatgpt" ||
+      codexProbeStarted ||
+      hasCodexMeter(snapshot)
+    ) {
+      return;
+    }
+    codexProbeStarted = true;
+    stopCodexProbe = probeCodexAnalyticsUsage();
+  };
 
   const applySnapshot = async (snapshot: UsageSnapshot): Promise<void> => {
-    currentSnapshot = {
-      ...snapshot,
-      cacheAgeMs: Math.max(0, Date.now() - snapshot.updatedAt)
-    };
+    currentSnapshot = mergeUsageSnapshots(currentSnapshot, snapshot);
     widget.setSnapshot(currentSnapshot);
-    await setCachedSnapshot(snapshot);
+    await setCachedSnapshot(currentSnapshot);
   };
 
   const refreshUsage = async (options: { force: boolean }): Promise<void> => {
@@ -82,6 +95,7 @@ async function start(platformId: PlatformId): Promise<void> {
       );
       snapshot = await withEstimateFallback(platformId, snapshot);
       await applySnapshot(snapshot);
+      maybeStartCodexProbe(snapshot);
       await updateFailureState(platformId, snapshot, widget);
     } catch (error) {
       const snapshot = await withEstimateFallback(platformId, {
@@ -124,6 +138,10 @@ async function start(platformId: PlatformId): Promise<void> {
     if (snapshot.meters.length === 0) {
       return;
     }
+    if (hasCodexMeter(snapshot)) {
+      stopCodexProbe?.();
+      stopCodexProbe = null;
+    }
     void applySnapshot(snapshot).catch((error: unknown) => {
       debugLog("failed to cache intercepted usage", error);
     });
@@ -148,6 +166,10 @@ async function start(platformId: PlatformId): Promise<void> {
   }
 
   await refreshUsage({ force: false });
+
+  window.addEventListener("pagehide", () => {
+    stopCodexProbe?.();
+  });
 }
 
 async function injectMainWorld(): Promise<void> {
@@ -215,4 +237,12 @@ async function updateFailureState(
   await setFailureCount(platform, nextFailures);
   await setBackoffUntil(platform, backoffUntil);
   widget.setBackoffUntil(backoffUntil);
+}
+
+function hasCodexMeter(snapshot: UsageSnapshot): boolean {
+  return snapshot.meters.some(
+    (meter) =>
+      meter.rawKind === "codex.settings.usage" ||
+      meter.key.toLowerCase().includes("codex")
+  );
 }

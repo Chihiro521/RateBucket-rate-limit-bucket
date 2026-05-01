@@ -16,6 +16,7 @@ export type UsageMeter = {
   windowSeconds?: number | null;
   source: UsageSource;
   confidence: Confidence;
+  observedAt?: number;
   rawKind?: string;
 };
 

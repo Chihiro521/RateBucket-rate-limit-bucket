@@ -41,6 +41,8 @@ The extension uses allowlisted usage or rate-limit endpoints only:
 
 It can also observe page fetch responses for the same usage endpoints. Intercepted responses go through the same normalizers as active refreshes.
 
+Snapshots are merged at the meter level. Data from different ChatGPT sources, such as conversation limits and WHAM/Codex usage, can coexist in the widget instead of replacing each other. Merged meters are retained for a short TTL and display their own observed age.
+
 ## Security Boundaries
 
 - Does not save cookies.
@@ -56,7 +58,7 @@ It can also observe page fetch responses for the same usage endpoints. Intercept
 
 - These platforms use internal APIs that may change without notice.
 - ChatGPT fields are expected to be the least stable.
-- Codex usage is primarily parsed from `https://chatgpt.com/backend-api/wham/usage`, which can be requested from any `chatgpt.com/*` page with the current login session. The Codex analytics UI route `https://chatgpt.com/codex/cloud/settings/analytics#usage` is a same-origin page route, not treated as a JSON API.
+- Codex usage is primarily parsed from `https://chatgpt.com/backend-api/wham/usage`. If a direct request from the ChatGPT home page is rejected, the extension may briefly load the same-origin Codex analytics route `https://chatgpt.com/codex/cloud/settings/analytics#usage` in a hidden iframe and intercept the page's own usage response.
 - Codex usage is also attempted from `https://chatgpt.com/codex/settings/usage`; if that route returns HTML instead of JSON in a given session, it will be ignored as unavailable.
 - Claude and Grok usage response shapes may also change.
 - Estimate mode only counts local send actions in the current browser and is not accurate quota data.
