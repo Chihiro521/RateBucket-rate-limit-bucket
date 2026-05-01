@@ -417,6 +417,12 @@
   line-height: 1.35;
 }
 
+:host([data-platform="chatgpt"]) {
+  top: clamp(12px, 4vh, 28px);
+  right: clamp(10px, 2vw, 24px);
+  transform: none;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -439,6 +445,25 @@ button {
   align-items: center;
   padding: 6px 10px;
   cursor: pointer;
+}
+
+.gpt-restore-chip {
+  min-width: 88px;
+  min-height: 48px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  color: CanvasText;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  display: grid;
+  grid-template-columns: 8px 1fr;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .status-dot {
@@ -488,6 +513,35 @@ button {
   overflow: hidden;
 }
 
+.gpt-panel {
+  width: min(400px, calc(100vw - 20px));
+  height: min(560px, calc(100vh - 24px));
+  min-height: 320px;
+  border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
+  color: CanvasText;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.gpt-collapsed-panel {
+  width: min(400px, calc(100vw - 20px));
+  min-height: 48px;
+  border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
+  color: CanvasText;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  display: grid;
+  grid-template-columns: minmax(88px, 1fr) minmax(84px, auto) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
 .header {
   display: flex;
   align-items: center;
@@ -497,14 +551,55 @@ button {
   border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
 }
 
+.gpt-header {
+  flex: 0 0 auto;
+  min-height: 58px;
+}
+
+.gpt-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gpt-alerts {
+  color: color-mix(in srgb, CanvasText 66%, transparent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .title {
   font-size: 14px;
   font-weight: 750;
 }
 
+.gpt-title {
+  font-size: 18px;
+  font-weight: 780;
+  letter-spacing: 0;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.gpt-collapsed-summary {
+  min-width: 0;
+  color: color-mix(in srgb, CanvasText 76%, transparent);
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
 .actions {
   display: flex;
   gap: 6px;
+}
+
+.gpt-actions {
+  flex: 0 0 auto;
 }
 
 .icon-button {
@@ -533,13 +628,57 @@ button {
   gap: 8px;
 }
 
+.gpt-panel > .meta {
+  flex: 0 0 auto;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+  padding: 9px 12px;
+}
+
 .content {
   padding: 4px 10px 10px;
+}
+
+.gpt-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 12px;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+
+.gpt-content:hover,
+.gpt-content:focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, CanvasText 26%, transparent) transparent;
+}
+
+.gpt-content::-webkit-scrollbar {
+  width: 0;
+}
+
+.gpt-content:hover::-webkit-scrollbar,
+.gpt-content:focus-within::-webkit-scrollbar {
+  width: 6px;
+}
+
+.gpt-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.gpt-content::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, CanvasText 24%, transparent);
+  border-radius: 999px;
 }
 
 .meter {
   padding: 8px 0;
   border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.gpt-content .meter {
+  padding: 11px 0;
 }
 
 .meter:first-child {
@@ -614,6 +753,9 @@ button {
     constructor(platform2, onRefresh) {
       this.platform = platform2;
       this.onRefresh = onRefresh;
+      this.expanded = false;
+      this.hidden = platform2 === "chatgpt";
+      this.host.dataset.platform = platform2;
       const style = document.createElement("style");
       style.textContent = WIDGET_CSS;
       this.shadow.append(style, this.root);
@@ -623,6 +765,8 @@ button {
     shadow = this.host.attachShadow({ mode: "open" });
     root = document.createElement("div");
     expanded = false;
+    hidden = false;
+    chipPosition = { edge: "right", offset: 96 };
     loading = false;
     snapshot = null;
     backoffUntil = 0;
@@ -648,9 +792,216 @@ button {
       this.render();
     }
     render() {
+      if (this.hidden) {
+        this.root.replaceChildren(
+          this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
+        );
+        return;
+      }
+      if (this.platform === "chatgpt") {
+        if (!this.hidden) {
+          this.resetPanelPosition();
+        }
+        this.root.replaceChildren(
+          this.expanded ? this.renderChatGptPanel() : this.renderChatGptCollapsed()
+        );
+        return;
+      }
       this.root.replaceChildren(
         this.expanded ? this.renderPanel() : this.renderCollapsed()
       );
+    }
+    renderChatGptRestoreChip() {
+      const button = el("button", "gpt-restore-chip");
+      button.type = "button";
+      this.applyChipPosition();
+      button.setAttribute("aria-label", "Restore GPT usage panel");
+      this.installChipDrag(button);
+      button.append(
+        el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
+        node("span", "collapsed-main", [
+          textEl("span", "platform", "GPT"),
+          textEl("span", "primary", this.primaryValue())
+        ])
+      );
+      return button;
+    }
+    applyChipPosition() {
+      const margin = 8;
+      this.host.style.top = "";
+      this.host.style.right = "";
+      this.host.style.bottom = "";
+      this.host.style.left = "";
+      this.host.style.transform = "none";
+      if (this.chipPosition.edge === "left") {
+        this.host.style.left = `${margin}px`;
+        this.host.style.top = `${this.chipPosition.offset}px`;
+        return;
+      }
+      if (this.chipPosition.edge === "right") {
+        this.host.style.right = `${margin}px`;
+        this.host.style.top = `${this.chipPosition.offset}px`;
+        return;
+      }
+      if (this.chipPosition.edge === "top") {
+        this.host.style.top = `${margin}px`;
+        this.host.style.left = `${this.chipPosition.offset}px`;
+        return;
+      }
+      this.host.style.bottom = `${margin}px`;
+      this.host.style.left = `${this.chipPosition.offset}px`;
+    }
+    resetPanelPosition() {
+      if (this.platform !== "chatgpt") {
+        return;
+      }
+      this.host.style.top = "";
+      this.host.style.right = "";
+      this.host.style.bottom = "";
+      this.host.style.left = "";
+      this.host.style.transform = "";
+    }
+    installChipDrag(button) {
+      let startX = 0;
+      let startY = 0;
+      let moved = false;
+      const onPointerMove = (event) => {
+        const deltaX = event.clientX - startX;
+        const deltaY = event.clientY - startY;
+        if (!moved && Math.hypot(deltaX, deltaY) < 4) {
+          return;
+        }
+        moved = true;
+        this.updateChipPositionFromPoint(event.clientX, event.clientY);
+        this.applyChipPosition();
+      };
+      const onPointerUp = (event) => {
+        button.releasePointerCapture(event.pointerId);
+        button.removeEventListener("pointermove", onPointerMove);
+        button.removeEventListener("pointerup", onPointerUp);
+        button.removeEventListener("pointercancel", onPointerUp);
+        if (!moved) {
+          this.hidden = false;
+          this.expanded = true;
+          this.resetPanelPosition();
+          this.render();
+        }
+      };
+      button.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0) {
+          return;
+        }
+        startX = event.clientX;
+        startY = event.clientY;
+        moved = false;
+        button.setPointerCapture(event.pointerId);
+        button.addEventListener("pointermove", onPointerMove);
+        button.addEventListener("pointerup", onPointerUp);
+        button.addEventListener("pointercancel", onPointerUp);
+      });
+    }
+    updateChipPositionFromPoint(clientX, clientY) {
+      const margin = 8;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const distances = {
+        left: clientX,
+        right: viewportWidth - clientX,
+        top: clientY,
+        bottom: viewportHeight - clientY
+      };
+      const edge = Object.entries(distances).sort((a, b) => a[1] - b[1])[0][0] ?? "right";
+      if (edge === "left" || edge === "right") {
+        this.chipPosition = {
+          edge,
+          offset: clamp(clientY - 24, margin, viewportHeight - 56)
+        };
+        return;
+      }
+      this.chipPosition = {
+        edge,
+        offset: clamp(clientX - 44, margin, viewportWidth - 96)
+      };
+    }
+    renderChatGptCollapsed() {
+      const panel = el("section", "gpt-collapsed-panel");
+      const title = textEl("div", "gpt-title", "GPT usage");
+      const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
+      const actions = el("div", "gpt-actions");
+      const refresh = this.renderActionButton(
+        this.loading ? "..." : "↻",
+        "Refresh usage",
+        () => this.onRefresh()
+      );
+      refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
+      const expand = this.renderActionButton("+", "Expand usage panel", () => {
+        this.expanded = true;
+        this.render();
+      });
+      const close = this.renderActionButton("×", "Hide usage panel", () => {
+        this.hidden = true;
+        this.render();
+      });
+      actions.append(refresh, expand, close);
+      panel.append(title, summary, actions);
+      return panel;
+    }
+    renderChatGptPanel() {
+      const panel = el("section", "gpt-panel");
+      panel.append(
+        this.renderChatGptHeader(),
+        this.renderMeta(),
+        this.renderChatGptContent()
+      );
+      return panel;
+    }
+    renderChatGptHeader() {
+      const header = el("div", "header gpt-header");
+      const title = textEl("div", "title gpt-title", "GPT usage");
+      const right = el("div", "gpt-header-right");
+      right.append(textEl("span", "gpt-alerts", `${this.alertCount()} alerts`));
+      const actions = el("div", "actions gpt-actions");
+      const refresh = this.renderActionButton(
+        this.loading ? "..." : "↻",
+        "Refresh usage",
+        () => this.onRefresh()
+      );
+      refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
+      const collapse = this.renderActionButton("−", "Collapse usage panel", () => {
+        this.expanded = false;
+        this.render();
+      });
+      const close = this.renderActionButton("×", "Hide usage panel", () => {
+        this.hidden = true;
+        this.render();
+      });
+      actions.append(refresh, collapse, close);
+      right.append(actions);
+      header.append(title, right);
+      return header;
+    }
+    renderChatGptContent() {
+      const content = el("div", "content gpt-content");
+      if (this.snapshot?.errorMessage) {
+        content.append(textEl("div", "error", this.snapshot.errorMessage));
+      }
+      const meters = this.chatGptMeters();
+      if (meters.length === 0) {
+        content.append(textEl("div", "empty", "No usage data available yet"));
+        return content;
+      }
+      for (const meter of meters) {
+        content.append(this.renderMeter(meter));
+      }
+      return content;
+    }
+    renderActionButton(text, label, onClick) {
+      const button = textEl("button", "icon-button", text);
+      button.type = "button";
+      button.setAttribute("aria-label", label);
+      button.title = label;
+      button.addEventListener("click", onClick);
+      return button;
     }
     renderCollapsed() {
       const button = el("button", "collapsed");
@@ -751,6 +1102,27 @@ button {
       }
       return "?";
     }
+    alertCount() {
+      return this.chatGptMeters().filter(isAlertMeter).length;
+    }
+    criticalSummary() {
+      const meters = this.chatGptMeters();
+      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.filter((meter) => typeof meter.usedPercent === "number").sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
+      if (!alert) {
+        return this.snapshot?.status ?? "unknown";
+      }
+      if (typeof alert.usedPercent === "number") {
+        return `${shortLabel(alert.label)} ${Math.round(alert.usedPercent)}%`;
+      }
+      if (typeof alert.remaining === "number") {
+        return `${shortLabel(alert.label)} ${alert.remaining} left`;
+      }
+      return shortLabel(alert.label);
+    }
+    chatGptMeters() {
+      const meters = [...this.snapshot?.meters ?? []];
+      return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
+    }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
     }
@@ -782,6 +1154,44 @@ button {
   function clampPercent(value) {
     return Math.max(0, Math.min(100, value));
   }
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+  function isAlertMeter(meter) {
+    if (typeof meter.remaining === "number" && meter.remaining <= 0) {
+      return true;
+    }
+    if (typeof meter.usedPercent === "number" && meter.usedPercent >= 95) {
+      return true;
+    }
+    return false;
+  }
+  function chatGptMeterPriority(meter) {
+    const key = meter.key.toLowerCase();
+    const label = meter.label.toLowerCase();
+    if (key.startsWith("limits_progress:file_upload")) {
+      return 10;
+    }
+    if (key.startsWith("limits_progress:") || meter.rawKind === "limits_progress") {
+      return 20;
+    }
+    if (label.includes("primary window")) {
+      return 40;
+    }
+    if (label.includes("weekly window")) {
+      return 41;
+    }
+    if (label.includes("credits")) {
+      return 42;
+    }
+    if (key.includes("codex") || meter.rawKind === "codex.settings.usage") {
+      return 50;
+    }
+    return 80;
+  }
+  function shortLabel(label) {
+    return label.replace(/\bwindow\b/gi, "").replace(/\s+/g, " ").trim().slice(0, 18);
+  }
   function el(tagName, className) {
     const element = document.createElement(tagName);
     if (className) {
@@ -798,6 +1208,9 @@ button {
     const element = el(tagName, className);
     element.append(...children);
     return element;
+  }
+  function emptyNode() {
+    return document.createElement("span");
   }
   function detectPlatform(location) {
     const hostname = location.hostname.toLowerCase();
