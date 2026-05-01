@@ -313,7 +313,7 @@ export class UsageWidget {
       el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
       node("span", "collapsed-main", [
         textEl("span", "platform", PLATFORM_LABEL[this.platform]),
-        textEl("span", "primary", this.primaryValue())
+        textEl("span", "primary", this.collapsedPrimaryValue())
       ])
     );
     return button;
@@ -321,7 +321,14 @@ export class UsageWidget {
 
   private renderPanel(): HTMLElement {
     const panel = el("section", "panel");
-    panel.append(this.renderHeader(), this.renderMeta(), this.renderContent());
+    panel.append(this.renderHeader(), this.renderMeta());
+    if (this.platform === "grok") {
+      const modelMeta = this.renderGrokModelMeta();
+      if (modelMeta) {
+        panel.append(modelMeta);
+      }
+    }
+    panel.append(this.renderContent());
     return panel;
   }
 
@@ -365,6 +372,18 @@ export class UsageWidget {
             ? "loading"
             : "";
     meta.append(textEl("span", "", updated), textEl("span", "", right));
+    return meta;
+  }
+
+  private renderGrokModelMeta(): HTMLElement | null {
+    const summary = this.grokModelSummary();
+    if (!summary) {
+      return null;
+    }
+    const meta = el("div", "model-meta");
+    const value = textEl("span", "model-value", summary);
+    value.title = summary;
+    meta.append(textEl("span", "model-label", "model"), value);
     return meta;
   }
 
@@ -424,6 +443,13 @@ export class UsageWidget {
     return "?";
   }
 
+  private collapsedPrimaryValue(): string {
+    if (this.platform === "grok") {
+      return this.grokPrimaryValue();
+    }
+    return this.primaryValue();
+  }
+
   private alertCount(): number {
     return this.chatGptMeters().filter(isAlertMeter).length;
   }
@@ -456,6 +482,34 @@ export class UsageWidget {
 
   private backoffRemainingMs(): number {
     return Math.max(0, this.backoffUntil - Date.now());
+  }
+
+  private grokModelSummary(): string {
+    const values = unique(
+      (this.snapshot?.meters ?? [])
+        .map((meter) => modelSummaryFromMeter(meter))
+        .filter((value): value is string => Boolean(value))
+    );
+    return values.join(", ");
+  }
+
+  private grokPrimaryValue(): string {
+    const meter = this.grokPrimaryMeter();
+    if (!meter) {
+      return this.primaryValue();
+    }
+    return formatMeterValue(meter);
+  }
+
+  private grokPrimaryMeter(): UsageMeter | null {
+    const meters = [...(this.snapshot?.meters ?? [])];
+    return (
+      meters.sort(
+        (a, b) =>
+          grokMeterPriority(a) - grokMeterPriority(b) ||
+          (b.observedAt ?? 0) - (a.observedAt ?? 0)
+      )[0] ?? null
+    );
   }
 }
 
@@ -531,12 +585,42 @@ function chatGptMeterPriority(meter: UsageMeter): number {
   return 80;
 }
 
+function grokMeterPriority(meter: UsageMeter): number {
+  if (meter.rawKind === "queries") {
+    return 10;
+  }
+  if (meter.rawKind === "highEffortRateLimits") {
+    return 20;
+  }
+  if (meter.rawKind === "lowEffortRateLimits") {
+    return 30;
+  }
+  if (meter.rawKind === "tokens") {
+    return 40;
+  }
+  return 80;
+}
+
 function shortLabel(label: string): string {
   return label
     .replace(/\bwindow\b/gi, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 18);
+}
+
+function modelSummaryFromMeter(meter: UsageMeter): string | null {
+  if (!meter.modelName) {
+    return null;
+  }
+  if (meter.requestKind && meter.requestKind !== "DEFAULT") {
+    return `${meter.modelName} · ${meter.requestKind}`;
+  }
+  return meter.modelName;
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(

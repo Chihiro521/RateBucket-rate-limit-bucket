@@ -1,7 +1,8 @@
 import type {
   BridgeResponse,
   EndpointKey,
-  PlatformId
+  PlatformId,
+  UsageRequestContext
 } from "../platforms/types";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
 import { asRecord, getString } from "../utils/safeJson";
@@ -90,24 +91,7 @@ function resolveEndpoint(
   endpointKey: EndpointKey,
   payload: unknown
 ): EndpointDefinition | null {
-  const grokBody = (modelName: string): unknown => ({
-    requestKind: "DEFAULT",
-    modelName
-  });
-
   const endpoints: Partial<Record<EndpointKey, EndpointDefinition>> = {
-    "grok:grok-3": {
-      platform: "grok",
-      method: "POST",
-      url: "https://grok.com/rest/rate-limits",
-      body: grokBody("grok-3")
-    },
-    "grok:grok-4-heavy": {
-      platform: "grok",
-      method: "POST",
-      url: "https://grok.com/rest/rate-limits",
-      body: grokBody("grok-4-heavy")
-    },
     "claude:organizations": {
       platform: "claude",
       method: "GET",
@@ -135,6 +119,28 @@ function resolveEndpoint(
       url: "https://chatgpt.com/codex/settings/usage"
     }
   };
+
+  if (endpointKey === "grok:rate-limits") {
+    if (platform !== "grok") {
+      return null;
+    }
+    const payloadRecord = asRecord(payload);
+    const modelName = payloadRecord ? getString(payloadRecord, "modelName") : null;
+    const requestKind =
+      (payloadRecord ? getString(payloadRecord, "requestKind") : null) ?? "DEFAULT";
+    if (!isSafeGrokModelName(modelName) || !isSafeGrokRequestKind(requestKind)) {
+      return null;
+    }
+    return {
+      platform: "grok",
+      method: "POST",
+      url: "https://grok.com/rest/rate-limits",
+      body: {
+        requestKind,
+        modelName
+      }
+    };
+  }
 
   if (endpointKey === "claude:usage") {
     const payloadRecord = asRecord(payload);
@@ -244,43 +250,22 @@ function installFetchIntercept(): void {
   const originalFetch = window.fetch.bind(window);
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const usageRequest = getUsageRequest(input, init);
     const response = await originalFetch(input, init);
     try {
-      const url = requestUrl(input);
-      const info = usageUrlInfo(url);
-      if (info) {
+      if (usageRequest) {
         response
           .clone()
           .json()
-          .then((json: unknown) => {
-            window.postMessage(
-              {
-                source: SOURCE,
-                direction: "main-to-content",
-                kind: "interceptedUsage",
-                platform: info.platform,
-                endpointKey: info.endpointKey,
-                url: sanitizeUrl(url),
-                json,
-                ts: Date.now()
-              },
-              window.location.origin
-            );
-            if (window.parent && window.parent !== window) {
-              window.parent.postMessage(
-                {
-                  source: SOURCE,
-                  direction: "main-to-content",
-                  kind: "interceptedUsage",
-                  platform: info.platform,
-                  endpointKey: info.endpointKey,
-                  url: sanitizeUrl(url),
-                  json,
-                  ts: Date.now()
-                },
-                window.location.origin
-              );
-            }
+          .then(async (json: unknown) => {
+            const usageContext = await usageRequest.usageContext;
+            postInterceptedUsage({
+              platform: usageRequest.platform,
+              endpointKey: usageRequest.endpointKey,
+              url: usageRequest.url,
+              usageContext,
+              json
+            });
           })
           .catch(() => undefined);
       }
@@ -289,6 +274,151 @@ function installFetchIntercept(): void {
     }
     return response;
   };
+}
+
+function isSafeGrokModelName(value: string | null): value is string {
+  return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
+}
+
+function isSafeGrokRequestKind(value: string | null): value is string {
+  return value !== null && /^[A-Z_]{1,40}$/.test(value);
+}
+
+function getUsageRequest(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): {
+  platform: PlatformId;
+  endpointKey?: EndpointKey;
+  url: string;
+  usageContext?: UsageRequestContext | Promise<UsageRequestContext | undefined>;
+} | null {
+  let rawUrl: string;
+  try {
+    rawUrl = requestUrl(input);
+  } catch {
+    return null;
+  }
+
+  const info = usageUrlInfo(rawUrl);
+  if (!info) {
+    return null;
+  }
+
+  return {
+    platform: info.platform,
+    endpointKey: info.endpointKey,
+    url: sanitizeUrl(rawUrl),
+    usageContext:
+      info.platform === "grok" ? grokRequestContext(input, init) : undefined
+  };
+}
+
+function grokRequestContext(
+  input: RequestInfo | URL,
+  init?: RequestInit
+): UsageRequestContext | Promise<UsageRequestContext | undefined> | undefined {
+  if (init?.body !== undefined) {
+    return usageContextFromBody(init.body);
+  }
+  if (input instanceof Request && !input.bodyUsed) {
+    return input
+      .clone()
+      .text()
+      .then(usageContextFromText)
+      .catch(() => undefined);
+  }
+  return undefined;
+}
+
+function usageContextFromBody(
+  body: BodyInit | null
+): UsageRequestContext | Promise<UsageRequestContext | undefined> | undefined {
+  if (typeof body === "string") {
+    return usageContextFromText(body);
+  }
+  if (body instanceof URLSearchParams) {
+    return usageContextFromText(body.toString());
+  }
+  if (body instanceof FormData) {
+    return usageContextFromRecord({
+      modelName: body.get("modelName"),
+      requestKind: body.get("requestKind")
+    });
+  }
+  if (body instanceof Blob) {
+    return body
+      .text()
+      .then(usageContextFromText)
+      .catch(() => undefined);
+  }
+  return undefined;
+}
+
+function usageContextFromText(text: string): UsageRequestContext | undefined {
+  if (!text.trim()) {
+    return undefined;
+  }
+  try {
+    return usageContextFromRecord(JSON.parse(text));
+  } catch {
+    try {
+      const params = new URLSearchParams(text);
+      return usageContextFromRecord({
+        modelName: params.get("modelName"),
+        requestKind: params.get("requestKind")
+      });
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+function usageContextFromRecord(value: unknown): UsageRequestContext | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const modelName =
+    getString(record, "modelName") ??
+    getString(record, "model") ??
+    getString(record, "modelId");
+  const requestKind =
+    getString(record, "requestKind") ??
+    getString(record, "kind") ??
+    getString(record, "mode");
+  if (!modelName && !requestKind) {
+    return undefined;
+  }
+  return {
+    modelName: modelName ?? undefined,
+    requestKind: requestKind ?? undefined
+  };
+}
+
+function postInterceptedUsage(args: {
+  platform: PlatformId;
+  endpointKey?: EndpointKey;
+  url: string;
+  usageContext?: UsageRequestContext;
+  json: unknown;
+}): void {
+  const message = {
+    source: SOURCE,
+    direction: "main-to-content",
+    kind: "interceptedUsage",
+    platform: args.platform,
+    endpointKey: args.endpointKey,
+    url: args.url,
+    usageContext: args.usageContext,
+    json: args.json,
+    ts: Date.now()
+  } as const;
+
+  window.postMessage(message, window.location.origin);
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(message, window.location.origin);
+  }
 }
 
 function requestUrl(input: RequestInfo | URL): string {
@@ -312,7 +442,7 @@ function usageUrlInfo(
   }
 
   if (url.origin === "https://grok.com" && url.pathname === "/rest/rate-limits") {
-    return { platform: "grok" };
+    return { platform: "grok", endpointKey: "grok:rate-limits" };
   }
   if (
     url.origin === "https://claude.ai" &&

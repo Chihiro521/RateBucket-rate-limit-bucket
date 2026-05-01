@@ -228,6 +228,32 @@ button {
   padding: 9px 12px;
 }
 
+.model-meta {
+  padding: 7px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+  font-size: 11px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.model-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.model-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
 .content {
   padding: 4px 10px 10px;
 }

@@ -1,8 +1,17 @@
-import { describe, expect, it } from "vitest";
-import { fetchGrokUsage, normalizeGrokRateLimit } from "../src/platforms/grok";
+import { beforeEach, describe, expect, it } from "vitest";
+import {
+  clearObservedGrokRateLimitContexts,
+  fetchGrokUsage,
+  normalizeGrokRateLimit,
+  rememberGrokRateLimitContext
+} from "../src/platforms/grok";
 import type { BridgeResponse, UsageEndpointFetcher } from "../src/platforms/types";
 
 describe("grok normalizer", () => {
+  beforeEach(() => {
+    clearObservedGrokRateLimitContexts();
+  });
+
   it("normalizes remainingQueries and totalQueries", () => {
     const meters = normalizeGrokRateLimit(
       {
@@ -15,7 +24,7 @@ describe("grok normalizer", () => {
 
     expect(meters).toHaveLength(1);
     expect(meters[0]).toMatchObject({
-      key: "grok-3:queries",
+      key: "grok-3:default:queries",
       remaining: 12,
       total: 20,
       used: 8,
@@ -26,6 +35,8 @@ describe("grok normalizer", () => {
   it("normalizes low and high effort limits", () => {
     const meters = normalizeGrokRateLimit(
       {
+        modelName: "grok-4-heavy",
+        requestKind: "REASONING",
         lowEffortRateLimits: {
           remainingQueries: 5,
           totalQueries: 10,
@@ -46,9 +57,27 @@ describe("grok normalizer", () => {
       "highEffortRateLimits"
     ]);
     expect(meters[1]).toMatchObject({
-      label: "Grok Heavy High / Thinking / Expert",
+      label: "Grok Heavy · REASONING High / Thinking / Expert",
       remaining: 1,
       resetAfterSeconds: 300
+    });
+  });
+
+  it("uses model and request kind from the rate-limit payload", () => {
+    const meters = normalizeGrokRateLimit({
+      modelName: "grok-420-computer-use-sa",
+      requestKind: "DEFAULT",
+      remainingQueries: 2,
+      totalQueries: 5
+    });
+
+    expect(meters[0]).toMatchObject({
+      key: "grok-420-computer-use-sa:default:queries",
+      label: "grok-420-computer-use-sa query limit",
+      modelName: "grok-420-computer-use-sa",
+      requestKind: "DEFAULT",
+      remaining: 2,
+      total: 5
     });
   });
 
@@ -56,35 +85,61 @@ describe("grok normalizer", () => {
     expect(normalizeGrokRateLimit({ ok: true })).toEqual([]);
   });
 
-  it("returns partial when one model succeeds and another fails", async () => {
+  it("waits for observed Grok model context before active refresh", async () => {
+    const fetcher: UsageEndpointFetcher = async () => {
+      throw new Error("should not fetch fixed model candidates");
+    };
+
+    const snapshot = await fetchGrokUsage(fetcher);
+
+    expect(snapshot.status).toBe("unknown");
+    expect(snapshot.meters).toEqual([]);
+  });
+
+  it("refreshes the observed model and request kind dynamically", async () => {
+    rememberGrokRateLimitContext({
+      modelName: "grok-old",
+      requestKind: "DEFAULT"
+    });
+    rememberGrokRateLimitContext({
+      modelName: "grok-420-computer-use-sa",
+      requestKind: "DEFAULT"
+    });
+
     const okResponse: BridgeResponse = {
       source: "ai-usage-floating-monitor",
       direction: "main-to-content",
       requestId: "1",
       ok: true,
       platform: "grok",
-      endpointKey: "grok:grok-3",
+      endpointKey: "grok:rate-limits",
       json: {
+        modelName: "grok-420-computer-use-sa",
         remainingQueries: 3,
         totalQueries: 10
       }
     };
-    const failResponse: BridgeResponse = {
-      source: "ai-usage-floating-monitor",
-      direction: "main-to-content",
-      requestId: "2",
-      ok: false,
-      platform: "grok",
-      endpointKey: "grok:grok-4-heavy",
-      error: { status: 500, message: "server error" }
+    const calls: unknown[] = [];
+    const fetcher: UsageEndpointFetcher = async (endpointKey, payload) => {
+      calls.push({ endpointKey, payload });
+      return okResponse;
     };
-    const fetcher: UsageEndpointFetcher = async (endpointKey) =>
-      endpointKey === "grok:grok-3" ? okResponse : failResponse;
 
     const snapshot = await fetchGrokUsage(fetcher);
 
-    expect(snapshot.status).toBe("partial");
+    expect(calls).toEqual([
+      {
+        endpointKey: "grok:rate-limits",
+        payload: {
+          modelName: "grok-420-computer-use-sa",
+          requestKind: "DEFAULT"
+        }
+      }
+    ]);
+    expect(snapshot.status).toBe("ok");
     expect(snapshot.meters).toHaveLength(1);
-    expect(snapshot.errorMessage).toContain("500");
+    expect(snapshot.meters[0].key).toBe(
+      "grok-420-computer-use-sa:default:queries"
+    );
   });
 });

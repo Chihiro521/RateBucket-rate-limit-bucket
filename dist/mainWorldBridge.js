@@ -70,23 +70,7 @@
     postResponse(response);
   }
   function resolveEndpoint(platform, endpointKey, payload) {
-    const grokBody = (modelName) => ({
-      requestKind: "DEFAULT",
-      modelName
-    });
     const endpoints = {
-      "grok:grok-3": {
-        platform: "grok",
-        method: "POST",
-        url: "https://grok.com/rest/rate-limits",
-        body: grokBody("grok-3")
-      },
-      "grok:grok-4-heavy": {
-        platform: "grok",
-        method: "POST",
-        url: "https://grok.com/rest/rate-limits",
-        body: grokBody("grok-4-heavy")
-      },
       "claude:organizations": {
         platform: "claude",
         method: "GET",
@@ -114,6 +98,26 @@
         url: "https://chatgpt.com/codex/settings/usage"
       }
     };
+    if (endpointKey === "grok:rate-limits") {
+      if (platform !== "grok") {
+        return null;
+      }
+      const payloadRecord = asRecord(payload);
+      const modelName = payloadRecord ? getString(payloadRecord, "modelName") : null;
+      const requestKind = (payloadRecord ? getString(payloadRecord, "requestKind") : null) ?? "DEFAULT";
+      if (!isSafeGrokModelName(modelName) || !isSafeGrokRequestKind(requestKind)) {
+        return null;
+      }
+      return {
+        platform: "grok",
+        method: "POST",
+        url: "https://grok.com/rest/rate-limits",
+        body: {
+          requestKind,
+          modelName
+        }
+      };
+    }
     if (endpointKey === "claude:usage") {
       const payloadRecord = asRecord(payload);
       const orgId = payloadRecord ? getString(payloadRecord, "orgId") : null;
@@ -208,46 +212,126 @@
     window.__AI_USAGE_FLOATING_MONITOR_FETCH_PATCHED__ = true;
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (input, init) => {
+      const usageRequest = getUsageRequest(input, init);
       const response = await originalFetch(input, init);
       try {
-        const url = requestUrl(input);
-        const info = usageUrlInfo(url);
-        if (info) {
-          response.clone().json().then((json) => {
-            window.postMessage(
-              {
-                source: SOURCE,
-                direction: "main-to-content",
-                kind: "interceptedUsage",
-                platform: info.platform,
-                endpointKey: info.endpointKey,
-                url: sanitizeUrl(url),
-                json,
-                ts: Date.now()
-              },
-              window.location.origin
-            );
-            if (window.parent && window.parent !== window) {
-              window.parent.postMessage(
-                {
-                  source: SOURCE,
-                  direction: "main-to-content",
-                  kind: "interceptedUsage",
-                  platform: info.platform,
-                  endpointKey: info.endpointKey,
-                  url: sanitizeUrl(url),
-                  json,
-                  ts: Date.now()
-                },
-                window.location.origin
-              );
-            }
+        if (usageRequest) {
+          response.clone().json().then(async (json) => {
+            const usageContext = await usageRequest.usageContext;
+            postInterceptedUsage({
+              platform: usageRequest.platform,
+              endpointKey: usageRequest.endpointKey,
+              url: usageRequest.url,
+              usageContext,
+              json
+            });
           }).catch(() => void 0);
         }
       } catch {
       }
       return response;
     };
+  }
+  function isSafeGrokModelName(value) {
+    return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
+  }
+  function isSafeGrokRequestKind(value) {
+    return value !== null && /^[A-Z_]{1,40}$/.test(value);
+  }
+  function getUsageRequest(input, init) {
+    let rawUrl;
+    try {
+      rawUrl = requestUrl(input);
+    } catch {
+      return null;
+    }
+    const info = usageUrlInfo(rawUrl);
+    if (!info) {
+      return null;
+    }
+    return {
+      platform: info.platform,
+      endpointKey: info.endpointKey,
+      url: sanitizeUrl(rawUrl),
+      usageContext: info.platform === "grok" ? grokRequestContext(input, init) : void 0
+    };
+  }
+  function grokRequestContext(input, init) {
+    if (init?.body !== void 0) {
+      return usageContextFromBody(init.body);
+    }
+    if (input instanceof Request && !input.bodyUsed) {
+      return input.clone().text().then(usageContextFromText).catch(() => void 0);
+    }
+    return void 0;
+  }
+  function usageContextFromBody(body) {
+    if (typeof body === "string") {
+      return usageContextFromText(body);
+    }
+    if (body instanceof URLSearchParams) {
+      return usageContextFromText(body.toString());
+    }
+    if (body instanceof FormData) {
+      return usageContextFromRecord({
+        modelName: body.get("modelName"),
+        requestKind: body.get("requestKind")
+      });
+    }
+    if (body instanceof Blob) {
+      return body.text().then(usageContextFromText).catch(() => void 0);
+    }
+    return void 0;
+  }
+  function usageContextFromText(text) {
+    if (!text.trim()) {
+      return void 0;
+    }
+    try {
+      return usageContextFromRecord(JSON.parse(text));
+    } catch {
+      try {
+        const params = new URLSearchParams(text);
+        return usageContextFromRecord({
+          modelName: params.get("modelName"),
+          requestKind: params.get("requestKind")
+        });
+      } catch {
+        return void 0;
+      }
+    }
+  }
+  function usageContextFromRecord(value) {
+    const record = asRecord(value);
+    if (!record) {
+      return void 0;
+    }
+    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId");
+    const requestKind = getString(record, "requestKind") ?? getString(record, "kind") ?? getString(record, "mode");
+    if (!modelName && !requestKind) {
+      return void 0;
+    }
+    return {
+      modelName: modelName ?? void 0,
+      requestKind: requestKind ?? void 0
+    };
+  }
+  function postInterceptedUsage(args) {
+    const message = {
+      source: SOURCE,
+      direction: "main-to-content",
+      kind: "interceptedUsage",
+      platform: args.platform,
+      endpointKey: args.endpointKey,
+      url: args.url,
+      usageContext: args.usageContext,
+      json: args.json,
+      ts: Date.now()
+    };
+    window.postMessage(message, window.location.origin);
+    if (window.parent && window.parent !== window) {
+      window.parent.postMessage(message, window.location.origin);
+    }
   }
   function requestUrl(input) {
     if (typeof input === "string") {
@@ -266,7 +350,7 @@
       return null;
     }
     if (url.origin === "https://grok.com" && url.pathname === "/rest/rate-limits") {
-      return { platform: "grok" };
+      return { platform: "grok", endpointKey: "grok:rate-limits" };
     }
     if (url.origin === "https://claude.ai" && /^\/api\/organizations\/[^/]+\/usage$/.test(url.pathname)) {
       return { platform: "claude", endpointKey: "claude:usage" };

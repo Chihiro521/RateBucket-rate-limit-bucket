@@ -52,7 +52,12 @@ async function start(platformId: PlatformId): Promise<void> {
   };
 
   const applySnapshot = async (snapshot: UsageSnapshot): Promise<void> => {
-    currentSnapshot = mergeUsageSnapshots(currentSnapshot, snapshot);
+    const shouldReplace =
+      platformId === "grok" && snapshot.source === "intercepted";
+    currentSnapshot = mergeUsageSnapshots(
+      shouldReplace ? null : currentSnapshot,
+      snapshot
+    );
     widget.setSnapshot(currentSnapshot);
     await setCachedSnapshot(currentSnapshot);
   };
@@ -133,7 +138,8 @@ async function start(platformId: PlatformId): Promise<void> {
       url: message.url,
       json: message.json,
       ts: message.ts,
-      endpointKey: message.endpointKey
+      endpointKey: message.endpointKey,
+      usageContext: message.usageContext
     });
     if (snapshot.meters.length === 0) {
       return;

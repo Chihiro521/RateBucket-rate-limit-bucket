@@ -634,6 +634,32 @@ button {
   padding: 9px 12px;
 }
 
+.model-meta {
+  padding: 7px 10px 8px;
+  border-top: 1px solid color-mix(in srgb, CanvasText 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+  font-size: 11px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.model-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.model-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
 .content {
   padding: 4px 10px 10px;
 }
@@ -1015,14 +1041,21 @@ button {
         el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
         node("span", "collapsed-main", [
           textEl("span", "platform", PLATFORM_LABEL[this.platform]),
-          textEl("span", "primary", this.primaryValue())
+          textEl("span", "primary", this.collapsedPrimaryValue())
         ])
       );
       return button;
     }
     renderPanel() {
       const panel = el("section", "panel");
-      panel.append(this.renderHeader(), this.renderMeta(), this.renderContent());
+      panel.append(this.renderHeader(), this.renderMeta());
+      if (this.platform === "grok") {
+        const modelMeta = this.renderGrokModelMeta();
+        if (modelMeta) {
+          panel.append(modelMeta);
+        }
+      }
+      panel.append(this.renderContent());
       return panel;
     }
     renderHeader() {
@@ -1052,6 +1085,17 @@ button {
       const updated = this.snapshot ? `updated ${formatAge(this.snapshot.updatedAt)}` : "not updated";
       const right = this.backoffRemainingMs() > 0 ? `wait ${Math.ceil(this.backoffRemainingMs() / 1e3)}s` : this.snapshot?.cacheAgeMs !== void 0 ? `cache ${Math.floor(this.snapshot.cacheAgeMs / 1e3)}s` : this.loading ? "loading" : "";
       meta.append(textEl("span", "", updated), textEl("span", "", right));
+      return meta;
+    }
+    renderGrokModelMeta() {
+      const summary = this.grokModelSummary();
+      if (!summary) {
+        return null;
+      }
+      const meta = el("div", "model-meta");
+      const value = textEl("span", "model-value", summary);
+      value.title = summary;
+      meta.append(textEl("span", "model-label", "model"), value);
       return meta;
     }
     renderContent() {
@@ -1102,6 +1146,12 @@ button {
       }
       return "?";
     }
+    collapsedPrimaryValue() {
+      if (this.platform === "grok") {
+        return this.grokPrimaryValue();
+      }
+      return this.primaryValue();
+    }
     alertCount() {
       return this.chatGptMeters().filter(isAlertMeter).length;
     }
@@ -1125,6 +1175,25 @@ button {
     }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
+    }
+    grokModelSummary() {
+      const values = unique(
+        (this.snapshot?.meters ?? []).map((meter) => modelSummaryFromMeter(meter)).filter((value) => Boolean(value))
+      );
+      return values.join(", ");
+    }
+    grokPrimaryValue() {
+      const meter = this.grokPrimaryMeter();
+      if (!meter) {
+        return this.primaryValue();
+      }
+      return formatMeterValue(meter);
+    }
+    grokPrimaryMeter() {
+      const meters = [...this.snapshot?.meters ?? []];
+      return meters.sort(
+        (a, b) => grokMeterPriority(a) - grokMeterPriority(b) || (b.observedAt ?? 0) - (a.observedAt ?? 0)
+      )[0] ?? null;
     }
   }
   function formatMeterValue(meter) {
@@ -1189,8 +1258,35 @@ button {
     }
     return 80;
   }
+  function grokMeterPriority(meter) {
+    if (meter.rawKind === "queries") {
+      return 10;
+    }
+    if (meter.rawKind === "highEffortRateLimits") {
+      return 20;
+    }
+    if (meter.rawKind === "lowEffortRateLimits") {
+      return 30;
+    }
+    if (meter.rawKind === "tokens") {
+      return 40;
+    }
+    return 80;
+  }
   function shortLabel(label) {
     return label.replace(/\bwindow\b/gi, "").replace(/\s+/g, " ").trim().slice(0, 18);
+  }
+  function modelSummaryFromMeter(meter) {
+    if (!meter.modelName) {
+      return null;
+    }
+    if (meter.requestKind && meter.requestKind !== "DEFAULT") {
+      return `${meter.modelName} · ${meter.requestKind}`;
+    }
+    return meter.modelName;
+  }
+  function unique(values) {
+    return Array.from(new Set(values));
   }
   function el(tagName, className) {
     const element = document.createElement(tagName);
@@ -1797,14 +1893,10 @@ button {
       }
     };
   }
-  const GROK_MODEL_CANDIDATES = [
-    { modelName: "grok-3", endpointKey: "grok:grok-3", labelPrefix: "Grok" },
-    {
-      modelName: "grok-4-heavy",
-      endpointKey: "grok:grok-4-heavy",
-      labelPrefix: "Grok Heavy"
-    }
-  ];
+  const GROK_ENDPOINT_KEY = "grok:rate-limits";
+  const MAX_OBSERVED_CONTEXTS = 12;
+  const DEFAULT_REQUEST_KIND = "DEFAULT";
+  const observedContexts = /* @__PURE__ */ new Map();
   function makeMeter(args) {
     const explicitResetAfterSeconds = args.resetAfterSeconds ?? null;
     if (args.remaining === null && args.total === null && explicitResetAfterSeconds === null) {
@@ -1816,6 +1908,8 @@ button {
     return {
       key: args.key,
       label: args.label,
+      modelName: args.modelName,
+      requestKind: args.requestKind,
       remaining: args.remaining,
       total: args.total,
       used,
@@ -1833,13 +1927,19 @@ button {
       return [];
     }
     const source = options.source ?? "api";
-    const modelName = options.modelName ?? "unknown";
-    const labelPrefix = options.labelPrefix ?? "Grok";
+    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId") ?? options.modelName ?? "unknown";
+    const requestKind = getString(record, "requestKind") ?? getString(record, "kind") ?? options.requestKind ?? DEFAULT_REQUEST_KIND;
+    const displayName = getString(record, "displayName") ?? getString(record, "modelDisplayName");
+    const labelPrefix = options.labelPrefix ?? displayName ?? modelName;
+    const meterKeyPrefix = grokMeterKeyPrefix(modelName, requestKind);
+    const requestKindLabel = requestKind === DEFAULT_REQUEST_KIND ? "" : ` · ${requestKind}`;
     const windowSeconds = getNumber(record, "windowSizeSeconds");
     const meters = [];
     const queryMeter = makeMeter({
-      key: `${modelName}:queries`,
-      label: `${labelPrefix} query limit`,
+      key: `${meterKeyPrefix}:queries`,
+      label: `${labelPrefix}${requestKindLabel} query limit`,
+      modelName,
+      requestKind,
       remaining: getNumber(record, "remainingQueries"),
       total: getNumber(record, "totalQueries"),
       windowSeconds,
@@ -1850,8 +1950,10 @@ button {
       meters.push(queryMeter);
     }
     const tokenMeter = makeMeter({
-      key: `${modelName}:tokens`,
-      label: `${labelPrefix} token limit`,
+      key: `${meterKeyPrefix}:tokens`,
+      label: `${labelPrefix}${requestKindLabel} token limit`,
+      modelName,
+      requestKind,
       remaining: getNumber(record, "remainingTokens"),
       total: getNumber(record, "totalTokens"),
       windowSeconds,
@@ -1864,8 +1966,10 @@ button {
     const lowEffort = getRecord(record, "lowEffortRateLimits");
     if (lowEffort) {
       const meter = makeMeter({
-        key: `${modelName}:low-effort`,
-        label: `${labelPrefix} Low / Fast / Normal`,
+        key: `${meterKeyPrefix}:low-effort`,
+        label: `${labelPrefix}${requestKindLabel} Low / Fast / Normal`,
+        modelName,
+        requestKind,
         remaining: getNumber(lowEffort, "remainingQueries"),
         total: getNumber(lowEffort, "totalQueries"),
         windowSeconds,
@@ -1880,8 +1984,10 @@ button {
     const highEffort = getRecord(record, "highEffortRateLimits");
     if (highEffort) {
       const meter = makeMeter({
-        key: `${modelName}:high-effort`,
-        label: `${labelPrefix} High / Thinking / Expert`,
+        key: `${meterKeyPrefix}:high-effort`,
+        label: `${labelPrefix}${requestKindLabel} High / Thinking / Expert`,
+        modelName,
+        requestKind,
         remaining: getNumber(highEffort, "remainingQueries"),
         total: getNumber(highEffort, "totalQueries"),
         windowSeconds,
@@ -1895,6 +2001,21 @@ button {
     }
     return meters;
   }
+  function grokRateLimitContextFromJson(json) {
+    const record = asRecord(json);
+    if (!record) {
+      return void 0;
+    }
+    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId");
+    const requestKind = getString(record, "requestKind") ?? getString(record, "kind");
+    if (!modelName && !requestKind) {
+      return void 0;
+    }
+    return {
+      modelName: modelName ?? void 0,
+      requestKind: requestKind ?? void 0
+    };
+  }
   function responseFailure(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
@@ -1904,16 +2025,34 @@ button {
   async function fetchGrokUsage(fetcher) {
     const meters = [];
     const failures = [];
-    for (const candidate of GROK_MODEL_CANDIDATES) {
-      const response = await fetcher(candidate.endpointKey);
+    const latestContext = getLatestObservedGrokRateLimitContext();
+    const contexts = latestContext ? [latestContext] : [];
+    if (contexts.length === 0) {
+      return {
+        platform: "grok",
+        meters,
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "unknown",
+        debug: {
+          endpoint: GROK_ENDPOINT_KEY,
+          parser: "grok.rateLimit.dynamic"
+        }
+      };
+    }
+    for (const context of contexts) {
+      const response = await fetcher(GROK_ENDPOINT_KEY, {
+        modelName: context.modelName,
+        requestKind: context.requestKind ?? DEFAULT_REQUEST_KIND
+      });
       if (!response.ok) {
         failures.push(responseFailure(response));
         continue;
       }
       meters.push(
         ...normalizeGrokRateLimit(response.json, {
-          modelName: candidate.modelName,
-          labelPrefix: candidate.labelPrefix,
+          modelName: context.modelName,
+          requestKind: context.requestKind,
           source: "api"
         })
       );
@@ -1926,13 +2065,54 @@ button {
       status: meters.length > 0 ? failures.length > 0 ? "partial" : "ok" : failures.length > 0 ? "error" : "unknown",
       errorMessage: failures[0],
       debug: {
-        endpoint: GROK_MODEL_CANDIDATES.map((item) => item.endpointKey).join(","),
-        parser: "grok.rateLimit"
+        endpoint: contexts.map(
+          (context) => `${GROK_ENDPOINT_KEY}:${context.modelName}:${context.requestKind ?? DEFAULT_REQUEST_KIND}`
+        ).join(","),
+        parser: "grok.rateLimit.dynamic"
       }
     };
   }
-  function candidateForEndpoint(endpointKey) {
-    return GROK_MODEL_CANDIDATES.find((item) => item.endpointKey === endpointKey);
+  function rememberGrokRateLimitContext(context) {
+    if (!context?.modelName || !isSafeGrokModelName(context.modelName)) {
+      return;
+    }
+    const requestKind = isSafeGrokRequestKind(context.requestKind) ? context.requestKind : DEFAULT_REQUEST_KIND;
+    const normalized = {
+      modelName: context.modelName,
+      requestKind
+    };
+    const key = contextKey(normalized);
+    observedContexts.delete(key);
+    observedContexts.set(key, normalized);
+    while (observedContexts.size > MAX_OBSERVED_CONTEXTS) {
+      const oldestKey = observedContexts.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      observedContexts.delete(oldestKey);
+    }
+  }
+  function getObservedGrokRateLimitContexts() {
+    return [...observedContexts.values()];
+  }
+  function getLatestObservedGrokRateLimitContext() {
+    const contexts = getObservedGrokRateLimitContexts();
+    return contexts[contexts.length - 1];
+  }
+  function grokMeterKeyPrefix(modelName, requestKind) {
+    return `${modelName}:${requestKind.toLowerCase()}`;
+  }
+  function contextKey(context) {
+    return grokMeterKeyPrefix(
+      context.modelName,
+      context.requestKind ?? DEFAULT_REQUEST_KIND
+    );
+  }
+  function isSafeGrokModelName(value) {
+    return /^[A-Za-z0-9._:-]{1,120}$/.test(value);
+  }
+  function isSafeGrokRequestKind(value) {
+    return value !== void 0 && /^[A-Z_]{1,40}$/.test(value);
   }
   function fetchPlatformUsage(platform2, fetcher) {
     if (platform2 === "grok") {
@@ -1959,10 +2139,11 @@ button {
   }
   function normalizeInterceptedMeters(args) {
     if (args.platform === "grok") {
-      const candidate = candidateForEndpoint(args.endpointKey);
+      const usageContext = args.usageContext ?? grokRateLimitContextFromJson(args.json);
+      rememberGrokRateLimitContext(usageContext);
       return normalizeGrokRateLimit(args.json, {
-        modelName: candidate?.modelName ?? "intercepted",
-        labelPrefix: candidate?.labelPrefix ?? "Grok",
+        modelName: usageContext?.modelName,
+        requestKind: usageContext?.requestKind,
         source: "intercepted"
       });
     }
@@ -2089,7 +2270,11 @@ button {
       stopCodexProbe = probeCodexAnalyticsUsage();
     };
     const applySnapshot = async (snapshot) => {
-      currentSnapshot = mergeUsageSnapshots(currentSnapshot, snapshot);
+      const shouldReplace = platformId === "grok" && snapshot.source === "intercepted";
+      currentSnapshot = mergeUsageSnapshots(
+        shouldReplace ? null : currentSnapshot,
+        snapshot
+      );
       widget.setSnapshot(currentSnapshot);
       await setCachedSnapshot(currentSnapshot);
     };
@@ -2161,7 +2346,8 @@ button {
         url: message.url,
         json: message.json,
         ts: message.ts,
-        endpointKey: message.endpointKey
+        endpointKey: message.endpointKey,
+        usageContext: message.usageContext
       });
       if (snapshot.meters.length === 0) {
         return;

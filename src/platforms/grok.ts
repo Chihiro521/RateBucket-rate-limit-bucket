@@ -1,6 +1,6 @@
 import type {
   BridgeResponse,
-  EndpointKey,
+  UsageRequestContext,
   UsageEndpointFetcher,
   UsageMeter,
   UsageSnapshot,
@@ -10,24 +10,27 @@ import {
   asRecord,
   getNumber,
   getRecord,
+  getString,
   percentFromRatioOrPercent
 } from "../utils/safeJson";
 import { formatUsageError, usageErrorFromBridge } from "./errors";
 
-export const GROK_MODEL_CANDIDATES = [
-  { modelName: "grok-3", endpointKey: "grok:grok-3", labelPrefix: "Grok" },
-  {
-    modelName: "grok-4-heavy",
-    endpointKey: "grok:grok-4-heavy",
-    labelPrefix: "Grok Heavy"
-  }
-] as const;
+const GROK_ENDPOINT_KEY = "grok:rate-limits" as const;
+const MAX_OBSERVED_CONTEXTS = 12;
+const DEFAULT_REQUEST_KIND = "DEFAULT";
 
-type GrokModelCandidate = (typeof GROK_MODEL_CANDIDATES)[number];
+type GrokRateLimitContext = {
+  modelName: string;
+  requestKind?: string;
+};
+
+const observedContexts = new Map<string, GrokRateLimitContext>();
 
 function makeMeter(args: {
   key: string;
   label: string;
+  modelName?: string;
+  requestKind?: string;
   remaining: number | null;
   total: number | null;
   windowSeconds: number | null;
@@ -61,6 +64,8 @@ function makeMeter(args: {
   return {
     key: args.key,
     label: args.label,
+    modelName: args.modelName,
+    requestKind: args.requestKind,
     remaining: args.remaining,
     total: args.total,
     used,
@@ -77,6 +82,7 @@ export function normalizeGrokRateLimit(
   json: unknown,
   options: {
     modelName?: string;
+    requestKind?: string;
     labelPrefix?: string;
     source?: UsageSource;
   } = {}
@@ -86,14 +92,30 @@ export function normalizeGrokRateLimit(
     return [];
   }
   const source = options.source ?? "api";
-  const modelName = options.modelName ?? "unknown";
-  const labelPrefix = options.labelPrefix ?? "Grok";
+  const modelName =
+    getString(record, "modelName") ??
+    getString(record, "model") ??
+    getString(record, "modelId") ??
+    options.modelName ??
+    "unknown";
+  const requestKind =
+    getString(record, "requestKind") ??
+    getString(record, "kind") ??
+    options.requestKind ??
+    DEFAULT_REQUEST_KIND;
+  const displayName =
+    getString(record, "displayName") ?? getString(record, "modelDisplayName");
+  const labelPrefix = options.labelPrefix ?? displayName ?? modelName;
+  const meterKeyPrefix = grokMeterKeyPrefix(modelName, requestKind);
+  const requestKindLabel = requestKind === DEFAULT_REQUEST_KIND ? "" : ` · ${requestKind}`;
   const windowSeconds = getNumber(record, "windowSizeSeconds");
   const meters: UsageMeter[] = [];
 
   const queryMeter = makeMeter({
-    key: `${modelName}:queries`,
-    label: `${labelPrefix} query limit`,
+    key: `${meterKeyPrefix}:queries`,
+    label: `${labelPrefix}${requestKindLabel} query limit`,
+    modelName,
+    requestKind,
     remaining: getNumber(record, "remainingQueries"),
     total: getNumber(record, "totalQueries"),
     windowSeconds,
@@ -105,8 +127,10 @@ export function normalizeGrokRateLimit(
   }
 
   const tokenMeter = makeMeter({
-    key: `${modelName}:tokens`,
-    label: `${labelPrefix} token limit`,
+    key: `${meterKeyPrefix}:tokens`,
+    label: `${labelPrefix}${requestKindLabel} token limit`,
+    modelName,
+    requestKind,
     remaining: getNumber(record, "remainingTokens"),
     total: getNumber(record, "totalTokens"),
     windowSeconds,
@@ -120,8 +144,10 @@ export function normalizeGrokRateLimit(
   const lowEffort = getRecord(record, "lowEffortRateLimits");
   if (lowEffort) {
     const meter = makeMeter({
-      key: `${modelName}:low-effort`,
-      label: `${labelPrefix} Low / Fast / Normal`,
+      key: `${meterKeyPrefix}:low-effort`,
+      label: `${labelPrefix}${requestKindLabel} Low / Fast / Normal`,
+      modelName,
+      requestKind,
       remaining: getNumber(lowEffort, "remainingQueries"),
       total: getNumber(lowEffort, "totalQueries"),
       windowSeconds,
@@ -137,8 +163,10 @@ export function normalizeGrokRateLimit(
   const highEffort = getRecord(record, "highEffortRateLimits");
   if (highEffort) {
     const meter = makeMeter({
-      key: `${modelName}:high-effort`,
-      label: `${labelPrefix} High / Thinking / Expert`,
+      key: `${meterKeyPrefix}:high-effort`,
+      label: `${labelPrefix}${requestKindLabel} High / Thinking / Expert`,
+      modelName,
+      requestKind,
       remaining: getNumber(highEffort, "remainingQueries"),
       total: getNumber(highEffort, "totalQueries"),
       windowSeconds,
@@ -154,6 +182,28 @@ export function normalizeGrokRateLimit(
   return meters;
 }
 
+export function grokRateLimitContextFromJson(
+  json: unknown
+): UsageRequestContext | undefined {
+  const record = asRecord(json);
+  if (!record) {
+    return undefined;
+  }
+  const modelName =
+    getString(record, "modelName") ??
+    getString(record, "model") ??
+    getString(record, "modelId");
+  const requestKind =
+    getString(record, "requestKind") ?? getString(record, "kind");
+  if (!modelName && !requestKind) {
+    return undefined;
+  }
+  return {
+    modelName: modelName ?? undefined,
+    requestKind: requestKind ?? undefined
+  };
+}
+
 function responseFailure(response: BridgeResponse): string {
   return formatUsageError(
     usageErrorFromBridge(response),
@@ -166,17 +216,36 @@ export async function fetchGrokUsage(
 ): Promise<UsageSnapshot> {
   const meters: UsageMeter[] = [];
   const failures: string[] = [];
+  const latestContext = getLatestObservedGrokRateLimitContext();
+  const contexts = latestContext ? [latestContext] : [];
 
-  for (const candidate of GROK_MODEL_CANDIDATES) {
-    const response = await fetcher(candidate.endpointKey);
+  if (contexts.length === 0) {
+    return {
+      platform: "grok",
+      meters,
+      source: "unknown",
+      updatedAt: Date.now(),
+      status: "unknown",
+      debug: {
+        endpoint: GROK_ENDPOINT_KEY,
+        parser: "grok.rateLimit.dynamic"
+      }
+    };
+  }
+
+  for (const context of contexts) {
+    const response = await fetcher(GROK_ENDPOINT_KEY, {
+      modelName: context.modelName,
+      requestKind: context.requestKind ?? DEFAULT_REQUEST_KIND
+    });
     if (!response.ok) {
       failures.push(responseFailure(response));
       continue;
     }
     meters.push(
       ...normalizeGrokRateLimit(response.json, {
-        modelName: candidate.modelName,
-        labelPrefix: candidate.labelPrefix,
+        modelName: context.modelName,
+        requestKind: context.requestKind,
         source: "api"
       })
     );
@@ -197,14 +266,72 @@ export async function fetchGrokUsage(
           : "unknown",
     errorMessage: failures[0],
     debug: {
-      endpoint: GROK_MODEL_CANDIDATES.map((item) => item.endpointKey).join(","),
-      parser: "grok.rateLimit"
+      endpoint: contexts
+        .map(
+          (context) =>
+            `${GROK_ENDPOINT_KEY}:${context.modelName}:${context.requestKind ?? DEFAULT_REQUEST_KIND}`
+        )
+        .join(","),
+      parser: "grok.rateLimit.dynamic"
     }
   };
 }
 
-export function candidateForEndpoint(
-  endpointKey: EndpointKey | undefined
-): GrokModelCandidate | undefined {
-  return GROK_MODEL_CANDIDATES.find((item) => item.endpointKey === endpointKey);
+export function rememberGrokRateLimitContext(
+  context: UsageRequestContext | undefined
+): void {
+  if (!context?.modelName || !isSafeGrokModelName(context.modelName)) {
+    return;
+  }
+  const requestKind = isSafeGrokRequestKind(context.requestKind)
+    ? context.requestKind
+    : DEFAULT_REQUEST_KIND;
+  const normalized = {
+    modelName: context.modelName,
+    requestKind
+  };
+  const key = contextKey(normalized);
+  observedContexts.delete(key);
+  observedContexts.set(key, normalized);
+  while (observedContexts.size > MAX_OBSERVED_CONTEXTS) {
+    const oldestKey = observedContexts.keys().next().value as string | undefined;
+    if (!oldestKey) {
+      break;
+    }
+    observedContexts.delete(oldestKey);
+  }
+}
+
+export function getObservedGrokRateLimitContexts(): GrokRateLimitContext[] {
+  return [...observedContexts.values()];
+}
+
+export function getLatestObservedGrokRateLimitContext():
+  | GrokRateLimitContext
+  | undefined {
+  const contexts = getObservedGrokRateLimitContexts();
+  return contexts[contexts.length - 1];
+}
+
+export function clearObservedGrokRateLimitContexts(): void {
+  observedContexts.clear();
+}
+
+function grokMeterKeyPrefix(modelName: string, requestKind: string): string {
+  return `${modelName}:${requestKind.toLowerCase()}`;
+}
+
+function contextKey(context: GrokRateLimitContext): string {
+  return grokMeterKeyPrefix(
+    context.modelName,
+    context.requestKind ?? DEFAULT_REQUEST_KIND
+  );
+}
+
+function isSafeGrokModelName(value: string): boolean {
+  return /^[A-Za-z0-9._:-]{1,120}$/.test(value);
+}
+
+function isSafeGrokRequestKind(value: string | undefined): value is string {
+  return value !== undefined && /^[A-Z_]{1,40}$/.test(value);
 }

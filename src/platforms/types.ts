@@ -7,6 +7,8 @@ export type Confidence = "high" | "medium" | "low";
 export type UsageMeter = {
   key: string;
   label: string;
+  modelName?: string;
+  requestKind?: string;
   remaining?: number | null;
   total?: number | null;
   used?: number | null;
@@ -47,8 +49,7 @@ export type UsageError = {
 };
 
 export type EndpointKey =
-  | "grok:grok-3"
-  | "grok:grok-4-heavy"
+  | "grok:rate-limits"
   | "claude:organizations"
   | "claude:usage"
   | "chatgpt:conversationInit"
@@ -89,8 +90,14 @@ export type InterceptedUsageMessage = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   url: string;
+  usageContext?: UsageRequestContext;
   json: unknown;
   ts: number;
+};
+
+export type UsageRequestContext = {
+  modelName?: string;
+  requestKind?: string;
 };
 
 export type UsageEndpointFetcher = (

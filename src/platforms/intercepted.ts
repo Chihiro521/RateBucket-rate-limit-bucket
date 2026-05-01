@@ -1,7 +1,17 @@
 import { normalizeClaudeUsage } from "./claude";
-import { candidateForEndpoint, normalizeGrokRateLimit } from "./grok";
+import {
+  grokRateLimitContextFromJson,
+  normalizeGrokRateLimit,
+  rememberGrokRateLimitContext
+} from "./grok";
 import { normalizeChatGptIntercepted } from "./chatgpt";
-import type { EndpointKey, PlatformId, UsageMeter, UsageSnapshot } from "./types";
+import type {
+  EndpointKey,
+  PlatformId,
+  UsageMeter,
+  UsageRequestContext,
+  UsageSnapshot
+} from "./types";
 
 export function normalizeInterceptedUsage(args: {
   platform: PlatformId;
@@ -9,6 +19,7 @@ export function normalizeInterceptedUsage(args: {
   json: unknown;
   ts: number;
   endpointKey?: EndpointKey;
+  usageContext?: UsageRequestContext;
 }): UsageSnapshot {
   const meters = normalizeInterceptedMeters(args);
   return {
@@ -29,12 +40,14 @@ function normalizeInterceptedMeters(args: {
   url: string;
   json: unknown;
   endpointKey?: EndpointKey;
+  usageContext?: UsageRequestContext;
 }): UsageMeter[] {
   if (args.platform === "grok") {
-    const candidate = candidateForEndpoint(args.endpointKey);
+    const usageContext = args.usageContext ?? grokRateLimitContextFromJson(args.json);
+    rememberGrokRateLimitContext(usageContext);
     return normalizeGrokRateLimit(args.json, {
-      modelName: candidate?.modelName ?? "intercepted",
-      labelPrefix: candidate?.labelPrefix ?? "Grok",
+      modelName: usageContext?.modelName,
+      requestKind: usageContext?.requestKind,
       source: "intercepted"
     });
   }
