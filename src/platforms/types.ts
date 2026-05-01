@@ -13,6 +13,7 @@ export type UsageMeter = {
   total?: number | null;
   used?: number | null;
   usedPercent?: number | null;
+  remainingPercent?: number | null;
   resetAt?: string | number | null;
   resetAfterSeconds?: number | null;
   windowSeconds?: number | null;

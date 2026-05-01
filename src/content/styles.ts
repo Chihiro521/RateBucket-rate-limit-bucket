@@ -358,6 +358,10 @@ button {
   background: #2563eb;
 }
 
+.bar-fill.remaining-fill {
+  background: #22c55e;
+}
+
 .meter-bottom {
   margin-top: 6px;
   display: flex;

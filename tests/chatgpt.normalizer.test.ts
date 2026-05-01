@@ -64,7 +64,45 @@ describe("chatgpt normalizer", () => {
       "Code Review"
     ]);
     expect(meters[0].usedPercent).toBe(40);
+    expect(meters[0].remainingPercent).toBe(60);
     expect(meters[1].usedPercent).toBe(85);
+    expect(meters[1].remainingPercent).toBe(15);
+  });
+
+  it("normalizes additional ChatGPT usage windows from wham usage", () => {
+    const meters = normalizeChatGptWhamUsage({
+      rate_limit: {
+        primary_window: {
+          used_percent: 0.01,
+          reset_at: 1_775_000_000
+        }
+      },
+      model_rate_limits: [
+        {
+          label: "GPT-5.3-Codex-Spark 5 小时使用限额",
+          remaining_percent: 100,
+          reset_at: 1_775_001_000
+        },
+        {
+          title: "GPT-5.3-Codex-Spark 每周使用限额",
+          percent_remaining: 0.98,
+          reset_at: 1_775_002_000
+        }
+      ]
+    });
+
+    expect(meters.map((meter) => meter.label)).toContain(
+      "GPT-5.3-Codex-Spark 5 小时使用限额"
+    );
+    expect(meters.map((meter) => meter.label)).toContain(
+      "GPT-5.3-Codex-Spark 每周使用限额"
+    );
+    expect(
+      meters.find((meter) => meter.label.includes("5 小时"))?.remainingPercent
+    ).toBe(100);
+    expect(
+      meters.find((meter) => meter.label.includes("每周"))?.remainingPercent
+    ).toBe(98);
   });
 
   it("normalizes codex-named usage data from wham usage", () => {
@@ -143,7 +181,40 @@ describe("chatgpt normalizer", () => {
     expect(meters[0]).toMatchObject({
       label: "Codex Weekly",
       usedPercent: 75,
+      remainingPercent: 25,
       resetAfterSeconds: 3600
+    });
+  });
+
+  it("normalizes deeper codex settings windows with remaining percentages", () => {
+    const meters = normalizeChatGptCodexSettingsUsage({
+      data: {
+        limits: {
+          windows: [
+            {
+              title: "5 小时使用限额",
+              remaining_percentage: 99,
+              reset_at: "2026-05-01T20:28:00Z"
+            },
+            {
+              model_name: "GPT-5.3-Codex-Spark",
+              window_name: "weekly",
+              remainingPercent: 0.01,
+              reset_at: "2026-05-07T16:22:00Z"
+            }
+          ]
+        }
+      }
+    });
+
+    expect(meters).toHaveLength(2);
+    expect(meters[0]).toMatchObject({
+      label: "5 小时使用限额",
+      remainingPercent: 99
+    });
+    expect(meters[1]).toMatchObject({
+      label: "GPT-5.3-Codex-Spark Weekly 使用限额",
+      remainingPercent: 1
     });
   });
 

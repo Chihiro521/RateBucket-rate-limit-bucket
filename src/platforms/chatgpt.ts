@@ -76,16 +76,56 @@ function normalizeWindowMeter(args: {
   record: Record<string, unknown>;
   source: UsageSource;
   rawKind: string;
+  displayAsRemaining?: boolean;
 }): UsageMeter | null {
-  const usedPercent = percentFromRatioOrPercent(
-    getNumber(args.record, "used_percent")
+  const explicitRemainingPercent = percentFromRatioOrPercent(
+    numberFromKeys(args.record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct"
+    ])
   );
-  const resetAt = args.record.reset_at;
-  const resetValue =
-    typeof resetAt === "string" || typeof resetAt === "number" ? resetAt : null;
-  const windowSeconds = getNumber(args.record, "limit_window_seconds");
+  const rawUsedPercent = percentFromRatioOrPercent(
+    numberFromKeys(args.record, [
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed",
+      "utilization"
+    ])
+  );
+  const remainingPercent =
+    explicitRemainingPercent ??
+    (args.displayAsRemaining && rawUsedPercent !== null
+      ? percentFromRatioOrPercent(100 - rawUsedPercent)
+      : null);
+  const usedPercent =
+    remainingPercent !== null
+      ? percentFromRatioOrPercent(100 - remainingPercent)
+      : rawUsedPercent;
+  const resetValue = resetValueFromRecord(args.record);
+  const windowSeconds = numberFromKeys(args.record, [
+    "limit_window_seconds",
+    "limitWindowSeconds",
+    "window_seconds",
+    "windowSeconds",
+    "window_size_seconds",
+    "windowSizeSeconds"
+  ]);
 
-  if (usedPercent === null && resetValue === null && windowSeconds === null) {
+  if (
+    usedPercent === null &&
+    remainingPercent === null &&
+    resetValue === null &&
+    windowSeconds === null
+  ) {
     return null;
   }
 
@@ -93,6 +133,7 @@ function normalizeWindowMeter(args: {
     key: args.key,
     label: args.label,
     usedPercent,
+    remainingPercent,
     resetAt: resetValue,
     windowSeconds,
     source: args.source,
@@ -119,7 +160,8 @@ export function normalizeChatGptWhamUsage(
         label: "Primary window",
         record: primary,
         source,
-        rawKind: "rate_limit.primary_window"
+        rawKind: "rate_limit.primary_window",
+        displayAsRemaining: true
       });
       if (meter) {
         meters.push(meter);
@@ -132,7 +174,8 @@ export function normalizeChatGptWhamUsage(
         label: "Weekly window",
         record: secondary,
         source,
-        rawKind: "rate_limit.secondary_window"
+        rawKind: "rate_limit.secondary_window",
+        displayAsRemaining: true
       });
       if (meter) {
         meters.push(meter);
@@ -150,7 +193,8 @@ export function normalizeChatGptWhamUsage(
       label: "Code Review",
       record: codeReviewPrimary,
       source,
-      rawKind: "code_review_rate_limit.primary_window"
+      rawKind: "code_review_rate_limit.primary_window",
+      displayAsRemaining: true
     });
     if (meter) {
       meters.push(meter);
@@ -173,9 +217,35 @@ export function normalizeChatGptWhamUsage(
     }
   }
 
+  meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
   meters.push(...normalizeWhamCodexNamedUsage(root, source));
 
-  return meters;
+  return dedupeMeters(meters);
+}
+
+function normalizeAdditionalWhamUsageWindows(
+  root: Record<string, unknown>,
+  source: UsageSource
+): UsageMeter[] {
+  const knownPaths = new Set([
+    "root.rate_limit.primary_window",
+    "root.rate_limit.secondary_window",
+    "root.code_review_rate_limit.primary_window",
+    "root.credits"
+  ]);
+  return collectUsageCandidates(root, "root", {
+    maxDepth: 7,
+    includeRecord: (path, record) =>
+      !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
+  })
+    .map((candidate) =>
+      normalizeGenericUsageObject(candidate.path, candidate.record, source, {
+        keyPrefix: "wham",
+        rawKind: "chatgpt.usage.window",
+        displayAsRemaining: true
+      })
+    )
+    .filter((meter): meter is UsageMeter => meter !== null);
 }
 
 function normalizeWhamCodexNamedUsage(
@@ -308,6 +378,192 @@ function collectCodexUsageCandidates(
   root: Record<string, unknown>,
   rootPath: string
 ): Array<{ path: string; record: Record<string, unknown> }> {
+  return collectUsageCandidates(root, rootPath, {
+    maxDepth: 7,
+    includeRecord: (_path, record) => isCodexUsageLike(record)
+  });
+}
+
+function isCodexUsageLike(record: Record<string, unknown>): boolean {
+  return (
+    numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null ||
+    numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !==
+      null ||
+    numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null ||
+    numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null ||
+    numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage"
+    ]) !== null ||
+    numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null ||
+    stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null
+  );
+}
+
+function isGeneralChatGptUsageLike(
+  path: string,
+  record: Record<string, unknown>
+): boolean {
+  if (!isCodexUsageLike(record)) {
+    return false;
+  }
+  const normalizedPath = path.toLowerCase();
+  const label = usageLabel(record, path).toLowerCase();
+  return (
+    normalizedPath.includes("limit") ||
+    normalizedPath.includes("window") ||
+    normalizedPath.includes("usage") ||
+    normalizedPath.includes("quota") ||
+    normalizedPath.includes("bucket") ||
+    label.includes("limit") ||
+    label.includes("window") ||
+    label.includes("usage") ||
+    label.includes("额度") ||
+    label.includes("使用限额")
+  );
+}
+
+function normalizeCodexUsageObject(
+  path: string,
+  record: Record<string, unknown>,
+  source: UsageSource
+): UsageMeter | null {
+  return normalizeGenericUsageObject(path, record, source, {
+    keyPrefix: "codex",
+    rawKind: "codex.settings.usage",
+    displayAsRemaining: true
+  });
+}
+
+function normalizeGenericUsageObject(
+  path: string,
+  record: Record<string, unknown>,
+  source: UsageSource,
+  options: {
+    keyPrefix: string;
+    rawKind: string;
+    displayAsRemaining: boolean;
+  }
+): UsageMeter | null {
+  const remaining = numberFromKeys(record, [
+    "remaining",
+    "remaining_credits",
+    "remainingCredits"
+  ]);
+  const total = numberFromKeys(record, [
+    "total",
+    "limit",
+    "quota",
+    "total_credits",
+    "totalCredits"
+  ]);
+  const used =
+    numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ??
+    (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
+  const explicitRemainingPercent = percentFromRatioOrPercent(
+    numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct"
+    ])
+  );
+  const rawUsedPercent = percentFromRatioOrPercent(
+    numberFromKeys(record, [
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed",
+      "utilization"
+    ])
+  );
+  const remainingPercent =
+    explicitRemainingPercent ??
+    (options.displayAsRemaining && rawUsedPercent !== null
+      ? percentFromRatioOrPercent(100 - rawUsedPercent)
+      : null);
+  const usedPercent =
+    remainingPercent !== null
+      ? percentFromRatioOrPercent(100 - remainingPercent)
+      : rawUsedPercent;
+  const resetAt = resetValueFromRecord(record);
+  const resetAfterSeconds = numberFromKeys(record, [
+    "reset_after",
+    "resetAfter",
+    "reset_after_seconds"
+  ]);
+  const windowSeconds = numberFromKeys(record, [
+    "limit_window_seconds",
+    "limitWindowSeconds",
+    "window_seconds",
+    "windowSeconds",
+    "window_size_seconds",
+    "windowSizeSeconds"
+  ]);
+  const label = usageLabel(record, path);
+
+  if (
+    remaining === null &&
+    total === null &&
+    used === null &&
+    usedPercent === null &&
+    remainingPercent === null &&
+    resetAt === null &&
+    resetAfterSeconds === null &&
+    windowSeconds === null
+  ) {
+    return null;
+  }
+
+  return {
+    key: `${options.keyPrefix}:${path}`,
+    label,
+    remaining,
+    total,
+    used,
+    usedPercent:
+      usedPercent ??
+      (used !== null && total !== null && total > 0
+        ? percentFromRatioOrPercent(used / total)
+        : null),
+    remainingPercent:
+      remainingPercent ??
+      (remaining !== null && total !== null && total > 0
+        ? percentFromRatioOrPercent(remaining / total)
+        : null),
+    resetAt,
+    resetAfterSeconds,
+    windowSeconds,
+    source,
+    confidence:
+      remaining !== null ||
+      total !== null ||
+      usedPercent !== null ||
+      remainingPercent !== null
+        ? "medium"
+        : "low",
+    rawKind: options.rawKind
+  };
+}
+
+function collectUsageCandidates(
+  root: Record<string, unknown>,
+  rootPath: string,
+  options: {
+    maxDepth: number;
+    includeRecord: (path: string, record: Record<string, unknown>) => boolean;
+  }
+): Array<{ path: string; record: Record<string, unknown> }> {
   const queue: Array<{ path: string; value: unknown; depth: number }> = [
     { path: rootPath, value: root, depth: 0 }
   ];
@@ -315,14 +571,14 @@ function collectCodexUsageCandidates(
 
   while (queue.length > 0) {
     const item = queue.shift();
-    if (!item || item.depth > 4) {
+    if (!item || item.depth > options.maxDepth) {
       continue;
     }
     const record = asRecord(item.value);
     if (!record) {
       continue;
     }
-    if (isCodexUsageLike(record)) {
+    if (options.includeRecord(item.path, record)) {
       candidates.push({ path: item.path, record });
     }
     for (const [key, value] of Object.entries(record)) {
@@ -347,82 +603,98 @@ function collectCodexUsageCandidates(
   return candidates;
 }
 
-function isCodexUsageLike(record: Record<string, unknown>): boolean {
-  return (
-    numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null ||
-    numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !==
-      null ||
-    numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null ||
-    numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null ||
-    numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null ||
-    stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null
-  );
-}
-
-function normalizeCodexUsageObject(
-  path: string,
-  record: Record<string, unknown>,
-  source: UsageSource
-): UsageMeter | null {
-  const remaining = numberFromKeys(record, [
-    "remaining",
-    "remaining_credits",
-    "remainingCredits"
-  ]);
-  const total = numberFromKeys(record, [
-    "total",
-    "limit",
-    "quota",
-    "total_credits",
-    "totalCredits"
-  ]);
-  const used =
-    numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ??
-    (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
-  const usedPercent = percentFromRatioOrPercent(
-    numberFromKeys(record, ["used_percent", "usedPercent", "utilization"])
-  );
-  const resetAt = stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]);
-  const resetAfterSeconds = numberFromKeys(record, [
-    "reset_after",
-    "resetAfter",
-    "reset_after_seconds"
-  ]);
-  const label =
+function usageLabel(record: Record<string, unknown>, path: string): string {
+  const direct =
     getString(record, "label") ??
+    getString(record, "title") ??
     getString(record, "name") ??
+    getString(record, "display_name") ??
+    getString(record, "displayName") ??
     getString(record, "feature_name") ??
-    "Codex usage";
-
-  if (
-    remaining === null &&
-    total === null &&
-    used === null &&
-    usedPercent === null &&
-    resetAt === null &&
-    resetAfterSeconds === null
-  ) {
-    return null;
+    getString(record, "bucket_name") ??
+    getString(record, "bucketName") ??
+    getString(record, "limit_name") ??
+    getString(record, "limitName");
+  if (direct) {
+    const titled = displayUsageLabel(direct);
+    if (
+      path.toLowerCase().includes("codex") &&
+      isSimpleUsageKey(direct) &&
+      !/codex|gpt/i.test(titled)
+    ) {
+      return `Codex ${titled}`;
+    }
+    return titled;
   }
 
-  return {
-    key: `codex:${path}`,
-    label: label === "Codex usage" ? label : `Codex ${titleFromKey(label)}`,
-    remaining,
-    total,
-    used,
-    usedPercent:
-      usedPercent ??
-      (used !== null && total !== null && total > 0
-        ? percentFromRatioOrPercent(used / total)
-        : null),
-    resetAt,
-    resetAfterSeconds,
-    source,
-    confidence:
-      remaining !== null || total !== null || usedPercent !== null ? "medium" : "low",
-    rawKind: "codex.settings.usage"
-  };
+  const model =
+    getString(record, "model") ??
+    getString(record, "model_name") ??
+    getString(record, "modelName") ??
+    getString(record, "model_slug") ??
+    getString(record, "modelSlug");
+  const windowName =
+    getString(record, "window") ??
+    getString(record, "window_name") ??
+    getString(record, "windowName") ??
+    getString(record, "period") ??
+    getString(record, "period_name") ??
+    getString(record, "periodName");
+  if (model && windowName) {
+    return `${model} ${titleFromKey(windowName)} 使用限额`;
+  }
+  if (model) {
+    return `${model} 使用限额`;
+  }
+
+  const normalizedPath = path.toLowerCase();
+  if (normalizedPath === "codex" || normalizedPath.includes("codex_usage")) {
+    return "Codex usage";
+  }
+
+  const pathLabel = path
+    .split(".")
+    .filter((part) => part !== "root" && !/^\d+$/.test(part))
+    .slice(-3)
+    .join(" ");
+  return pathLabel ? titleFromKey(pathLabel) : "Codex usage";
+}
+
+function displayUsageLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!isSimpleUsageKey(trimmed)) {
+    return trimmed;
+  }
+  return titleFromKey(trimmed);
+}
+
+function isSimpleUsageKey(value: string): boolean {
+  return /^[A-Za-z0-9_]+$/.test(value.trim());
+}
+
+function resetValueFromRecord(record: Record<string, unknown>): string | number | null {
+  return stringOrNumberFromKeys(record, [
+    "reset_at",
+    "resetAt",
+    "resets_at",
+    "resetsAt",
+    "reset_time",
+    "resetTime",
+    "resets"
+  ]);
+}
+
+function dedupeMeters(meters: UsageMeter[]): UsageMeter[] {
+  const seen = new Set<string>();
+  const result: UsageMeter[] = [];
+  for (const meter of meters) {
+    if (seen.has(meter.key)) {
+      continue;
+    }
+    seen.add(meter.key);
+    result.push(meter);
+  }
+  return result;
 }
 
 function numberFromKeys(

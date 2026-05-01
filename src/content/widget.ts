@@ -475,6 +475,9 @@ export class UsageWidget {
     const progress = meterProgress(meter);
     const bar = el("div", "bar");
     const fill = el("div", "bar-fill");
+    if (typeof meter.remainingPercent === "number") {
+      fill.classList.add("remaining-fill");
+    }
     fill.style.width = `${progress}%`;
     bar.append(fill);
 
@@ -522,6 +525,7 @@ export class UsageWidget {
   private criticalSummary(): string {
     const meters = this.chatGptMeters();
     const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0)
+      ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5)
       ?? meters
         .filter((meter) => typeof meter.usedPercent === "number")
         .sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0]
@@ -579,6 +583,9 @@ export class UsageWidget {
 }
 
 function formatMeterValue(meter: UsageMeter): string {
+  if (typeof meter.remainingPercent === "number") {
+    return `${Math.round(meter.remainingPercent)}% 剩余`;
+  }
   if (typeof meter.remaining === "number" && typeof meter.total === "number") {
     return `${meter.remaining}/${meter.total}`;
   }
@@ -606,7 +613,11 @@ function formatMeterLabel(meter: UsageMeter): string {
     .replace(/\bHigh \/ Thinking \/ Expert\b/g, "高 / 思考 / 专家")
     .replace(/\bCodex usage\b/gi, "Codex 用量")
     .replace(/\bPrimary window\b/gi, "主窗口")
-    .replace(/\bWeekly window\b/gi, "每周窗口");
+    .replace(/\bWeekly window\b/gi, "每周窗口")
+    .replace(/\b5[- ]?hour\b/gi, "5 小时")
+    .replace(/\bweekly\b/gi, "每周")
+    .replace(/\busage limit\b/gi, "使用限额")
+    .replace(/\brate limit\b/gi, "使用限额");
 }
 
 function sourceLabel(source: string): string {
@@ -622,6 +633,9 @@ function statusLabel(status: string): string {
 }
 
 function meterProgress(meter: UsageMeter): number {
+  if (typeof meter.remainingPercent === "number") {
+    return clampPercent(meter.remainingPercent);
+  }
   if (typeof meter.usedPercent === "number") {
     return clampPercent(meter.usedPercent);
   }
@@ -645,6 +659,9 @@ function clamp(value: number, min: number, max: number): number {
 
 function isAlertMeter(meter: UsageMeter): boolean {
   if (typeof meter.remaining === "number" && meter.remaining <= 0) {
+    return true;
+  }
+  if (typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) {
     return true;
   }
   if (typeof meter.usedPercent === "number" && meter.usedPercent >= 95) {
