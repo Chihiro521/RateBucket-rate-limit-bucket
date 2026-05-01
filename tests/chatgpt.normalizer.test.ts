@@ -123,6 +123,12 @@ describe("chatgpt normalizer", () => {
     const codexMeter = meters.find(
       (meter) => meter.rawKind === "codex.settings.usage"
     );
+    expect(
+      meters.filter((meter) => meter.rawKind === "codex.settings.usage")
+    ).toHaveLength(1);
+    expect(meters.some((meter) => meter.key === "wham:root.codex_usage")).toBe(
+      false
+    );
     expect(codexMeter).toMatchObject({
       label: "Codex usage",
       remaining: 7,

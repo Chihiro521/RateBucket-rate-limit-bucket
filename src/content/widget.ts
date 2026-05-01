@@ -144,7 +144,7 @@ export class UsageWidget {
       el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
       node("span", "collapsed-main", [
         textEl("span", "platform", "GPT"),
-        textEl("span", "primary", this.primaryValue())
+        textEl("span", "primary", this.chatGptPrimaryValue())
       ])
     );
     return button;
@@ -504,6 +504,15 @@ export class UsageWidget {
     if (byRemaining?.remaining !== undefined && byRemaining.remaining !== null) {
       return `${byRemaining.remaining}`;
     }
+    const byRemainingPercent = meters
+      .filter((meter) => typeof meter.remainingPercent === "number")
+      .sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0];
+    if (
+      byRemainingPercent?.remainingPercent !== undefined &&
+      byRemainingPercent.remainingPercent !== null
+    ) {
+      return `${Math.round(byRemainingPercent.remainingPercent)}% 剩余`;
+    }
     const byPercent = meters.find((meter) => typeof meter.usedPercent === "number");
     if (byPercent?.usedPercent !== undefined && byPercent.usedPercent !== null) {
       return `${Math.round(byPercent.usedPercent)}%`;
@@ -535,6 +544,9 @@ export class UsageWidget {
     if (!alert) {
       return statusLabel(this.snapshot?.status ?? "unknown");
     }
+    if (typeof alert.remainingPercent === "number") {
+      return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.remainingPercent)}% 剩余`;
+    }
     if (typeof alert.usedPercent === "number") {
       return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.usedPercent)}%`;
     }
@@ -547,6 +559,20 @@ export class UsageWidget {
   private chatGptMeters(): UsageMeter[] {
     const meters = [...(this.snapshot?.meters ?? [])];
     return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
+  }
+
+  private chatGptPrimaryValue(): string {
+    const meters = this.chatGptMeters();
+    const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0)
+      ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5)
+      ?? meters
+        .filter((meter) => typeof meter.remaining === "number")
+        .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0]
+      ?? meters
+        .filter((meter) => typeof meter.remainingPercent === "number")
+        .sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0]
+      ?? meters.find((meter) => typeof meter.usedPercent === "number");
+    return alert ? formatMeterValue(alert) : "?";
   }
 
   private backoffRemainingMs(): number {

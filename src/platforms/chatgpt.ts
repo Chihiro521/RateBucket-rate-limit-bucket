@@ -408,12 +408,15 @@ function isGeneralChatGptUsageLike(
   path: string,
   record: Record<string, unknown>
 ): boolean {
+  if (isCodexPath(path)) {
+    return false;
+  }
   if (!isCodexUsageLike(record)) {
     return false;
   }
   const normalizedPath = path.toLowerCase();
   const label = usageLabel(record, path).toLowerCase();
-  return (
+  const hasUsageNameSignal =
     normalizedPath.includes("limit") ||
     normalizedPath.includes("window") ||
     normalizedPath.includes("usage") ||
@@ -423,8 +426,49 @@ function isGeneralChatGptUsageLike(
     label.includes("window") ||
     label.includes("usage") ||
     label.includes("额度") ||
-    label.includes("使用限额")
-  );
+    label.includes("使用限额");
+  const hasCountQuotaSignal =
+    numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !==
+      null &&
+    numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]) !== null;
+  const hasCurrentWindowSignal =
+    hasCountQuotaSignal ||
+    numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct",
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed",
+      "utilization"
+    ]) !== null ||
+    resetValueFromRecord(record) !== null ||
+    numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds",
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]) !== null;
+  return hasUsageNameSignal && hasCurrentWindowSignal;
 }
 
 function normalizeCodexUsageObject(

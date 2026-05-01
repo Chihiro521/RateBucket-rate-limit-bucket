@@ -916,7 +916,7 @@ button {
         el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
         node("span", "collapsed-main", [
           textEl("span", "platform", "GPT"),
-          textEl("span", "primary", this.primaryValue())
+          textEl("span", "primary", this.chatGptPrimaryValue())
         ])
       );
       return button;
@@ -1224,6 +1224,10 @@ button {
       if (byRemaining?.remaining !== void 0 && byRemaining.remaining !== null) {
         return `${byRemaining.remaining}`;
       }
+      const byRemainingPercent = meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0];
+      if (byRemainingPercent?.remainingPercent !== void 0 && byRemainingPercent.remainingPercent !== null) {
+        return `${Math.round(byRemainingPercent.remainingPercent)}% 剩余`;
+      }
       const byPercent = meters.find((meter) => typeof meter.usedPercent === "number");
       if (byPercent?.usedPercent !== void 0 && byPercent.usedPercent !== null) {
         return `${Math.round(byPercent.usedPercent)}%`;
@@ -1245,6 +1249,9 @@ button {
       if (!alert) {
         return statusLabel(this.snapshot?.status ?? "unknown");
       }
+      if (typeof alert.remainingPercent === "number") {
+        return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.remainingPercent)}% 剩余`;
+      }
       if (typeof alert.usedPercent === "number") {
         return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.usedPercent)}%`;
       }
@@ -1256,6 +1263,11 @@ button {
     chatGptMeters() {
       const meters = [...this.snapshot?.meters ?? []];
       return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
+    }
+    chatGptPrimaryValue() {
+      const meters = this.chatGptMeters();
+      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0] ?? meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0] ?? meters.find((meter) => typeof meter.usedPercent === "number");
+      return alert ? formatMeterValue(alert) : "?";
     }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
@@ -1786,12 +1798,50 @@ button {
     ]) !== null || numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null || stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null;
   }
   function isGeneralChatGptUsageLike(path, record) {
+    if (isCodexPath(path)) {
+      return false;
+    }
     if (!isCodexUsageLike(record)) {
       return false;
     }
     const normalizedPath = path.toLowerCase();
     const label = usageLabel(record, path).toLowerCase();
-    return normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
+    const hasUsageNameSignal = normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
+    const hasCountQuotaSignal = numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null && numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]) !== null;
+    const hasCurrentWindowSignal = hasCountQuotaSignal || numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct",
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed",
+      "utilization"
+    ]) !== null || resetValueFromRecord(record) !== null || numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds",
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]) !== null;
+    return hasUsageNameSignal && hasCurrentWindowSignal;
   }
   function normalizeCodexUsageObject(path, record, source) {
     return normalizeGenericUsageObject(path, record, source, {
