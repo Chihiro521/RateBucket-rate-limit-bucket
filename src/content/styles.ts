@@ -362,6 +362,52 @@ button {
   background: #22c55e;
 }
 
+.sentinel-block {
+  padding: 7px 0 4px;
+}
+
+.sentinel-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  color: color-mix(in srgb, CanvasText 78%, transparent);
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.sentinel-label {
+  color: color-mix(in srgb, CanvasText 60%, transparent);
+  font-weight: 650;
+}
+
+.sentinel-bar {
+  margin: 6px 0 7px;
+}
+
+.sentinel-risk-normal {
+  background: #22c55e;
+}
+
+.sentinel-risk-elevated {
+  background: #f59e0b;
+}
+
+.sentinel-risk-high {
+  background: #f97316;
+}
+
+.sentinel-risk-severe {
+  background: #ef4444;
+}
+
+.sentinel-explanation {
+  margin-top: 5px;
+  color: color-mix(in srgb, CanvasText 64%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .meter-bottom {
   margin-top: 6px;
   display: flex;

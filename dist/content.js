@@ -187,7 +187,7 @@
   function estimateKey(platform2) {
     return `aiUsage:${platform2}:estimate`;
   }
-  function storageGet(keys) {
+  function storageGet$1(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, (items) => {
         const error = chrome.runtime.lastError;
@@ -199,7 +199,7 @@
       });
     });
   }
-  function storageSet(items) {
+  function storageSet$1(items) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(items, () => {
         const error = chrome.runtime.lastError;
@@ -213,7 +213,7 @@
   }
   async function getCachedSnapshot(platform2) {
     const key = snapshotKey(platform2);
-    const items = await storageGet(key);
+    const items = await storageGet$1(key);
     const value = items[key];
     if (!isUsageSnapshot(value, platform2)) {
       return null;
@@ -225,35 +225,35 @@
   }
   function setCachedSnapshot(snapshot) {
     const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-    return storageSet({ [snapshotKey(snapshot.platform)]: persisted });
+    return storageSet$1({ [snapshotKey(snapshot.platform)]: persisted });
   }
   async function getLastRefreshAt(platform2) {
     const key = lastRefreshKey(platform2);
-    const items = await storageGet(key);
+    const items = await storageGet$1(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setLastRefreshAt(platform2, value) {
-    return storageSet({ [lastRefreshKey(platform2)]: value });
+    return storageSet$1({ [lastRefreshKey(platform2)]: value });
   }
   async function getBackoffUntil(platform2) {
     const key = backoffKey(platform2);
-    const items = await storageGet(key);
+    const items = await storageGet$1(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setBackoffUntil(platform2, value) {
-    return storageSet({ [backoffKey(platform2)]: value });
+    return storageSet$1({ [backoffKey(platform2)]: value });
   }
   async function getFailureCount(platform2) {
     const key = failureCountKey(platform2);
-    const items = await storageGet(key);
+    const items = await storageGet$1(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setFailureCount(platform2, value) {
-    return storageSet({ [failureCountKey(platform2)]: value });
+    return storageSet$1({ [failureCountKey(platform2)]: value });
   }
   async function getEstimateState(platform2) {
     const key = estimateKey(platform2);
-    const items = await storageGet(key);
+    const items = await storageGet$1(key);
     const value = items[key];
     if (!isEstimateState(value)) {
       return null;
@@ -268,7 +268,7 @@
       firstSentAt: existing?.firstSentAt ?? now,
       lastSentAt: now
     };
-    await storageSet({ [estimateKey(platform2)]: next });
+    await storageSet$1({ [estimateKey(platform2)]: next });
     return next;
   }
   function isUsageSnapshot(value, platform2) {
@@ -768,6 +768,52 @@ button {
   background: #22c55e;
 }
 
+.sentinel-block {
+  padding: 7px 0 4px;
+}
+
+.sentinel-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  color: color-mix(in srgb, CanvasText 78%, transparent);
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.sentinel-label {
+  color: color-mix(in srgb, CanvasText 60%, transparent);
+  font-weight: 650;
+}
+
+.sentinel-bar {
+  margin: 6px 0 7px;
+}
+
+.sentinel-risk-normal {
+  background: #22c55e;
+}
+
+.sentinel-risk-elevated {
+  background: #f59e0b;
+}
+
+.sentinel-risk-high {
+  background: #f97316;
+}
+
+.sentinel-risk-severe {
+  background: #ef4444;
+}
+
+.sentinel-explanation {
+  margin-top: 5px;
+  color: color-mix(in srgb, CanvasText 64%, transparent);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .meter-bottom {
   margin-top: 6px;
   display: flex;
@@ -864,6 +910,7 @@ button {
     chipPosition = { edge: "right", offset: 96 };
     loading = false;
     snapshot = null;
+    chatGptSentinelState = null;
     backoffUntil = 0;
     timerId;
     mount() {
@@ -880,6 +927,10 @@ button {
     }
     setLoading(value) {
       this.loading = value;
+      this.render();
+    }
+    setChatGptSentinelState(value) {
+      this.chatGptSentinelState = value;
       this.render();
     }
     setBackoffUntil(value) {
@@ -1009,13 +1060,13 @@ button {
       if (edge === "left" || edge === "right") {
         this.chipPosition = {
           edge,
-          offset: clamp(clientY - 24, margin, viewportHeight - 56)
+          offset: clamp$1(clientY - 24, margin, viewportHeight - 56)
         };
         return;
       }
       this.chipPosition = {
         edge,
-        offset: clamp(clientX - 44, margin, viewportWidth - 96)
+        offset: clamp$1(clientX - 44, margin, viewportWidth - 96)
       };
     }
     renderChatGptCollapsed() {
@@ -1080,15 +1131,56 @@ button {
       if (this.snapshot?.errorMessage) {
         content.append(textEl("div", "error", this.snapshot.errorMessage));
       }
+      const sentinelSection = this.renderChatGptSentinelSection();
+      if (sentinelSection) {
+        content.append(sentinelSection);
+      }
       const meters = this.chatGptMeters();
       if (meters.length === 0) {
-        content.append(textEl("div", "empty", "暂无用量数据"));
+        if (!sentinelSection) {
+          content.append(textEl("div", "empty", "暂无用量数据"));
+        }
         return content;
       }
       for (const section of groupChatGptMeters(meters)) {
         content.append(this.renderMeterSection(section.label, section.meters));
       }
       return content;
+    }
+    renderChatGptSentinelSection() {
+      const state = this.chatGptSentinelState;
+      if (!state) {
+        return null;
+      }
+      const section = el("section", "meter-section sentinel-section");
+      section.append(textEl("div", "meter-section-title", "账号状态"));
+      const gate = el("div", "sentinel-block");
+      gate.append(
+        this.renderSentinelRow(
+          "发送门禁",
+          `${state.sentinelRisk.label} ${state.sentinelRisk.score}/100`
+        ),
+        this.renderSentinelBar(state.sentinelRisk.score),
+        this.renderSentinelRow(
+          "PoW",
+          `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
+        ),
+        textEl("div", "sentinel-explanation", `说明：${state.explanation}`)
+      );
+      section.append(gate);
+      return section;
+    }
+    renderSentinelRow(label, value) {
+      const row = el("div", "sentinel-row");
+      row.append(textEl("span", "sentinel-label", label), textEl("span", "", value));
+      return row;
+    }
+    renderSentinelBar(score) {
+      const bar = el("div", "bar sentinel-bar");
+      const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
+      fill.style.width = `${clampPercent(score)}%`;
+      bar.append(fill);
+      return bar;
     }
     renderMeterSection(label, meters) {
       const section = el("section", "meter-section");
@@ -1341,7 +1433,19 @@ button {
   function clampPercent(value) {
     return Math.max(0, Math.min(100, value));
   }
-  function clamp(value, min, max) {
+  function sentinelRiskClass(score) {
+    if (score >= 75) {
+      return "sentinel-risk-severe";
+    }
+    if (score >= 50) {
+      return "sentinel-risk-high";
+    }
+    if (score >= 25) {
+      return "sentinel-risk-elevated";
+    }
+    return "sentinel-risk-normal";
+  }
+  function clamp$1(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
   function isAlertMeter(meter) {
@@ -2592,6 +2696,176 @@ button {
     }
     return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
   }
+  const CHATGPT_SENTINEL_EVENT = "__AIQM_SENTINEL_EVENT__";
+  function sanitizeSentinelObservation(value) {
+    const record = asRecord(value);
+    if (!record || record.source !== "chatgpt-sentinel") {
+      return null;
+    }
+    const urlKind = record.urlKind;
+    if (urlKind !== "chat-requirements" && urlKind !== "prepare") {
+      return null;
+    }
+    const ts = getNumber(record, "ts");
+    if (ts === null) {
+      return null;
+    }
+    const powDifficulty = getString(record, "powDifficulty");
+    return {
+      source: "chatgpt-sentinel",
+      ts,
+      urlKind,
+      powRequired: asBoolean(record.powRequired) === true,
+      powDifficulty
+    };
+  }
+  function parsePowRisk(difficulty) {
+    if (!difficulty || typeof difficulty !== "string") {
+      return {
+        raw: null,
+        clean: null,
+        len: null,
+        decimal: null,
+        level: "Unknown",
+        risk: 0
+      };
+    }
+    const clean = difficulty.replace(/^0x/i, "").replace(/^0+/, "") || "0";
+    const len = clean.length;
+    const parsed = Number.parseInt(clean, 16);
+    const decimal = Number.isFinite(parsed) ? parsed : null;
+    if (len <= 2) {
+      return { raw: difficulty, clean, len, decimal, level: "Critical", risk: 100 };
+    }
+    if (len <= 3) {
+      return { raw: difficulty, clean, len, decimal, level: "Hard", risk: 75 };
+    }
+    if (len <= 4) {
+      return { raw: difficulty, clean, len, decimal, level: "Medium", risk: 50 };
+    }
+    if (len <= 5) {
+      return { raw: difficulty, clean, len, decimal, level: "Easy", risk: 25 };
+    }
+    return { raw: difficulty, clean, len, decimal, level: "Very Easy", risk: 0 };
+  }
+  function computeSentinelRisk(obs) {
+    const pow = parsePowRisk(obs.powDifficulty);
+    const powRequiredWithoutDifficulty = obs.powRequired === true && !obs.powDifficulty;
+    const score = clamp(
+      pow.risk + 10 * Number(powRequiredWithoutDifficulty)
+    );
+    const label = score >= 75 ? "严重" : score >= 50 ? "高" : score >= 25 ? "偏高" : "正常";
+    return {
+      score,
+      label,
+      pow,
+      factors: {
+        powRequired: obs.powRequired,
+        powRequiredWithoutDifficulty
+      }
+    };
+  }
+  function toChatGPTSentinelState(obs) {
+    const sentinel = computeSentinelRisk(obs);
+    return {
+      updatedAt: obs.ts,
+      sentinelRisk: {
+        score: sentinel.score,
+        label: sentinel.label
+      },
+      pow: sentinel.pow,
+      gates: {
+        powRequired: obs.powRequired
+      },
+      explanation: "当前仅验证 PoW 难度，不判断模型 fallback。"
+    };
+  }
+  function containsForbiddenSentinelKey(value) {
+    const queue = [value];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const record = asRecord(current);
+      if (!record) {
+        if (Array.isArray(current)) {
+          queue.push(...current);
+        }
+        continue;
+      }
+      for (const [key, child] of Object.entries(record)) {
+        if (isForbiddenSentinelKey(key)) {
+          return true;
+        }
+        queue.push(child);
+      }
+    }
+    return false;
+  }
+  function isForbiddenSentinelKey(key) {
+    const normalized = key.toLowerCase();
+    return normalized === "token" || normalized === "prepare_token" || normalized === "dx" || normalized === "collector_dx" || normalized === "seed" || normalized === "cookie" || normalized === "authorization" || normalized.startsWith("oai-") || normalized.startsWith("x-oai-");
+  }
+  function clamp(n, min = 0, max = 100) {
+    return Math.max(min, Math.min(max, Math.round(n)));
+  }
+  const OBSERVATION_LIMIT = 20;
+  const STATE_KEY = "aiUsage:chatgpt:sentinelState";
+  const OBSERVATIONS_KEY = "aiUsage:chatgpt:sentinelObservations";
+  async function getChatGptSentinelState() {
+    const items = await storageGet(STATE_KEY);
+    const value = items[STATE_KEY];
+    return isChatGptSentinelState(value) ? value : null;
+  }
+  async function rememberChatGptSentinelObservation(observation, state) {
+    if (containsForbiddenSentinelKey(observation) || containsForbiddenSentinelKey(state)) {
+      return;
+    }
+    const existing = await getChatGptSentinelObservations();
+    const observations = [observation, ...existing].slice(0, OBSERVATION_LIMIT);
+    await storageSet({
+      [STATE_KEY]: state,
+      [OBSERVATIONS_KEY]: observations
+    });
+  }
+  async function getChatGptSentinelObservations() {
+    const items = await storageGet(OBSERVATIONS_KEY);
+    const value = items[OBSERVATIONS_KEY];
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.filter(isChatGptSentinelObservation).slice(0, OBSERVATION_LIMIT);
+  }
+  function storageGet(keys) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(keys, (items) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve(items);
+      });
+    });
+  }
+  function storageSet(items) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set(items, () => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  function isChatGptSentinelObservation(value) {
+    const candidate = value;
+    return typeof value === "object" && value !== null && candidate.source === "chatgpt-sentinel" && (candidate.urlKind === "chat-requirements" || candidate.urlKind === "prepare") && typeof candidate.ts === "number" && typeof candidate.powRequired === "boolean";
+  }
+  function isChatGptSentinelState(value) {
+    const candidate = value;
+    return typeof value === "object" && value !== null && typeof candidate.updatedAt === "number" && typeof candidate.sentinelRisk?.score === "number" && typeof candidate.sentinelRisk?.label === "string" && typeof candidate.pow?.risk === "number" && typeof candidate.gates?.powRequired === "boolean";
+  }
   function isDebugEnabled() {
     try {
       return globalThis.localStorage?.getItem("aiUsageDebug") === "1";
@@ -2698,6 +2972,31 @@ button {
       widget.setSnapshot(cached);
     }
     widget.setBackoffUntil(await getBackoffUntil(platformId));
+    if (platformId === "chatgpt") {
+      const cachedSentinelState = await getChatGptSentinelState();
+      if (cachedSentinelState) {
+        widget.setChatGptSentinelState(cachedSentinelState);
+      }
+    }
+    const onSentinelEvent = (event) => {
+      if (platformId !== "chatgpt") {
+        return;
+      }
+      const observation = sanitizeSentinelObservation(
+        event.detail
+      );
+      if (!observation) {
+        return;
+      }
+      const state = toChatGPTSentinelState(observation);
+      widget.setChatGptSentinelState(state);
+      void rememberChatGptSentinelObservation(observation, state).catch(
+        (error) => {
+          debugLog("failed to cache sentinel observation", error);
+        }
+      );
+    };
+    window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
     bridge.onIntercepted((message) => {
       if (message.platform !== platformId) {
         return;
@@ -2740,6 +3039,7 @@ button {
     await refreshUsage({ force: false });
     window.addEventListener("pagehide", () => {
       stopCodexProbe?.();
+      window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
     });
   }
   async function injectMainWorld() {

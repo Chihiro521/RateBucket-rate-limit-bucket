@@ -1,4 +1,5 @@
 import type { PlatformId, UsageMeter, UsageSnapshot } from "../platforms/types";
+import type { ChatGPTSentinelState } from "../platforms/chatgptSentinel";
 import { formatAge, formatReset } from "../utils/time";
 import { WIDGET_CSS } from "./styles";
 
@@ -72,6 +73,7 @@ export class UsageWidget {
   private chipPosition = { edge: "right" as ChipEdge, offset: 96 };
   private loading = false;
   private snapshot: UsageSnapshot | null = null;
+  private chatGptSentinelState: ChatGPTSentinelState | null = null;
   private backoffUntil = 0;
   private readonly timerId: number;
 
@@ -105,6 +107,11 @@ export class UsageWidget {
 
   setLoading(value: boolean): void {
     this.loading = value;
+    this.render();
+  }
+
+  setChatGptSentinelState(value: ChatGPTSentinelState | null): void {
+    this.chatGptSentinelState = value;
     this.render();
   }
 
@@ -328,15 +335,60 @@ export class UsageWidget {
     if (this.snapshot?.errorMessage) {
       content.append(textEl("div", "error", this.snapshot.errorMessage));
     }
+    const sentinelSection = this.renderChatGptSentinelSection();
+    if (sentinelSection) {
+      content.append(sentinelSection);
+    }
     const meters = this.chatGptMeters();
     if (meters.length === 0) {
-      content.append(textEl("div", "empty", "暂无用量数据"));
+      if (!sentinelSection) {
+        content.append(textEl("div", "empty", "暂无用量数据"));
+      }
       return content;
     }
     for (const section of groupChatGptMeters(meters)) {
       content.append(this.renderMeterSection(section.label, section.meters));
     }
     return content;
+  }
+
+  private renderChatGptSentinelSection(): HTMLElement | null {
+    const state = this.chatGptSentinelState;
+    if (!state) {
+      return null;
+    }
+    const section = el("section", "meter-section sentinel-section");
+    section.append(textEl("div", "meter-section-title", "账号状态"));
+
+    const gate = el("div", "sentinel-block");
+    gate.append(
+      this.renderSentinelRow(
+        "发送门禁",
+        `${state.sentinelRisk.label} ${state.sentinelRisk.score}/100`
+      ),
+      this.renderSentinelBar(state.sentinelRisk.score),
+      this.renderSentinelRow(
+        "PoW",
+        `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
+      ),
+      textEl("div", "sentinel-explanation", `说明：${state.explanation}`)
+    );
+    section.append(gate);
+    return section;
+  }
+
+  private renderSentinelRow(label: string, value: string): HTMLElement {
+    const row = el("div", "sentinel-row");
+    row.append(textEl("span", "sentinel-label", label), textEl("span", "", value));
+    return row;
+  }
+
+  private renderSentinelBar(score: number): HTMLElement {
+    const bar = el("div", "bar sentinel-bar");
+    const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
+    fill.style.width = `${clampPercent(score)}%`;
+    bar.append(fill);
+    return bar;
   }
 
   private renderMeterSection(label: string, meters: UsageMeter[]): HTMLElement {
@@ -677,6 +729,19 @@ function meterProgress(meter: UsageMeter): number {
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
+}
+
+function sentinelRiskClass(score: number): string {
+  if (score >= 75) {
+    return "sentinel-risk-severe";
+  }
+  if (score >= 50) {
+    return "sentinel-risk-high";
+  }
+  if (score >= 25) {
+    return "sentinel-risk-elevated";
+  }
+  return "sentinel-risk-normal";
 }
 
 function clamp(value: number, min: number, max: number): number {

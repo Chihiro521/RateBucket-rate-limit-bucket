@@ -4,6 +4,7 @@ import type {
   PlatformId,
   UsageRequestContext
 } from "../platforms/types";
+import { installChatGptSentinelHook } from "./chatgptSentinelHook";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
 import { asRecord, getString } from "../utils/safeJson";
 
@@ -25,6 +26,7 @@ const FETCH_TIMEOUT_MS = 10_000;
 
 if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
   window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
+  installChatGptSentinelHook();
   installFetchIntercept();
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (event.source !== window || event.origin !== window.location.origin) {

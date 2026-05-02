@@ -6,6 +6,11 @@ import { detectPlatform } from "../platforms/detect";
 import { fetchPlatformUsage } from "../platforms";
 import { normalizeInterceptedUsage } from "../platforms/intercepted";
 import { mergeUsageSnapshots } from "../platforms/merge";
+import {
+  CHATGPT_SENTINEL_EVENT,
+  sanitizeSentinelObservation,
+  toChatGPTSentinelState
+} from "../platforms/chatgptSentinel";
 import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
@@ -20,6 +25,10 @@ import {
   setFailureCount,
   setLastRefreshAt
 } from "../storage/cache";
+import {
+  getChatGptSentinelState,
+  rememberChatGptSentinelObservation
+} from "../storage/chatgptSentinel";
 import { debugLog } from "../utils/logger";
 
 const platform = detectPlatform(window.location);
@@ -129,6 +138,33 @@ async function start(platformId: PlatformId): Promise<void> {
   }
   widget.setBackoffUntil(await getBackoffUntil(platformId));
 
+  if (platformId === "chatgpt") {
+    const cachedSentinelState = await getChatGptSentinelState();
+    if (cachedSentinelState) {
+      widget.setChatGptSentinelState(cachedSentinelState);
+    }
+  }
+
+  const onSentinelEvent = (event: Event): void => {
+    if (platformId !== "chatgpt") {
+      return;
+    }
+    const observation = sanitizeSentinelObservation(
+      (event as CustomEvent<unknown>).detail
+    );
+    if (!observation) {
+      return;
+    }
+    const state = toChatGPTSentinelState(observation);
+    widget.setChatGptSentinelState(state);
+    void rememberChatGptSentinelObservation(observation, state).catch(
+      (error: unknown) => {
+        debugLog("failed to cache sentinel observation", error);
+      }
+    );
+  };
+  window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+
   bridge.onIntercepted((message) => {
     if (message.platform !== platformId) {
       return;
@@ -175,6 +211,7 @@ async function start(platformId: PlatformId): Promise<void> {
 
   window.addEventListener("pagehide", () => {
     stopCodexProbe?.();
+    window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
   });
 }
 
