@@ -11,6 +11,13 @@ import {
   sanitizeSentinelObservation,
   toChatGPTSentinelState
 } from "../platforms/chatgptSentinel";
+import {
+  IP_RISK_AUTO_REFRESH_MS,
+  disabledIpRiskState,
+  missingKeyIpRiskState,
+  type IpRiskSettingsUpdate,
+  type IpRiskState
+} from "../platforms/ipRisk";
 import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
@@ -29,6 +36,16 @@ import {
   getChatGptSentinelState,
   rememberChatGptSentinelObservation
 } from "../storage/chatgptSentinel";
+import {
+  IP_RISK_SETTINGS_KEY,
+  IP_RISK_STATE_KEY,
+  getIpRiskPublicSettings,
+  getIpRiskState,
+  ipRiskStateFromStorageValue,
+  publicSettingsFromStorageValue,
+  saveIpRiskSettings,
+  setIpRiskState
+} from "../storage/ipRisk";
 import { debugLog } from "../utils/logger";
 
 const platform = detectPlatform(window.location);
@@ -38,15 +55,88 @@ if (platform) {
 }
 
 async function start(platformId: PlatformId): Promise<void> {
-  const widget = new UsageWidget(platformId, () => {
-    void refreshUsage({ force: true });
-  });
+  let widget!: UsageWidget;
   const bridge = new BridgeClient();
   let currentSnapshot: UsageSnapshot | null = null;
   let refreshing = false;
+  let ipRiskRefreshing = false;
   let pendingEstimatorRefresh = 0;
   let codexProbeStarted = false;
   let stopCodexProbe: (() => void) | null = null;
+
+  const refreshIpRisk = async (options: { force: boolean }): Promise<void> => {
+    if (ipRiskRefreshing) {
+      return;
+    }
+
+    const settings = await getIpRiskPublicSettings();
+    widget.setIpRiskSettings(settings);
+
+    if (!settings.enabled) {
+      const state = disabledIpRiskState();
+      widget.setIpRiskState(state);
+      if (options.force) {
+        await setIpRiskState(state);
+      }
+      return;
+    }
+    if (!settings.hasApiKey) {
+      const state = missingKeyIpRiskState();
+      widget.setIpRiskState(state);
+      if (options.force) {
+        await setIpRiskState(state);
+      }
+      return;
+    }
+
+    const cached = await getIpRiskState();
+    if (cached) {
+      widget.setIpRiskState(cached);
+    }
+    if (
+      !options.force &&
+      cached &&
+      cached.status === "ok" &&
+      Date.now() - cached.updatedAt < IP_RISK_AUTO_REFRESH_MS
+    ) {
+      return;
+    }
+
+    ipRiskRefreshing = true;
+    widget.setIpRiskRefreshing(true);
+    try {
+      const state = await requestIpRiskRefresh();
+      widget.setIpRiskState(state);
+    } catch (error) {
+      debugLog("proxycheck refresh failed", error);
+    } finally {
+      ipRiskRefreshing = false;
+      widget.setIpRiskRefreshing(false);
+    }
+  };
+
+  const saveIpRisk = async (update: IpRiskSettingsUpdate): Promise<void> => {
+    const settings = await saveIpRiskSettings(update);
+    widget.setIpRiskSettings(settings);
+    await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
+  };
+
+  widget = new UsageWidget(
+    platformId,
+    () => {
+      void refreshUsage({ force: true });
+    },
+    {
+      onIpRiskRefresh: () => {
+        void refreshIpRisk({ force: true });
+      },
+      onIpRiskSettingsSave: (update) => {
+        void saveIpRisk(update).catch((error: unknown) => {
+          debugLog("failed to save IP risk settings", error);
+        });
+      }
+    }
+  );
 
   const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
     if (
@@ -138,6 +228,18 @@ async function start(platformId: PlatformId): Promise<void> {
   }
   widget.setBackoffUntil(await getBackoffUntil(platformId));
 
+  const ipRiskSettings = await getIpRiskPublicSettings();
+  widget.setIpRiskSettings(ipRiskSettings);
+  const cachedIpRisk = await getIpRiskState();
+  if (cachedIpRisk) {
+    widget.setIpRiskState(cachedIpRisk);
+  } else if (!ipRiskSettings.enabled) {
+    widget.setIpRiskState(disabledIpRiskState());
+  } else if (!ipRiskSettings.hasApiKey) {
+    widget.setIpRiskState(missingKeyIpRiskState());
+  }
+  void refreshIpRisk({ force: false });
+
   if (platformId === "chatgpt") {
     const cachedSentinelState = await getChatGptSentinelState();
     if (cachedSentinelState) {
@@ -164,6 +266,29 @@ async function start(platformId: PlatformId): Promise<void> {
     );
   };
   window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+
+  const onStorageChanged = (
+    changes: Record<string, chrome.storage.StorageChange>,
+    areaName: string
+  ): void => {
+    if (areaName !== "local") {
+      return;
+    }
+    const settingsChange = changes[IP_RISK_SETTINGS_KEY];
+    if (settingsChange) {
+      widget.setIpRiskSettings(
+        publicSettingsFromStorageValue(settingsChange.newValue)
+      );
+    }
+    const stateChange = changes[IP_RISK_STATE_KEY];
+    if (stateChange) {
+      const state = ipRiskStateFromStorageValue(stateChange.newValue);
+      if (state) {
+        widget.setIpRiskState(state);
+      }
+    }
+  };
+  chrome.storage.onChanged.addListener(onStorageChanged);
 
   bridge.onIntercepted((message) => {
     if (message.platform !== platformId) {
@@ -212,6 +337,7 @@ async function start(platformId: PlatformId): Promise<void> {
   window.addEventListener("pagehide", () => {
     stopCodexProbe?.();
     window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+    chrome.storage.onChanged.removeListener(onStorageChanged);
   });
 }
 
@@ -235,6 +361,35 @@ async function injectMainWorld(): Promise<void> {
   if (!response.ok) {
     throw new Error(response.error ?? "Injection failed");
   }
+}
+
+async function requestIpRiskRefresh(): Promise<IpRiskState> {
+  const response = await new Promise<{
+    ok: boolean;
+    error?: string;
+    state?: IpRiskState;
+  }>((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type: "AI_USAGE_IP_RISK_REFRESH" },
+      (
+        value:
+          | { ok: boolean; error?: string; state?: IpRiskState }
+          | undefined
+      ) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve(value ?? { ok: false, error: "No IP risk response" });
+      }
+    );
+  });
+
+  if (response.state) {
+    return response.state;
+  }
+  throw new Error(response.error ?? "IP 风险检测失败");
 }
 
 async function withEstimateFallback(

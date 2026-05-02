@@ -408,6 +408,137 @@ button {
   line-height: 1.4;
 }
 
+.error-text {
+  color: #ef4444;
+}
+
+.settings-popover {
+  position: fixed;
+  top: clamp(12px, 5vh, 40px);
+  right: clamp(10px, 2vw, 24px);
+  width: min(360px, calc(100vw - 20px));
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, Canvas 98%, CanvasText 2%);
+  color: CanvasText;
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.26);
+  padding: 12px;
+  z-index: 2147483001;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.settings-title {
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 650;
+  margin: 4px 0 12px;
+}
+
+.settings-label {
+  display: block;
+  color: color-mix(in srgb, CanvasText 66%, transparent);
+  font-size: 11px;
+  font-weight: 650;
+  margin-bottom: 5px;
+}
+
+.settings-input {
+  width: 100%;
+  height: 34px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
+  color: CanvasText;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.settings-input-wrap {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
+  overflow: hidden;
+}
+
+.settings-input-wrap .settings-input {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-eye-button {
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-input:focus {
+  border-color: #2563eb;
+}
+
+.settings-input-wrap:focus-within {
+  border-color: #2563eb;
+}
+
+.settings-help {
+  margin-top: 8px;
+  color: color-mix(in srgb, CanvasText 62%, transparent);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.settings-button {
+  min-height: 30px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  background: color-mix(in srgb, Canvas 90%, CanvasText 10%);
+  color: CanvasText;
+  cursor: pointer;
+  padding: 5px 10px;
+}
+
+.settings-button:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.primary-button {
+  border-color: color-mix(in srgb, #2563eb 65%, CanvasText 10%);
+  background: #2563eb;
+  color: white;
+}
+
+.danger-button {
+  color: #ef4444;
+}
+
 .meter-bottom {
   margin-top: 6px;
   display: flex;

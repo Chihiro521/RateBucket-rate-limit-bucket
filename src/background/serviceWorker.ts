@@ -1,13 +1,44 @@
-type InjectRequest = {
+import {
+  disabledIpRiskState,
+  errorIpRiskState,
+  fetchProxycheckIpRisk,
+  missingKeyIpRiskState,
+  type IpRiskState
+} from "../platforms/ipRisk";
+import {
+  getStoredIpRiskSettings,
+  setIpRiskState
+} from "../storage/ipRisk";
+
+type BackgroundRequest = {
   type?: string;
 };
 
 chrome.runtime.onMessage.addListener(
   (
-    message: InjectRequest,
+    message: BackgroundRequest,
     sender: chrome.runtime.MessageSender,
-    sendResponse: (response: { ok: boolean; error?: string }) => void
+    sendResponse: (response: { ok: boolean; error?: string; state?: IpRiskState }) => void
   ) => {
+    if (message?.type === "AI_USAGE_IP_RISK_REFRESH") {
+      refreshIpRisk()
+        .then((state) => {
+          sendResponse({
+            ok: state.status !== "error",
+            state,
+            ...(state.errorMessage ? { error: state.errorMessage } : {})
+          });
+        })
+        .catch((error: unknown) => {
+          const state = errorIpRiskState(
+            error instanceof Error ? error.message : "IP 风险检测失败"
+          );
+          void setIpRiskState(state);
+          sendResponse({ ok: false, error: state.errorMessage, state });
+        });
+      return true;
+    }
+
     if (message?.type !== "AI_USAGE_INJECT_MAIN_WORLD") {
       return false;
     }
@@ -35,3 +66,25 @@ chrome.runtime.onMessage.addListener(
     return true;
   }
 );
+
+async function refreshIpRisk(): Promise<IpRiskState> {
+  const settings = await getStoredIpRiskSettings();
+  let state: IpRiskState;
+
+  if (!settings.enabled) {
+    state = disabledIpRiskState();
+  } else if (!settings.proxycheckApiKey) {
+    state = missingKeyIpRiskState();
+  } else {
+    try {
+      state = await fetchProxycheckIpRisk(settings.proxycheckApiKey);
+    } catch (error) {
+      state = errorIpRiskState(
+        error instanceof Error ? error.message : "proxycheck.io 查询失败"
+      );
+    }
+  }
+
+  await setIpRiskState(state);
+  return state;
+}

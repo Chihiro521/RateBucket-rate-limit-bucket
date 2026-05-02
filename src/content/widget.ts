@@ -1,9 +1,18 @@
 import type { PlatformId, UsageMeter, UsageSnapshot } from "../platforms/types";
 import type { ChatGPTSentinelState } from "../platforms/chatgptSentinel";
+import type {
+  IpRiskPublicSettings,
+  IpRiskSettingsUpdate,
+  IpRiskState
+} from "../platforms/ipRisk";
 import { formatAge, formatReset } from "../utils/time";
 import { WIDGET_CSS } from "./styles";
 
 type RefreshHandler = () => void;
+type WidgetHandlers = {
+  onIpRiskRefresh?: () => void;
+  onIpRiskSettingsSave?: (update: IpRiskSettingsUpdate) => void;
+};
 type ChipEdge = "left" | "right" | "top" | "bottom";
 
 const PLATFORM_LABEL: Record<PlatformId, string> = {
@@ -74,12 +83,22 @@ export class UsageWidget {
   private loading = false;
   private snapshot: UsageSnapshot | null = null;
   private chatGptSentinelState: ChatGPTSentinelState | null = null;
+  private ipRiskState: IpRiskState | null = null;
+  private ipRiskSettings: IpRiskPublicSettings = {
+    provider: "proxycheck",
+    enabled: false,
+    hasApiKey: false,
+    apiKeyPreview: null
+  };
+  private ipRiskRefreshing = false;
+  private ipRiskSettingsOpen = false;
   private backoffUntil = 0;
   private readonly timerId: number;
 
   constructor(
     private readonly platform: PlatformId,
-    private readonly onRefresh: RefreshHandler
+    private readonly onRefresh: RefreshHandler,
+    private readonly handlers: WidgetHandlers = {}
   ) {
     this.expanded = false;
     this.hidden = platform === "chatgpt";
@@ -115,6 +134,21 @@ export class UsageWidget {
     this.render();
   }
 
+  setIpRiskSettings(value: IpRiskPublicSettings): void {
+    this.ipRiskSettings = value;
+    this.render();
+  }
+
+  setIpRiskState(value: IpRiskState | null): void {
+    this.ipRiskState = value;
+    this.render();
+  }
+
+  setIpRiskRefreshing(value: boolean): void {
+    this.ipRiskRefreshing = value;
+    this.render();
+  }
+
   setBackoffUntil(value: number): void {
     this.backoffUntil = value;
     this.render();
@@ -122,6 +156,7 @@ export class UsageWidget {
 
   private render(): void {
     if (this.hidden) {
+      this.ipRiskSettingsOpen = false;
       this.root.replaceChildren(
         this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
       );
@@ -131,14 +166,20 @@ export class UsageWidget {
       if (!this.hidden) {
         this.resetPanelPosition();
       }
-      this.root.replaceChildren(
+      this.replaceRootWith(
         this.expanded ? this.renderChatGptPanel() : this.renderChatGptCollapsed()
       );
       return;
     }
-    this.root.replaceChildren(
-      this.expanded ? this.renderPanel() : this.renderCollapsed()
-    );
+    this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
+  }
+
+  private replaceRootWith(main: HTMLElement): void {
+    if (this.ipRiskSettingsOpen) {
+      this.root.replaceChildren(main, this.renderIpRiskSettingsDialog());
+      return;
+    }
+    this.root.replaceChildren(main);
   }
 
   private renderChatGptRestoreChip(): HTMLElement {
@@ -286,7 +327,7 @@ export class UsageWidget {
       this.render();
     });
 
-    actions.append(refresh, expand, close);
+    actions.append(this.renderSettingsButton(), refresh, expand, close);
     panel.append(title, summary, actions);
     return panel;
   }
@@ -324,7 +365,7 @@ export class UsageWidget {
       this.render();
     });
 
-    actions.append(refresh, collapse, close);
+    actions.append(this.renderSettingsButton(), refresh, collapse, close);
     right.append(actions);
     header.append(title, right);
     return header;
@@ -339,9 +380,10 @@ export class UsageWidget {
     if (sentinelSection) {
       content.append(sentinelSection);
     }
+    content.append(this.renderIpRiskSection());
     const meters = this.chatGptMeters();
     if (meters.length === 0) {
-      if (!sentinelSection) {
+      if (!sentinelSection && !this.ipRiskSettings.enabled) {
         content.append(textEl("div", "empty", "暂无用量数据"));
       }
       return content;
@@ -375,6 +417,195 @@ export class UsageWidget {
     );
     section.append(gate);
     return section;
+  }
+
+  private renderIpRiskSection(): HTMLElement {
+    const section = el("section", "meter-section ip-risk-section");
+    section.append(textEl("div", "meter-section-title", "网络风险"));
+
+    const block = el("div", "sentinel-block ip-risk-block");
+    block.append(this.renderSentinelRow("IP 检测", this.ipRiskStatusText()));
+
+    const freshIpRisk = this.freshIpRiskState();
+    if (freshIpRisk) {
+      block.append(
+        this.renderSentinelBar(freshIpRisk.score),
+        this.renderSentinelRow("信号", formatIpRiskSignals(freshIpRisk)),
+        this.renderSentinelRow("来源", freshIpRisk.source)
+      );
+    } else if (this.ipRiskRefreshing) {
+      block.append(textEl("div", "sentinel-explanation", "正在查询 proxycheck.io。"));
+    } else if (
+      this.ipRiskSettings.enabled &&
+      this.ipRiskSettings.hasApiKey &&
+      this.ipRiskState?.status === "error"
+    ) {
+      block.append(
+        textEl(
+          "div",
+          "sentinel-explanation error-text",
+          this.ipRiskState.errorMessage ?? "检测失败"
+        )
+      );
+    } else {
+      block.append(
+        textEl(
+          "div",
+          "sentinel-explanation",
+          this.ipRiskSettings.enabled
+            ? "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。"
+            : "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。"
+        )
+      );
+    }
+
+    section.append(block);
+    return section;
+  }
+
+  private renderIpRiskSettingsDialog(): HTMLElement {
+    const panel = el("section", "settings-popover");
+    const header = el("div", "settings-header");
+    header.append(
+      textEl("div", "settings-title", "IP 检测设置"),
+      this.renderActionButton("×", "关闭 IP 检测设置", () => {
+        this.ipRiskSettingsOpen = false;
+        this.render();
+      })
+    );
+
+    const enabledInput = document.createElement("input");
+    enabledInput.type = "checkbox";
+    enabledInput.checked = this.ipRiskSettings.enabled;
+
+    const enabledLabel = el("label", "settings-check");
+    enabledLabel.append(enabledInput, textEl("span", "", "启用 proxycheck.io"));
+
+    const keyInputWrap = el("div", "settings-input-wrap");
+    const keyInput = document.createElement("input");
+    keyInput.className = "settings-input";
+    keyInput.type = "password";
+    keyInput.autocomplete = "off";
+    keyInput.spellcheck = false;
+    let keyDirty = false;
+    if (this.ipRiskSettings.apiKeyPreview) {
+      keyInput.value = this.ipRiskSettings.apiKeyPreview;
+    }
+    keyInput.placeholder = this.ipRiskSettings.hasApiKey
+      ? "已保存密钥，留空则不修改"
+      : "输入 proxycheck.io API 密钥";
+    const prepareKeyEdit = (): void => {
+      if (!keyDirty && this.ipRiskSettings.hasApiKey) {
+        keyDirty = true;
+        keyInput.value = "";
+        keyInput.placeholder = "输入新的 proxycheck.io API 密钥";
+        keyInput.type = "password";
+      }
+    };
+    keyInput.addEventListener("keydown", (event) => {
+      if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
+        prepareKeyEdit();
+      }
+    });
+    keyInput.addEventListener("paste", prepareKeyEdit);
+    keyInput.addEventListener("input", () => {
+      keyDirty = true;
+    });
+
+    const reveal = this.renderActionButton("👁", "显示或隐藏密钥", () => {
+      keyInput.type = keyInput.type === "password" ? "text" : "password";
+    });
+    reveal.classList.add("settings-eye-button");
+    keyInputWrap.append(keyInput, reveal);
+
+    const actions = el("div", "settings-actions");
+    const save = textEl("button", "settings-button primary-button", "保存");
+    save.type = "button";
+    save.addEventListener("click", () => {
+      this.handlers.onIpRiskSettingsSave?.({
+        enabled: enabledInput.checked,
+        apiKey: keyDirty ? keyInput.value.trim() || undefined : undefined
+      });
+      this.ipRiskSettingsOpen = false;
+      this.render();
+    });
+
+    const refresh = textEl("button", "settings-button", "立即检测");
+    refresh.type = "button";
+    refresh.disabled =
+      this.ipRiskRefreshing ||
+      !this.ipRiskSettings.enabled ||
+      !this.ipRiskSettings.hasApiKey;
+    refresh.addEventListener("click", () => {
+      this.handlers.onIpRiskRefresh?.();
+      this.ipRiskSettingsOpen = false;
+      this.render();
+    });
+
+    const remove = textEl("button", "settings-button danger-button", "删除密钥");
+    remove.type = "button";
+    remove.disabled = !this.ipRiskSettings.hasApiKey;
+    remove.addEventListener("click", () => {
+      this.handlers.onIpRiskSettingsSave?.({
+        enabled: enabledInput.checked,
+        clearApiKey: true
+      });
+      this.ipRiskSettingsOpen = false;
+      this.render();
+    });
+
+    actions.append(save, refresh, remove);
+
+    panel.append(
+      header,
+      enabledLabel,
+      textEl("label", "settings-label", "proxycheck.io API 密钥"),
+      keyInputWrap,
+      textEl(
+        "div",
+        "settings-help",
+        "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。"
+      ),
+      actions
+    );
+    return panel;
+  }
+
+  private ipRiskStatusText(): string {
+    if (!this.ipRiskSettings.enabled) {
+      return "未启用";
+    }
+    if (!this.ipRiskSettings.hasApiKey) {
+      return "未配置密钥";
+    }
+    if (this.ipRiskRefreshing) {
+      return "检测中";
+    }
+    if (
+      this.ipRiskSettings.enabled &&
+      this.ipRiskSettings.hasApiKey &&
+      this.ipRiskState?.status === "error"
+    ) {
+      return "检测失败";
+    }
+    const freshIpRisk = this.freshIpRiskState();
+    if (freshIpRisk) {
+      return `${freshIpRisk.label} ${freshIpRisk.score}/100`;
+    }
+    return "等待检测";
+  }
+
+  private freshIpRiskState(): (IpRiskState & { score: number }) | null {
+    const state = this.ipRiskState;
+    if (
+      this.ipRiskSettings.enabled &&
+      this.ipRiskSettings.hasApiKey &&
+      state?.status === "ok" &&
+      typeof state.score === "number"
+    ) {
+      return state as IpRiskState & { score: number };
+    }
+    return null;
   }
 
   private renderSentinelRow(label: string, value: string): HTMLElement {
@@ -411,6 +642,13 @@ export class UsageWidget {
     button.title = label;
     button.addEventListener("click", onClick);
     return button;
+  }
+
+  private renderSettingsButton(): HTMLButtonElement {
+    return this.renderActionButton("⚙", "IP 检测设置", () => {
+      this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
+      this.render();
+    });
   }
 
   private renderCollapsed(): HTMLElement {
@@ -466,7 +704,7 @@ export class UsageWidget {
       this.render();
     });
 
-    actions.append(refresh, close);
+    actions.append(this.renderSettingsButton(), refresh, close);
     header.append(title, actions);
     return header;
   }
@@ -505,9 +743,9 @@ export class UsageWidget {
     if (this.snapshot?.errorMessage) {
       content.append(textEl("div", "error", this.snapshot.errorMessage));
     }
+    content.append(this.renderIpRiskSection());
     const meters = this.snapshot?.meters ?? [];
     if (meters.length === 0) {
-      content.append(textEl("div", "empty", "暂无用量数据"));
       return content;
     }
     for (const meter of meters) {
@@ -742,6 +980,26 @@ function sentinelRiskClass(score: number): string {
     return "sentinel-risk-elevated";
   }
   return "sentinel-risk-normal";
+}
+
+function formatIpRiskSignals(state: IpRiskState): string {
+  const signals: string[] = [];
+  if (state.signals.proxy) {
+    signals.push("Proxy");
+  }
+  if (state.signals.vpn) {
+    signals.push("VPN");
+  }
+  if (state.signals.tor) {
+    signals.push("Tor");
+  }
+  if (state.signals.hosting) {
+    signals.push("Hosting");
+  }
+  if (state.signals.type && !signals.includes(state.signals.type)) {
+    signals.push(state.signals.type);
+  }
+  return signals.length > 0 ? signals.join(" / ") : "未见明显代理信号";
 }
 
 function clamp(value: number, min: number, max: number): number {
