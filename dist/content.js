@@ -1416,9 +1416,11 @@ button {
       const save = textEl("button", "settings-button primary-button", "保存");
       save.type = "button";
       save.addEventListener("click", () => {
+        const inputValue = keyInput.value.trim();
+        const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
         this.handlers.onIpRiskSettingsSave?.({
           enabled: enabledInput.checked,
-          apiKey: keyDirty ? keyInput.value.trim() || void 0 : void 0
+          apiKey: inputValue && inputValue !== previewValue ? inputValue : void 0
         });
         this.ipRiskSettingsOpen = false;
         this.render();
@@ -3176,7 +3178,7 @@ button {
       return null;
     }
     const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 256) {
+    if (!trimmed || trimmed.length > 512) {
       return null;
     }
     return trimmed;

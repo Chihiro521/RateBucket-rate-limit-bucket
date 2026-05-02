@@ -76,7 +76,7 @@ describe("ip risk", () => {
   it("sanitizes API keys before storage", () => {
     expect(sanitizeProxycheckApiKey("  key-123  ")).toBe("key-123");
     expect(sanitizeProxycheckApiKey("")).toBeNull();
-    expect(sanitizeProxycheckApiKey("x".repeat(257))).toBeNull();
+    expect(sanitizeProxycheckApiKey("x".repeat(513))).toBeNull();
   });
 
   it("creates a masked API key preview", () => {

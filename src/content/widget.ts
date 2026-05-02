@@ -522,9 +522,12 @@ export class UsageWidget {
     const save = textEl("button", "settings-button primary-button", "保存");
     save.type = "button";
     save.addEventListener("click", () => {
+      const inputValue = keyInput.value.trim();
+      const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
       this.handlers.onIpRiskSettingsSave?.({
         enabled: enabledInput.checked,
-        apiKey: keyDirty ? keyInput.value.trim() || undefined : undefined
+        apiKey:
+          inputValue && inputValue !== previewValue ? inputValue : undefined
       });
       this.ipRiskSettingsOpen = false;
       this.render();

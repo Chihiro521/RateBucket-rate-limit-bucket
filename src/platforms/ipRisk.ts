@@ -215,7 +215,7 @@ export function sanitizeProxycheckApiKey(value: unknown): string | null {
     return null;
   }
   const trimmed = value.trim();
-  if (!trimmed || trimmed.length > 256) {
+  if (!trimmed || trimmed.length > 512) {
     return null;
   }
   return trimmed;
