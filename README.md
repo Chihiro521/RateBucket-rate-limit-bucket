@@ -2,89 +2,129 @@
 
 [中文文档](README.zh-CN.md)
 
-RateBucket is a Manifest V3 Chrome extension that shows a compact floating usage widget on Grok, Claude, and ChatGPT. It is intended as a personal-use monitor for current usage, quota, reset-window, and rate-limit signals exposed by each platform's own web endpoints.
+RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, and ChatGPT. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
-The extension is not affiliated with OpenAI, Anthropic, xAI, or proxycheck.io.
+This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, or proxycheck.io.
 
-## Features
+## Project Status
 
-- Floating usage widgets for Grok, Claude, and ChatGPT.
-- Collapsible and draggable compact chips for supported platforms.
-- Meter-level snapshot merging so multiple ChatGPT usage sources can appear together.
-- Local estimate counters for actions that do not expose reliable quota data.
-- Optional ChatGPT sentinel and optional IP reputation panel.
-- No telemetry and no external backend owned by this project.
+RateBucket is currently a source-installable extension. It is not published in the Chrome Web Store yet.
 
-## Supported Sites
+Before a public Chrome Web Store release, the project still needs store-ready icons, screenshots, a hosted privacy policy, final listing copy, and a review of bundled visual assets for clear reuse rights.
 
-- `https://grok.com/*`
-- `https://claude.ai/*`
-- `https://chatgpt.com/*`
+## What It Does
 
-The content scripts are only declared for these sites.
+- Shows a floating usage widget on supported AI web apps.
+- Supports compact collapsed chips and expanded detail panels.
+- Tracks Grok, Claude, and ChatGPT usage signals through platform-specific normalizers.
+- Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together.
+- Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
+- Provides local estimate counters when a platform does not expose reliable quota data.
+- Offers an optional IP reputation panel for users who explicitly configure proxycheck.io.
 
-## Data Sources
+## Supported Platforms
 
-The extension uses allowlisted usage or rate-limit endpoints:
+| Platform | Supported URLs | Main Data Sources |
+| --- | --- | --- |
+| Grok | `https://grok.com/*` | `/rest/rate-limits` |
+| Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage` |
 
-- Grok: `/rest/rate-limits`
-- Claude: `/api/organizations`, then `/api/organizations/{orgId}/usage`
-- ChatGPT: `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, and `/codex/settings/usage`
+The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
 
-It can also observe page fetch responses for the same usage endpoints. Intercepted responses are normalized through the same parsers as active refreshes.
+## How It Works
 
-For ChatGPT Codex usage, if a direct request is unavailable from the current page, the extension may briefly load the same-origin Codex analytics route in a hidden iframe and observe the page's own usage response.
+RateBucket is built as a Manifest V3 extension:
 
-## Optional IP Risk Check
+- `content.js` runs on supported sites and owns the floating UI.
+- `mainWorldBridge.js` runs in the page's main world so platform fetch behavior can be observed when needed.
+- `serviceWorker.js` handles background-only tasks such as the optional IP reputation refresh.
+- Platform parsers normalize raw endpoint shapes into shared usage snapshots.
+- `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, and optional IP risk settings.
 
-The IP risk panel is disabled by default. When enabled by the user, it:
+No project-owned backend is used.
 
-- stores the proxycheck.io API key in `chrome.storage.local`;
-- fetches the current public IP from `https://api64.ipify.org/?format=json`;
-- queries `https://proxycheck.io/v2/{ip}` with `vpn=1` and `risk=1`;
-- stores only the normalized risk result locally.
+## Visual Design
 
-The extension does not store historical IP addresses.
+The current UI uses a compact botanical green/gold visual theme with decorative PNG assets. For Chrome Web Store publication or standalone asset reuse, make sure the visual assets have clear ownership or replace them with original project branding.
 
-## Security Boundaries
+## Install From Source
 
-- Does not save cookies.
-- Does not save platform tokens.
-- Does not read Authorization headers.
-- Does not read or save chat content.
-- Does not include analytics or telemetry.
-- Does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
-- Stores normalized snapshots, local estimate counters, optional proxycheck.io settings, and optional normalized IP risk state in `chrome.storage.local`.
-
-## Install
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-## Build
+Build the extension:
 
 ```bash
 npm run build
 ```
 
-The build output is written to `dist/`.
-
-## Load In Chrome
+Load it in Chrome:
 
 1. Open `chrome://extensions`.
-2. Enable Developer mode.
+2. Enable **Developer mode**.
 3. Click **Load unpacked**.
 4. Select the generated `dist/` directory.
 
 ## Development
 
+Run tests:
+
 ```bash
 npm test
+```
+
+Build production files:
+
+```bash
 npm run build
 ```
 
-This project uses TypeScript, Vite, and Vitest. There is no separate linter or formatter script, so follow the existing style in nearby files.
+The repository uses TypeScript, Vite, and Vitest. There is no separate formatter or linter command, so keep edits consistent with nearby code.
+
+## Repository Layout
+
+```text
+src/background/   Extension service worker
+src/content/      Floating widget, styles, bridge client, estimators, probes
+src/injected/     Main-world bridge code
+src/platforms/    Platform detection, endpoint logic, normalizers, merge types
+src/storage/      chrome.storage.local helpers
+src/utils/        Shared utilities
+tests/            Vitest unit tests
+scripts/          Build scripts
+dist/             Generated extension output
+```
+
+`dist/` is generated by `npm run build`.
+
+## Privacy And Security Boundaries
+
+RateBucket is designed to stay local where possible:
+
+- It does not save cookies.
+- It does not save platform tokens.
+- It does not read Authorization headers.
+- It does not read or save chat content.
+- It does not include analytics or telemetry.
+- It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
+- It stores only normalized usage data, local counters, retry metadata, and optional IP risk settings in `chrome.storage.local`.
+
+The extension requests host access only for Grok, Claude, ChatGPT, and the optional IP reputation services.
+
+## Optional IP Reputation Check
+
+The IP reputation panel is disabled by default. If a user enables it and provides a proxycheck.io API key, the extension:
+
+- stores the API key in `chrome.storage.local`;
+- fetches the current public IP from `https://api64.ipify.org/?format=json`;
+- queries `https://proxycheck.io/v2/{ip}` with `vpn=1` and `risk=1`;
+- stores only the normalized risk result locally.
+
+Historical IP addresses are not stored by the extension.
 
 ## Debug Logging
 
@@ -102,19 +142,31 @@ localStorage.removeItem("aiUsageDebug");
 
 Raw endpoint responses are not persisted, even when debug logging is enabled.
 
-## Manual Verification
+## Chrome Web Store Status
 
-1. Log in to Grok and open `https://grok.com`.
-2. Confirm the widget appears, expands, collapses, drags, and refreshes.
-3. Repeat on `https://claude.ai`.
-4. Repeat on `https://chatgpt.com`.
-5. Disconnect the network or force an endpoint failure and confirm the UI shows an unknown/error state without crashing.
-6. Open an unrelated site and confirm no widget appears.
+RateBucket is currently distributed as a source-installable extension. A Chrome Web Store release is planned after the public listing materials and policy documents are ready.
+
+Before submission, the project needs:
+
+- extension icons, including a 128x128 PNG icon;
+- store screenshots and promotional images;
+- a hosted privacy policy that matches the extension's actual behavior;
+- clear permission explanations for `storage`, `scripting`, and host permissions;
+- final listing copy that describes the extension's single purpose;
+- visual assets with clear ownership or licensing.
+
+Until then, use the source installation flow above.
 
 ## Known Limits
 
 - Supported platforms use internal web APIs that may change without notice.
 - ChatGPT usage fields are expected to be the least stable.
-- Claude and Grok usage response shapes may also change.
-- Estimate mode only counts local send actions in the current browser and is not authoritative quota data.
-- The extension is not designed for multiple accounts, team plans, enterprise plans, cross-device sync, or Chrome Web Store publication.
+- Claude and Grok response shapes may also change.
+- Estimate mode only counts local actions in the current browser and is not authoritative quota data.
+- The extension is not designed for multiple accounts, team plans, enterprise plans, or cross-device sync.
+
+## License
+
+RateBucket is released under the MIT License. See [LICENSE](LICENSE).
+
+The bundled visual assets are part of the current project package. Before publishing to the Chrome Web Store or reusing those assets separately, confirm their ownership/licensing or replace them with fully original branding assets.
