@@ -35,5 +35,11 @@
       "js": ["content.js"],
       "run_at": "document_start"
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["nihida.webp"],
+      "matches": ["https://grok.com/*", "https://claude.ai/*", "https://chatgpt.com/*"]
+    }
   ]
 }

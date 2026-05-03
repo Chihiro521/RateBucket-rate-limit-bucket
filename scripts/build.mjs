@@ -1,4 +1,4 @@
-import { rm, copyFile } from "node:fs/promises";
+import { rm, copyFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { build } from "vite";
@@ -25,6 +25,7 @@ const entries = [
 ];
 
 await rm(dist, { recursive: true, force: true });
+await mkdir(dist, { recursive: true });
 
 for (const item of entries) {
   await build({
@@ -48,3 +49,4 @@ for (const item of entries) {
 }
 
 await copyFile(path.join(root, "manifest.json"), path.join(dist, "manifest.json"));
+await copyFile(path.join(root, "src", "art assets", "nihida.webp"), path.join(dist, "nihida.webp"));
