@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nahida Assets Preview</title>
+    <style>
+      :root {
+        --nahida-green: #3e7a35;
+        --nahida-green-dark: #2f5f27;
+        --nahida-gold: #c9a24a;
+        --nahida-cream: #fffaf0;
+        --nahida-border: rgba(201, 162, 74, 0.42);
+        --nahida-shadow: 0 14px 34px rgba(47, 95, 39, 0.18);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: #2b3f21;
+        font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+        background:
+          linear-gradient(45deg, rgba(47, 95, 39, 0.06) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(47, 95, 39, 0.06) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(47, 95, 39, 0.06) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(47, 95, 39, 0.06) 75%),
+          var(--nahida-cream);
+        background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+        background-size: 24px 24px;
+        padding: 24px;
+      }
+
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        color: var(--nahida-green-dark);
+        font-size: 24px;
+        letter-spacing: 0;
+      }
+
+      .section-title {
+        margin: 26px 0 12px;
+        color: var(--nahida-green-dark);
+        font-size: 16px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 14px;
+      }
+
+      .tile {
+        min-height: 190px;
+        border: 1px solid var(--nahida-border);
+        border-radius: 12px;
+        background: rgba(255, 250, 240, 0.82);
+        box-shadow: var(--nahida-shadow);
+        padding: 12px;
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: 10px;
+      }
+
+      .art {
+        min-height: 150px;
+        border-radius: 10px;
+        background:
+          linear-gradient(45deg, rgba(201, 162, 74, 0.11) 25%, transparent 25%),
+          linear-gradient(-45deg, rgba(201, 162, 74, 0.11) 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, rgba(201, 162, 74, 0.11) 75%),
+          linear-gradient(-45deg, transparent 75%, rgba(201, 162, 74, 0.11) 75%),
+          rgba(255, 255, 255, 0.66);
+        background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+        background-size: 16px 16px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+
+      img {
+        display: block;
+        max-width: 100%;
+        max-height: 170px;
+        object-fit: contain;
+      }
+
+      .wide img {
+        width: 100%;
+      }
+
+      .label {
+        color: #615a43;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Nahida 素材库预览</h1>
+
+      <h2 class="section-title">裁切角框</h2>
+      <div class="grid">
+        <div class="tile">
+          <div class="art"><img src="corner-top-left.png" alt="corner-top-left"></div>
+          <div class="label">corner-top-left.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="corner-top-right.png" alt="corner-top-right"></div>
+          <div class="label">corner-top-right.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="corner-bottom-left.png" alt="corner-bottom-left"></div>
+          <div class="label">corner-bottom-left.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="corner-bottom-right.png" alt="corner-bottom-right"></div>
+          <div class="label">corner-bottom-right.png</div>
+        </div>
+      </div>
+
+      <h2 class="section-title">标准素材</h2>
+      <div class="grid">
+        <div class="tile">
+          <div class="art"><img src="mascot.png" alt="mascot"></div>
+          <div class="label">mascot.png</div>
+        </div>
+        <div class="tile wide">
+          <div class="art"><img src="crest-wide.png" alt="crest-wide"></div>
+          <div class="label">crest-wide.png</div>
+        </div>
+        <div class="tile wide">
+          <div class="art"><img src="divider-vine.png" alt="divider-vine"></div>
+          <div class="label">divider-vine.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="shield.png" alt="shield"></div>
+          <div class="label">shield.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="gem-square.png" alt="gem-square"></div>
+          <div class="label">gem-square.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="clover-medallion.png" alt="clover-medallion"></div>
+          <div class="label">clover-medallion.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="leaf-small.png" alt="leaf-small"></div>
+          <div class="label">leaf-small.png</div>
+        </div>
+        <div class="tile">
+          <div class="art"><img src="leaf-emblem.png" alt="leaf-emblem"></div>
+          <div class="label">leaf-emblem.png</div>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
