@@ -1361,6 +1361,510 @@ button {
     padding-inline: 10px;
   }
 }
+
+/* Compact Nahida asset skin. Small functional ornaments, no oversized hero art. */
+:host {
+  --nahida-green: #3e7a35;
+  --nahida-green-dark: #2f5f27;
+  --nahida-gold: #c9a24a;
+  --nahida-gold-soft: #e5cf86;
+  --nahida-cream: #fffaf0;
+  --nahida-paper: #fbf6df;
+  --nahida-border: rgba(190, 153, 58, 0.52);
+  --nahida-shadow: 0 14px 34px rgba(47, 74, 30, 0.2);
+  --nahida-muted: #746d5a;
+  --nahida-text: #3f4b2d;
+}
+
+.panel,
+.gpt-panel,
+.gpt-collapsed-panel,
+.settings-popover {
+  border-color: var(--nahida-border);
+  background:
+    radial-gradient(circle at 18% 0%, rgba(207, 232, 154, 0.28), transparent 32%),
+    radial-gradient(circle at 100% 14%, rgba(229, 207, 134, 0.18), transparent 28%),
+    linear-gradient(180deg, rgba(255, 253, 244, 0.97), rgba(251, 246, 223, 0.96));
+  color: var(--nahida-text);
+  box-shadow: var(--nahida-shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+}
+
+.panel,
+.gpt-panel,
+.gpt-collapsed-panel {
+  position: relative;
+}
+
+.gpt-panel {
+  width: min(380px, calc(100vw - 16px));
+  height: min(540px, calc(100vh - 16px));
+  min-height: 380px;
+  border-radius: 14px;
+}
+
+.panel {
+  width: min(300px, calc(100vw - 24px));
+  border-radius: 12px;
+}
+
+.settings-popover {
+  position: fixed;
+  width: min(330px, calc(100vw - 20px));
+  border-radius: 12px;
+}
+
+.panel-corners,
+.card-corners {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.corner,
+.card-corner,
+.title-icon,
+.section-title-icon,
+.inline-icon,
+.section-badge,
+.progress-leaf,
+.chip-icon,
+.vine-divider-image {
+  display: block;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.corner {
+  position: absolute;
+  width: 38px;
+  height: 34px;
+  opacity: 0.72;
+}
+
+.compact-corners .corner {
+  width: 30px;
+  height: 27px;
+  opacity: 0.62;
+}
+
+.corner-top-left {
+  top: 3px;
+  left: 3px;
+}
+
+.corner-top-right {
+  top: 3px;
+  right: 3px;
+}
+
+.corner-bottom-left {
+  bottom: 3px;
+  left: 3px;
+}
+
+.corner-bottom-right {
+  right: 3px;
+  bottom: 3px;
+}
+
+.header,
+.meta,
+.model-meta,
+.content,
+.gpt-content,
+.vine-divider,
+.settings-header,
+.settings-check,
+.settings-label,
+.settings-input-wrap,
+.settings-help,
+.settings-actions {
+  position: relative;
+  z-index: 1;
+}
+
+.header {
+  min-height: 48px;
+  padding: 10px 12px 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 242, 0.94), rgba(247, 242, 217, 0.88)),
+    linear-gradient(90deg, rgba(159, 207, 90, 0.12), transparent 48%, rgba(229, 207, 134, 0.12));
+}
+
+.gpt-header {
+  min-height: 54px;
+  padding: 10px 12px 9px;
+}
+
+.title,
+.gpt-title,
+.settings-title,
+.meter-section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.title::before,
+.gpt-title::before,
+.settings-title::before,
+.meter-section-title::before {
+  content: none;
+  margin: 0;
+}
+
+.title-text,
+.section-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.title-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  filter: drop-shadow(0 2px 4px rgba(61, 84, 36, 0.18));
+}
+
+.gpt-title .title-icon {
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
+}
+
+.gpt-title {
+  font-size: 18px;
+}
+
+.title {
+  font-size: 14px;
+}
+
+.gpt-alerts {
+  padding: 3px 8px;
+  font-size: 11px;
+  color: #667747;
+  background: linear-gradient(180deg, rgba(255, 253, 241, 0.86), rgba(239, 246, 214, 0.82));
+}
+
+.actions,
+.gpt-actions {
+  gap: 6px;
+}
+
+.icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border-color: rgba(169, 140, 55, 0.5);
+  background: linear-gradient(145deg, #fffdf5, #eef5d8);
+  color: var(--nahida-green-dark);
+}
+
+.icon-button:hover {
+  border-color: rgba(62, 122, 53, 0.62);
+  background: linear-gradient(145deg, #fffef8, #e8f3ce);
+}
+
+.meta {
+  padding: 7px 12px;
+  font-size: 11px;
+}
+
+.gpt-panel > .meta {
+  padding: 7px 12px 5px;
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.inline-icon {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+}
+
+.vine-divider {
+  height: 16px;
+  margin: 0 12px 2px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.panel .vine-divider {
+  height: 12px;
+  margin-inline: 10px;
+}
+
+.vine-divider-image {
+  width: 100%;
+  height: 100%;
+  opacity: 0.62;
+}
+
+.gpt-content {
+  padding: 0 10px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(95, 122, 54, 0.32) transparent;
+}
+
+.content {
+  padding: 4px 10px 10px;
+}
+
+.gpt-content::-webkit-scrollbar,
+.gpt-content:hover::-webkit-scrollbar,
+.gpt-content:focus-within::-webkit-scrollbar {
+  width: 6px;
+}
+
+.meter-section {
+  margin-top: 8px;
+  padding: 10px 12px 9px;
+  border-color: rgba(190, 153, 58, 0.3);
+  border-radius: 9px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.68),
+    0 7px 16px rgba(73, 84, 47, 0.08);
+  overflow: hidden;
+}
+
+.gpt-content .meter-section {
+  margin-top: 9px;
+}
+
+.meter-section::after {
+  content: none;
+}
+
+.meter-section::before {
+  content: "";
+  position: absolute;
+  inset: 4px;
+  border: 1px solid rgba(190, 153, 58, 0.14);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.card-corners {
+  opacity: 0.42;
+}
+
+.card-corner {
+  position: absolute;
+  width: 18px;
+  height: 16px;
+  opacity: 0.5;
+}
+
+.card-corner-top-left {
+  top: 3px;
+  left: 3px;
+}
+
+.card-corner-bottom-right {
+  display: none;
+}
+
+.meter-section-title {
+  position: relative;
+  z-index: 1;
+  padding: 1px 30px 6px 0;
+  color: var(--nahida-green-dark);
+  font-size: 13px;
+  font-weight: 780;
+}
+
+.section-title-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+}
+
+.meter-section-title::after {
+  min-width: 24px;
+  background: linear-gradient(90deg, rgba(111, 156, 55, 0.35), rgba(201, 162, 74, 0.24), transparent);
+}
+
+.section-badge {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  z-index: 1;
+  opacity: 0.86;
+  filter: drop-shadow(0 3px 5px rgba(61, 84, 36, 0.16));
+}
+
+.shield-badge {
+  top: 27px;
+  width: 34px;
+  height: 34px;
+}
+
+.sentinel-block,
+.meter {
+  position: relative;
+  z-index: 1;
+}
+
+.sentinel-block {
+  padding: 3px 0 1px;
+}
+
+.sentinel-row {
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.sentinel-explanation {
+  font-size: 11px;
+}
+
+.ip-risk-block {
+  padding-right: 42px;
+}
+
+.meter,
+.gpt-content .meter {
+  padding: 8px 0;
+  border-top-color: rgba(151, 132, 62, 0.18);
+}
+
+.meter-label,
+.meter-value {
+  font-size: 12px;
+}
+
+.bar {
+  position: relative;
+  height: 7px;
+  margin-top: 7px;
+  overflow: visible;
+}
+
+.bar-fill::after {
+  content: none;
+}
+
+.progress-leaf {
+  position: absolute;
+  top: 50%;
+  left: clamp(7px, var(--meter-progress), calc(100% - 7px));
+  width: 14px;
+  height: 14px;
+  transform: translate(-50%, -50%) rotate(-18deg);
+  filter: drop-shadow(0 1px 2px rgba(55, 75, 36, 0.28));
+  pointer-events: none;
+}
+
+.meter-bottom {
+  margin-top: 5px;
+  font-size: 10.5px;
+}
+
+.badge {
+  padding: 2px 6px;
+  color: #60743f;
+}
+
+.badge::before {
+  content: "✤";
+  margin-right: 4px;
+  color: var(--nahida-green);
+}
+
+.collapsed,
+.gpt-restore-chip {
+  grid-template-columns: 18px 8px minmax(0, 1fr);
+  border-radius: 999px;
+  overflow: visible;
+  position: relative;
+}
+
+.chip-icon {
+  width: 18px;
+  height: 18px;
+  opacity: 0.86;
+}
+
+.capsule-mascot {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 5px);
+  z-index: 5;
+  width: 62px;
+  height: auto;
+  max-width: none;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 4px 7px rgba(43, 61, 28, 0.22));
+}
+
+.gpt-collapsed-panel {
+  width: min(360px, calc(100vw - 16px));
+  min-height: 46px;
+  grid-template-columns: minmax(88px, auto) minmax(72px, 1fr) auto;
+  border-radius: 14px;
+  padding: 8px 10px;
+  overflow: visible;
+  position: relative;
+}
+
+.gpt-collapsed-panel .capsule-mascot {
+  bottom: calc(100% - 6px);
+  width: 68px;
+}
+
+.gpt-collapsed-panel .gpt-title {
+  font-size: 15px;
+}
+
+.gpt-collapsed-panel .title-icon {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
+
+.gpt-collapsed-summary {
+  font-size: 12px;
+}
+
+.settings-title .title-icon {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
+}
+
+@media (max-width: 420px) {
+  .gpt-panel {
+    width: min(360px, calc(100vw - 12px));
+    height: min(520px, calc(100vh - 14px));
+  }
+
+  .gpt-collapsed-panel {
+    width: min(340px, calc(100vw - 12px));
+    grid-template-columns: minmax(82px, auto) minmax(48px, 1fr) auto;
+  }
+
+  .gpt-alerts {
+    display: none;
+  }
+}
 `;
   const PLATFORM_LABEL = {
     grok: "Grok",
@@ -1513,6 +2017,8 @@ button {
       button.setAttribute("aria-label", "恢复 GPT 用量面板");
       this.installChipDrag(button);
       button.append(
+        decorativeAsset("capsule-mascot.png", "capsule-mascot"),
+        decorativeAsset("leaf-emblem.png", "chip-icon"),
         el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
         node("span", "collapsed-main", [
           textEl("span", "platform", "GPT"),
@@ -1620,7 +2126,7 @@ button {
     }
     renderChatGptCollapsed() {
       const panel = el("section", "gpt-collapsed-panel");
-      const title = textEl("div", "gpt-title", "GPT 用量");
+      const title = titleNode("gpt-title", "GPT 用量", "clover-medallion.png");
       const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
       const actions = el("div", "gpt-actions");
       const refresh = this.renderActionButton(
@@ -1638,21 +2144,23 @@ button {
         this.render();
       });
       actions.append(this.renderSettingsButton(), refresh, expand, close);
-      panel.append(title, summary, actions);
+      panel.append(decorativeAsset("capsule-mascot.png", "capsule-mascot"), title, summary, actions);
       return panel;
     }
     renderChatGptPanel() {
       const panel = el("section", "gpt-panel");
       panel.append(
+        panelCorners("panel-corners"),
         this.renderChatGptHeader(),
         this.renderMeta(),
+        vineDivider(),
         this.renderChatGptContent()
       );
       return panel;
     }
     renderChatGptHeader() {
       const header = el("div", "header gpt-header");
-      const title = textEl("div", "title gpt-title", "GPT 用量");
+      const title = titleNode("title gpt-title", "GPT 用量", "clover-medallion.png");
       const right = el("div", "gpt-header-right");
       right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
       const actions = el("div", "actions gpt-actions");
@@ -1703,7 +2211,8 @@ button {
         return null;
       }
       const section = el("section", "meter-section sentinel-section");
-      section.append(textEl("div", "meter-section-title", "账号状态"));
+      section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
+      section.append(sectionTitle("账号状态", "leaf-small.png"));
       const gate = el("div", "sentinel-block");
       gate.append(
         this.renderSentinelRow(
@@ -1722,7 +2231,8 @@ button {
     }
     renderIpRiskSection() {
       const section = el("section", "meter-section ip-risk-section");
-      section.append(textEl("div", "meter-section-title", "网络风险"));
+      section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
+      section.append(sectionTitle("网络风险", "leaf-small.png"));
       const block = el("div", "sentinel-block ip-risk-block");
       block.append(this.renderSentinelRow("IP 检测", this.ipRiskStatusText()));
       const freshIpRisk = this.freshIpRiskState();
@@ -1758,7 +2268,7 @@ button {
       const panel = el("section", "settings-popover");
       const header = el("div", "settings-header");
       header.append(
-        textEl("div", "settings-title", "IP 检测设置"),
+        titleNode("settings-title", "IP 检测设置", "shield.png"),
         this.renderActionButton("×", "关闭 IP 检测设置", () => {
           this.ipRiskSettingsOpen = false;
           this.render();
@@ -1883,13 +2393,15 @@ button {
     renderSentinelBar(score) {
       const bar = el("div", "bar sentinel-bar");
       const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-      fill.style.width = `${clampPercent(score)}%`;
-      bar.append(fill);
+      const progress = clampPercent(score);
+      fill.style.width = `${progress}%`;
+      bar.style.setProperty("--meter-progress", `${progress}%`);
+      bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
       return bar;
     }
     renderMeterSection(label, meters) {
       const section = el("section", "meter-section");
-      section.append(textEl("div", "meter-section-title", label));
+      section.append(cardCorners(), sectionTitle(label, "leaf-small.png"));
       for (const meter of meters) {
         section.append(this.renderMeter(meter));
       }
@@ -1918,6 +2430,8 @@ button {
         this.render();
       });
       button.append(
+        decorativeAsset("capsule-mascot.png", "capsule-mascot"),
+        decorativeAsset(platformTitleAsset(this.platform), "chip-icon"),
         el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
         node("span", "collapsed-main", [
           textEl("span", "platform", PLATFORM_LABEL[this.platform]),
@@ -1928,7 +2442,7 @@ button {
     }
     renderPanel() {
       const panel = el("section", "panel");
-      panel.append(this.renderHeader(), this.renderMeta());
+      panel.append(panelCorners("panel-corners compact-corners"), this.renderHeader(), this.renderMeta(), vineDivider());
       if (this.platform === "grok") {
         const modelMeta = this.renderGrokModelMeta();
         if (modelMeta) {
@@ -1940,7 +2454,11 @@ button {
     }
     renderHeader() {
       const header = el("div", "header");
-      const title = textEl("div", "title", `${PLATFORM_LABEL[this.platform]} 用量`);
+      const title = titleNode(
+        "title",
+        `${PLATFORM_LABEL[this.platform]} 用量`,
+        platformTitleAsset(this.platform)
+      );
       const actions = el("div", "actions");
       const refresh = textEl("button", "icon-button", this.loading ? "..." : "↻");
       refresh.type = "button";
@@ -1964,7 +2482,10 @@ button {
       const meta = el("div", "meta");
       const updated = this.snapshot ? `更新于 ${formatAge(this.snapshot.updatedAt)}` : "尚未更新";
       const right = this.backoffRemainingMs() > 0 ? `等待 ${Math.ceil(this.backoffRemainingMs() / 1e3)}秒` : this.snapshot?.cacheAgeMs !== void 0 ? `缓存 ${Math.floor(this.snapshot.cacheAgeMs / 1e3)}秒` : this.loading ? "加载中" : "";
-      meta.append(textEl("span", "", updated), textEl("span", "", right));
+      meta.append(
+        iconText("span", "meta-item", "leaf-small.png", updated),
+        right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
+      );
       return meta;
     }
     renderGrokModelMeta() {
@@ -2007,7 +2528,8 @@ button {
         fill.classList.add("remaining-fill");
       }
       fill.style.width = `${progress}%`;
-      bar.append(fill);
+      bar.style.setProperty("--meter-progress", `${progress}%`);
+      bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
       const bottom = el("div", "meter-bottom");
       const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
       bottom.append(
@@ -2273,6 +2795,79 @@ button {
       return `${meter.modelName} · ${meter.requestKind}`;
     }
     return meter.modelName;
+  }
+  function assetUrl(name) {
+    const path = `assets/nahida/${name}`;
+    if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+      return chrome.runtime.getURL(path);
+    }
+    return path;
+  }
+  function decorativeAsset(name, className) {
+    const image = document.createElement("img");
+    image.className = className;
+    image.src = assetUrl(name);
+    image.alt = "";
+    image.decoding = "async";
+    image.draggable = false;
+    image.setAttribute("aria-hidden", "true");
+    return image;
+  }
+  function titleNode(className, label, assetName) {
+    const title = el("div", className);
+    title.append(
+      decorativeAsset(assetName, "title-icon"),
+      textEl("span", "title-text", label)
+    );
+    return title;
+  }
+  function sectionTitle(label, assetName) {
+    const title = el("div", "meter-section-title");
+    title.append(
+      decorativeAsset(assetName, "section-title-icon"),
+      textEl("span", "section-title-text", label)
+    );
+    return title;
+  }
+  function iconText(tagName, className, assetName, label) {
+    const element = el(tagName, className);
+    element.append(decorativeAsset(assetName, "inline-icon"), document.createTextNode(label));
+    return element;
+  }
+  function panelCorners(className) {
+    const frame = el("div", className);
+    frame.append(
+      decorativeAsset("corner-top-left.png", "corner corner-top-left"),
+      decorativeAsset("corner-top-right.png", "corner corner-top-right"),
+      decorativeAsset("corner-bottom-left.png", "corner corner-bottom-left"),
+      decorativeAsset("corner-bottom-right.png", "corner corner-bottom-right")
+    );
+    frame.setAttribute("aria-hidden", "true");
+    return frame;
+  }
+  function cardCorners() {
+    const frame = el("div", "card-corners");
+    frame.append(
+      decorativeAsset("corner-top-left.png", "card-corner card-corner-top-left"),
+      decorativeAsset("corner-bottom-right.png", "card-corner card-corner-bottom-right")
+    );
+    frame.setAttribute("aria-hidden", "true");
+    return frame;
+  }
+  function vineDivider() {
+    const divider = el("div", "vine-divider");
+    divider.append(decorativeAsset("divider-vine.png", "vine-divider-image"));
+    divider.setAttribute("aria-hidden", "true");
+    return divider;
+  }
+  function platformTitleAsset(platform2) {
+    if (platform2 === "chatgpt") {
+      return "clover-medallion.png";
+    }
+    if (platform2 === "claude") {
+      return "leaf-emblem.png";
+    }
+    return "leaf-small.png";
   }
   function unique(values) {
     return Array.from(new Set(values));

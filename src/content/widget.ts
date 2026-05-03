@@ -73,6 +73,19 @@ const METER_LABELS: Record<string, string> = {
   "Credits (unlimited)": "余额（无限）"
 };
 
+type NahidaAssetName =
+  | "capsule-mascot.png"
+  | "clover-medallion.png"
+  | "corner-bottom-left.png"
+  | "corner-bottom-right.png"
+  | "corner-top-left.png"
+  | "corner-top-right.png"
+  | "divider-vine.png"
+  | "gem-square.png"
+  | "leaf-emblem.png"
+  | "leaf-small.png"
+  | "shield.png";
+
 export class UsageWidget {
   private readonly host = document.createElement("div");
   private readonly shadow = this.host.attachShadow({ mode: "open" });
@@ -189,6 +202,8 @@ export class UsageWidget {
     button.setAttribute("aria-label", "恢复 GPT 用量面板");
     this.installChipDrag(button);
     button.append(
+      decorativeAsset("capsule-mascot.png", "capsule-mascot"),
+      decorativeAsset("leaf-emblem.png", "chip-icon"),
       el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
       node("span", "collapsed-main", [
         textEl("span", "platform", "GPT"),
@@ -307,7 +322,7 @@ export class UsageWidget {
 
   private renderChatGptCollapsed(): HTMLElement {
     const panel = el("section", "gpt-collapsed-panel");
-    const title = textEl("div", "gpt-title", "GPT 用量");
+    const title = titleNode("gpt-title", "GPT 用量", "clover-medallion.png");
     const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
     const actions = el("div", "gpt-actions");
 
@@ -328,15 +343,17 @@ export class UsageWidget {
     });
 
     actions.append(this.renderSettingsButton(), refresh, expand, close);
-    panel.append(title, summary, actions);
+    panel.append(decorativeAsset("capsule-mascot.png", "capsule-mascot"), title, summary, actions);
     return panel;
   }
 
   private renderChatGptPanel(): HTMLElement {
     const panel = el("section", "gpt-panel");
     panel.append(
+      panelCorners("panel-corners"),
       this.renderChatGptHeader(),
       this.renderMeta(),
+      vineDivider(),
       this.renderChatGptContent()
     );
     return panel;
@@ -344,7 +361,7 @@ export class UsageWidget {
 
   private renderChatGptHeader(): HTMLElement {
     const header = el("div", "header gpt-header");
-    const title = textEl("div", "title gpt-title", "GPT 用量");
+    const title = titleNode("title gpt-title", "GPT 用量", "clover-medallion.png");
     const right = el("div", "gpt-header-right");
     right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
 
@@ -400,7 +417,8 @@ export class UsageWidget {
       return null;
     }
     const section = el("section", "meter-section sentinel-section");
-    section.append(textEl("div", "meter-section-title", "账号状态"));
+    section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
+    section.append(sectionTitle("账号状态", "leaf-small.png"));
 
     const gate = el("div", "sentinel-block");
     gate.append(
@@ -421,7 +439,8 @@ export class UsageWidget {
 
   private renderIpRiskSection(): HTMLElement {
     const section = el("section", "meter-section ip-risk-section");
-    section.append(textEl("div", "meter-section-title", "网络风险"));
+    section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
+    section.append(sectionTitle("网络风险", "leaf-small.png"));
 
     const block = el("div", "sentinel-block ip-risk-block");
     block.append(this.renderSentinelRow("IP 检测", this.ipRiskStatusText()));
@@ -467,7 +486,7 @@ export class UsageWidget {
     const panel = el("section", "settings-popover");
     const header = el("div", "settings-header");
     header.append(
-      textEl("div", "settings-title", "IP 检测设置"),
+      titleNode("settings-title", "IP 检测设置", "shield.png"),
       this.renderActionButton("×", "关闭 IP 检测设置", () => {
         this.ipRiskSettingsOpen = false;
         this.render();
@@ -620,14 +639,16 @@ export class UsageWidget {
   private renderSentinelBar(score: number): HTMLElement {
     const bar = el("div", "bar sentinel-bar");
     const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-    fill.style.width = `${clampPercent(score)}%`;
-    bar.append(fill);
+    const progress = clampPercent(score);
+    fill.style.width = `${progress}%`;
+    bar.style.setProperty("--meter-progress", `${progress}%`);
+    bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
     return bar;
   }
 
   private renderMeterSection(label: string, meters: UsageMeter[]): HTMLElement {
     const section = el("section", "meter-section");
-    section.append(textEl("div", "meter-section-title", label));
+    section.append(cardCorners(), sectionTitle(label, "leaf-small.png"));
     for (const meter of meters) {
       section.append(this.renderMeter(meter));
     }
@@ -664,6 +685,8 @@ export class UsageWidget {
     });
 
     button.append(
+      decorativeAsset("capsule-mascot.png", "capsule-mascot"),
+      decorativeAsset(platformTitleAsset(this.platform), "chip-icon"),
       el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
       node("span", "collapsed-main", [
         textEl("span", "platform", PLATFORM_LABEL[this.platform]),
@@ -675,7 +698,7 @@ export class UsageWidget {
 
   private renderPanel(): HTMLElement {
     const panel = el("section", "panel");
-    panel.append(this.renderHeader(), this.renderMeta());
+    panel.append(panelCorners("panel-corners compact-corners"), this.renderHeader(), this.renderMeta(), vineDivider());
     if (this.platform === "grok") {
       const modelMeta = this.renderGrokModelMeta();
       if (modelMeta) {
@@ -688,7 +711,11 @@ export class UsageWidget {
 
   private renderHeader(): HTMLElement {
     const header = el("div", "header");
-    const title = textEl("div", "title", `${PLATFORM_LABEL[this.platform]} 用量`);
+    const title = titleNode(
+      "title",
+      `${PLATFORM_LABEL[this.platform]} 用量`,
+      platformTitleAsset(this.platform)
+    );
     const actions = el("div", "actions");
 
     const refresh = textEl("button", "icon-button", this.loading ? "..." : "↻");
@@ -725,7 +752,10 @@ export class UsageWidget {
           : this.loading
             ? "加载中"
             : "";
-    meta.append(textEl("span", "", updated), textEl("span", "", right));
+    meta.append(
+      iconText("span", "meta-item", "leaf-small.png", updated),
+      right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
+    );
     return meta;
   }
 
@@ -772,7 +802,8 @@ export class UsageWidget {
       fill.classList.add("remaining-fill");
     }
     fill.style.width = `${progress}%`;
-    bar.append(fill);
+    bar.style.setProperty("--meter-progress", `${progress}%`);
+    bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
 
     const bottom = el("div", "meter-bottom");
     const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
@@ -1136,6 +1167,97 @@ function modelSummaryFromMeter(meter: UsageMeter): string | null {
     return `${meter.modelName} · ${meter.requestKind}`;
   }
   return meter.modelName;
+}
+
+function assetUrl(name: NahidaAssetName): string {
+  const path = `assets/nahida/${name}`;
+  if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
+    return chrome.runtime.getURL(path);
+  }
+  return path;
+}
+
+function decorativeAsset(name: NahidaAssetName, className: string): HTMLImageElement {
+  const image = document.createElement("img");
+  image.className = className;
+  image.src = assetUrl(name);
+  image.alt = "";
+  image.decoding = "async";
+  image.draggable = false;
+  image.setAttribute("aria-hidden", "true");
+  return image;
+}
+
+function titleNode(
+  className: string,
+  label: string,
+  assetName: NahidaAssetName
+): HTMLElement {
+  const title = el("div", className);
+  title.append(
+    decorativeAsset(assetName, "title-icon"),
+    textEl("span", "title-text", label)
+  );
+  return title;
+}
+
+function sectionTitle(label: string, assetName: NahidaAssetName): HTMLElement {
+  const title = el("div", "meter-section-title");
+  title.append(
+    decorativeAsset(assetName, "section-title-icon"),
+    textEl("span", "section-title-text", label)
+  );
+  return title;
+}
+
+function iconText<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className: string,
+  assetName: NahidaAssetName,
+  label: string
+): HTMLElementTagNameMap[K] {
+  const element = el(tagName, className);
+  element.append(decorativeAsset(assetName, "inline-icon"), document.createTextNode(label));
+  return element;
+}
+
+function panelCorners(className: string): HTMLElement {
+  const frame = el("div", className);
+  frame.append(
+    decorativeAsset("corner-top-left.png", "corner corner-top-left"),
+    decorativeAsset("corner-top-right.png", "corner corner-top-right"),
+    decorativeAsset("corner-bottom-left.png", "corner corner-bottom-left"),
+    decorativeAsset("corner-bottom-right.png", "corner corner-bottom-right")
+  );
+  frame.setAttribute("aria-hidden", "true");
+  return frame;
+}
+
+function cardCorners(): HTMLElement {
+  const frame = el("div", "card-corners");
+  frame.append(
+    decorativeAsset("corner-top-left.png", "card-corner card-corner-top-left"),
+    decorativeAsset("corner-bottom-right.png", "card-corner card-corner-bottom-right")
+  );
+  frame.setAttribute("aria-hidden", "true");
+  return frame;
+}
+
+function vineDivider(): HTMLElement {
+  const divider = el("div", "vine-divider");
+  divider.append(decorativeAsset("divider-vine.png", "vine-divider-image"));
+  divider.setAttribute("aria-hidden", "true");
+  return divider;
+}
+
+function platformTitleAsset(platform: PlatformId): NahidaAssetName {
+  if (platform === "chatgpt") {
+    return "clover-medallion.png";
+  }
+  if (platform === "claude") {
+    return "leaf-emblem.png";
+  }
+  return "leaf-small.png";
 }
 
 function unique(values: string[]): string[] {
