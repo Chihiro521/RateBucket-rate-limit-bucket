@@ -184,6 +184,9 @@ export class UsageWidget {
       );
       return;
     }
+    if (this.expanded) {
+      this.resetPanelPosition();
+    }
     this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
   }
 
@@ -246,9 +249,6 @@ export class UsageWidget {
   }
 
   private resetPanelPosition(): void {
-    if (this.platform !== "chatgpt") {
-      return;
-    }
     this.host.style.top = "";
     this.host.style.right = "";
     this.host.style.bottom = "";
@@ -260,6 +260,7 @@ export class UsageWidget {
     let startX = 0;
     let startY = 0;
     let moved = false;
+    let suppressPointerClickUntil = 0;
 
     const onPointerMove = (event: PointerEvent): void => {
       const deltaX = event.clientX - startX;
@@ -277,10 +278,22 @@ export class UsageWidget {
       button.removeEventListener("pointermove", onPointerMove);
       button.removeEventListener("pointerup", onPointerUp);
       button.removeEventListener("pointercancel", onPointerUp);
-      if (!moved) {
-        onActivate();
+      if (moved) {
+        suppressPointerClickUntil = Date.now() + 350;
+        event.preventDefault();
       }
     };
+
+    button.addEventListener("click", (event) => {
+      if (event.detail > 0 && Date.now() < suppressPointerClickUntil) {
+        suppressPointerClickUntil = 0;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      suppressPointerClickUntil = 0;
+      onActivate();
+    });
 
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) {

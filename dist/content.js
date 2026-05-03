@@ -2004,6 +2004,9 @@ button {
         );
         return;
       }
+      if (this.expanded) {
+        this.resetPanelPosition();
+      }
       this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
     }
     replaceRootWith(main) {
@@ -2061,9 +2064,6 @@ button {
       this.host.style.left = `${this.chipPosition.offset}px`;
     }
     resetPanelPosition() {
-      if (this.platform !== "chatgpt") {
-        return;
-      }
       this.host.style.top = "";
       this.host.style.right = "";
       this.host.style.bottom = "";
@@ -2074,6 +2074,7 @@ button {
       let startX = 0;
       let startY = 0;
       let moved = false;
+      let suppressPointerClickUntil = 0;
       const onPointerMove = (event) => {
         const deltaX = event.clientX - startX;
         const deltaY = event.clientY - startY;
@@ -2089,10 +2090,21 @@ button {
         button.removeEventListener("pointermove", onPointerMove);
         button.removeEventListener("pointerup", onPointerUp);
         button.removeEventListener("pointercancel", onPointerUp);
-        if (!moved) {
-          onActivate();
+        if (moved) {
+          suppressPointerClickUntil = Date.now() + 350;
+          event.preventDefault();
         }
       };
+      button.addEventListener("click", (event) => {
+        if (event.detail > 0 && Date.now() < suppressPointerClickUntil) {
+          suppressPointerClickUntil = 0;
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        suppressPointerClickUntil = 0;
+        onActivate();
+      });
       button.addEventListener("pointerdown", (event) => {
         if (event.button !== 0) {
           return;
