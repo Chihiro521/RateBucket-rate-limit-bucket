@@ -32,6 +32,16 @@ RateBucket 目前适合从源码本地安装使用，尚未发布到 Chrome Web 
 
 扩展也会观察页面自身对允许列表内用量端点的 fetch 响应。被观察到的响应会经过和主动刷新相同的 normalizer。
 
+## 浏览器兼容性
+
+RateBucket 目前只在桌面版 Chrome / Chromium 系浏览器上做过测试。
+
+已知可用目标：
+
+- Google Chrome / Chromium 兼容桌面版本
+
+其他 Chromium 系浏览器理论上可能可用，但尚未系统测试。Firefox、Safari 和移动端浏览器暂不提供官方支持。
+
 ## 工作方式
 
 RateBucket 是一个 Manifest V3 扩展：

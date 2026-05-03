@@ -32,6 +32,16 @@ Before a public Chrome Web Store release, the project still needs store-ready ic
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
 
+## Browser Compatibility
+
+RateBucket has currently only been tested on Chrome/Chromium-based desktop browsers.
+
+Known working target:
+
+- Google Chrome / Chromium-compatible desktop builds
+
+Other Chromium-based browsers may work, but have not been systematically tested. Firefox, Safari, and mobile browsers are not officially supported.
+
 ## How It Works
 
 RateBucket is built as a Manifest V3 extension:
