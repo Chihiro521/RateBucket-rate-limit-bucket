@@ -200,7 +200,12 @@ export class UsageWidget {
     button.type = "button";
     this.applyChipPosition();
     button.setAttribute("aria-label", "恢复 GPT 用量面板");
-    this.installChipDrag(button);
+    this.installChipDrag(button, () => {
+      this.hidden = false;
+      this.expanded = true;
+      this.resetPanelPosition();
+      this.render();
+    });
     button.append(
       decorativeAsset("capsule-mascot.png", "capsule-mascot"),
       decorativeAsset("leaf-emblem.png", "chip-icon"),
@@ -251,7 +256,7 @@ export class UsageWidget {
     this.host.style.transform = "";
   }
 
-  private installChipDrag(button: HTMLButtonElement): void {
+  private installChipDrag(button: HTMLButtonElement, onActivate: () => void): void {
     let startX = 0;
     let startY = 0;
     let moved = false;
@@ -273,10 +278,7 @@ export class UsageWidget {
       button.removeEventListener("pointerup", onPointerUp);
       button.removeEventListener("pointercancel", onPointerUp);
       if (!moved) {
-        this.hidden = false;
-        this.expanded = true;
-        this.resetPanelPosition();
-        this.render();
+        onActivate();
       }
     };
 
@@ -679,7 +681,8 @@ export class UsageWidget {
     const button = el("button", "collapsed");
     button.type = "button";
     button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
-    button.addEventListener("click", () => {
+    this.applyChipPosition();
+    this.installChipDrag(button, () => {
       this.expanded = true;
       this.render();
     });

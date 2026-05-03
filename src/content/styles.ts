@@ -39,6 +39,9 @@ button {
   align-items: center;
   padding: 6px 10px;
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .gpt-restore-chip {

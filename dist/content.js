@@ -445,6 +445,9 @@ button {
   align-items: center;
   padding: 6px 10px;
   cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .gpt-restore-chip {
@@ -2015,7 +2018,12 @@ button {
       button.type = "button";
       this.applyChipPosition();
       button.setAttribute("aria-label", "恢复 GPT 用量面板");
-      this.installChipDrag(button);
+      this.installChipDrag(button, () => {
+        this.hidden = false;
+        this.expanded = true;
+        this.resetPanelPosition();
+        this.render();
+      });
       button.append(
         decorativeAsset("capsule-mascot.png", "capsule-mascot"),
         decorativeAsset("leaf-emblem.png", "chip-icon"),
@@ -2062,7 +2070,7 @@ button {
       this.host.style.left = "";
       this.host.style.transform = "";
     }
-    installChipDrag(button) {
+    installChipDrag(button, onActivate) {
       let startX = 0;
       let startY = 0;
       let moved = false;
@@ -2082,10 +2090,7 @@ button {
         button.removeEventListener("pointerup", onPointerUp);
         button.removeEventListener("pointercancel", onPointerUp);
         if (!moved) {
-          this.hidden = false;
-          this.expanded = true;
-          this.resetPanelPosition();
-          this.render();
+          onActivate();
         }
       };
       button.addEventListener("pointerdown", (event) => {
@@ -2425,7 +2430,8 @@ button {
       const button = el("button", "collapsed");
       button.type = "button";
       button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
-      button.addEventListener("click", () => {
+      this.applyChipPosition();
+      this.installChipDrag(button, () => {
         this.expanded = true;
         this.render();
       });
