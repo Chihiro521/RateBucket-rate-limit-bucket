@@ -183,51 +183,19 @@ export class UsageWidget {
   }
 
   private renderChatGptRestoreChip(): HTMLElement {
-    const value = this.chatGptPrimaryValue();
-    const button = this.renderNahidaCapsule("GPT", value, () => {
-      this.hidden = false;
-      this.expanded = true;
-      this.resetPanelPosition();
-      this.render();
-    });
-    button.classList.add("gpt-restore-chip");
+    const button = el("button", "gpt-restore-chip");
+    button.type = "button";
     this.applyChipPosition();
-    this.installChipDrag(button as HTMLButtonElement);
+    button.setAttribute("aria-label", "恢复 GPT 用量面板");
+    this.installChipDrag(button);
+    button.append(
+      el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
+      node("span", "collapsed-main", [
+        textEl("span", "platform", "GPT"),
+        textEl("span", "primary", this.chatGptPrimaryValue())
+      ])
+    );
     return button;
-  }
-
-  private renderNahidaCapsule(platform: string, value: string, onClick: () => void): HTMLElement {
-    const capsule = el("button", "nahida-capsule");
-    capsule.type = "button";
-    capsule.addEventListener("click", onClick);
-
-    const bg = el("div", "nahida-capsule-bg");
-    const leafLeft = el("div", "nahida-leaf nahida-leaf-left");
-    const leafRight = el("div", "nahida-leaf nahida-leaf-right");
-    const gem = el("div", "nahida-gem");
-
-    const avatarWrap = el("div", "nahida-avatar-wrap");
-    const avatar = el("img", "nahida-avatar");
-    (avatar as HTMLImageElement).src = chrome.runtime.getURL("nihida.webp");
-    const avatarBorder = el("div", "nahida-avatar-border");
-    avatarWrap.append(avatar, avatarBorder);
-
-    const content = el("div", "nahida-content");
-    const platformEl = textEl("div", "nahida-platform", platform);
-    const valueRow = el("div", "nahida-value-row");
-    const label = textEl("span", "nahida-label", "剩余");
-    const valueEl = textEl("span", "nahida-value", value);
-    
-    // Adjust label/value based on format
-    if (value.includes("/") || value.includes("%")) {
-      label.textContent = "状态";
-    }
-
-    valueRow.append(label, valueEl);
-    content.append(platformEl, valueRow);
-
-    capsule.append(bg, leafLeft, leafRight, gem, avatarWrap, content);
-    return capsule;
   }
 
   private applyChipPosition(): void {
@@ -338,17 +306,11 @@ export class UsageWidget {
   }
 
   private renderChatGptCollapsed(): HTMLElement {
-    const container = el("div", "gpt-collapsed-nahida-container");
-    container.style.display = "flex";
-    container.style.alignItems = "center";
-    container.style.gap = "8px";
-
-    const capsule = this.renderNahidaCapsule("GPT", this.criticalSummary(), () => {
-      this.expanded = true;
-      this.render();
-    });
-
+    const panel = el("section", "gpt-collapsed-panel");
+    const title = textEl("div", "gpt-title", "GPT 用量");
+    const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
     const actions = el("div", "gpt-actions");
+
     const refresh = this.renderActionButton(
       this.loading ? "..." : "↻",
       "刷新用量",
@@ -356,14 +318,18 @@ export class UsageWidget {
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
+    const expand = this.renderActionButton("+", "展开用量面板", () => {
+      this.expanded = true;
+      this.render();
+    });
     const close = this.renderActionButton("×", "隐藏用量面板", () => {
       this.hidden = true;
       this.render();
     });
 
-    actions.append(this.renderSettingsButton(), refresh, close);
-    container.append(capsule, actions);
-    return container;
+    actions.append(this.renderSettingsButton(), refresh, expand, close);
+    panel.append(title, summary, actions);
+    return panel;
   }
 
   private renderChatGptPanel(): HTMLElement {
@@ -689,14 +655,22 @@ export class UsageWidget {
   }
 
   private renderCollapsed(): HTMLElement {
-    const value = this.collapsedPrimaryValue();
-    const platform = PLATFORM_LABEL[this.platform];
-    const capsule = this.renderNahidaCapsule(platform, value, () => {
+    const button = el("button", "collapsed");
+    button.type = "button";
+    button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
+    button.addEventListener("click", () => {
       this.expanded = true;
       this.render();
     });
-    capsule.classList.add("collapsed");
-    return capsule;
+
+    button.append(
+      el("span", `status-dot status-${this.snapshot?.status ?? "unknown"}`),
+      node("span", "collapsed-main", [
+        textEl("span", "platform", PLATFORM_LABEL[this.platform]),
+        textEl("span", "primary", this.collapsedPrimaryValue())
+      ])
+    );
+    return button;
   }
 
   private renderPanel(): HTMLElement {
