@@ -176,3 +176,14 @@ Until then, use the source installation flow above.
 RateBucket is released under the MIT License. See [LICENSE](LICENSE).
 
 The bundled visual assets are part of the current project package. Before publishing to the Chrome Web Store or reusing those assets separately, confirm their ownership/licensing or replace them with fully original branding assets.
+
+## Acknowledgements
+
+A small nod to my four informal teachers and collaborators:
+
+- Claude, the resident philosopher.
+- GPT, the most pragmatic pair-programming partner.
+- Grok, the back-channel rumor desk.
+- Gemini, the occasional spark of inspiration, even when mostly cameoing.
+
+This project was built by a human, with plenty of conversations along the way.
