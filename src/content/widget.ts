@@ -371,13 +371,20 @@ export class UsageWidget {
     panel.append(
       this.renderChatGptHeader(),
       this.renderMeta(),
-      this.renderChatGptContent()
+      this.renderChatGptContent(),
+      this.renderOrnateFooter()
     );
     return panel;
   }
 
   private renderChatGptHeader(): HTMLElement {
     const header = el("div", "header gpt-header");
+    
+    // Add Chibi decoration
+    const chibi = el("img", "header-decoration-chibi");
+    (chibi as HTMLImageElement).src = chrome.runtime.getURL("nihida.webp");
+    header.append(chibi);
+
     const title = textEl("div", "title gpt-title", "GPT 用量");
     const right = el("div", "gpt-header-right");
     right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
@@ -403,6 +410,16 @@ export class UsageWidget {
     right.append(actions);
     header.append(title, right);
     return header;
+  }
+
+  private renderOrnateFooter(): HTMLElement {
+    const footer = el("div", "panel-footer-decoration");
+    const vines = el("div", "footer-vines");
+    const gemWrap = el("div", "footer-gem-wrap");
+    const gem = el("div", "footer-gem");
+    gemWrap.append(gem);
+    footer.append(vines, gemWrap);
+    return footer;
   }
 
   private renderChatGptContent(): HTMLElement {
@@ -708,12 +725,18 @@ export class UsageWidget {
         panel.append(modelMeta);
       }
     }
-    panel.append(this.renderContent());
+    panel.append(this.renderContent(), this.renderOrnateFooter());
     return panel;
   }
 
   private renderHeader(): HTMLElement {
     const header = el("div", "header");
+    
+    // Add Chibi decoration
+    const chibi = el("img", "header-decoration-chibi");
+    (chibi as HTMLImageElement).src = chrome.runtime.getURL("nihida.webp");
+    header.append(chibi);
+
     const title = textEl("div", "title", `${PLATFORM_LABEL[this.platform]} 用量`);
     const actions = el("div", "actions");
 
