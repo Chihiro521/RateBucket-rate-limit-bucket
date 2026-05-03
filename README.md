@@ -48,6 +48,12 @@ No project-owned backend is used.
 
 The current UI uses a compact botanical green/gold visual theme with decorative PNG assets. For Chrome Web Store publication or standalone asset reuse, make sure the visual assets have clear ownership or replace them with original project branding.
 
+## Third-Party IP Notice
+
+RateBucket is an independent project and is not affiliated with, endorsed by, sponsored by, or approved by miHoYo, HoYoverse, Cognosphere, or any related rights holder. All trademarks, character references, copyrights, and visual IP belong to their respective owners.
+
+If you are a rights holder and believe any bundled visual asset, naming, or presentation in this repository infringes your rights, please open a GitHub issue or contact `1139524867@qq.com`. I will review the request and remove or replace the disputed material promptly.
+
 ## Install From Source
 
 Install dependencies:
