@@ -21,6 +21,7 @@ RateBucket 目前适合从源码本地安装使用，尚未发布到 Chrome Web 
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
 - 在平台缺少可靠额度数据时提供本地估算计数。
 - 提供可选 IP 信誉检测面板，只有用户主动配置 proxycheck.io 时才启用。
+- 支持英文和简体中文界面，可跟随浏览器语言，也可手动选择语言。
 
 ## 支持的平台
 
@@ -50,7 +51,7 @@ RateBucket 是一个 Manifest V3 扩展：
 - `mainWorldBridge.js` 在页面主世界中运行，用于在必要时观察平台 fetch 行为。
 - `serviceWorker.js` 处理后台任务，例如可选 IP 信誉检测刷新。
 - 平台解析器会把原始端点结构标准化为共享的 usage snapshot。
-- `chrome.storage.local` 保存标准化快照、本地估算计数、重试状态和可选 IP 风险设置。
+- `chrome.storage.local` 保存标准化快照、本地估算计数、重试状态、语言偏好和可选 IP 风险设置。
 
 项目本身不使用自有外部后端。
 
@@ -127,7 +128,7 @@ RateBucket 尽量保持本地运行：
 - 不读取或保存聊天内容。
 - 不包含分析或遥测。
 - 不申请 `cookies`、`webRequest`、`tabs` 或 `activeTab` 权限。
-- 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据和可选 IP 风险设置。
+- 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据、语言偏好和可选 IP 风险设置。
 
 扩展只请求 Grok、Claude、ChatGPT 和可选 IP 信誉服务的 host access。
 

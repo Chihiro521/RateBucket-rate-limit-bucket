@@ -21,6 +21,7 @@ Before a public Chrome Web Store release, the project still needs store-ready ic
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
 - Offers an optional IP reputation panel for users who explicitly configure proxycheck.io.
+- Supports English and Simplified Chinese UI, with browser-language auto detection and manual language selection.
 
 ## Supported Platforms
 
@@ -50,7 +51,7 @@ RateBucket is built as a Manifest V3 extension:
 - `mainWorldBridge.js` runs in the page's main world so platform fetch behavior can be observed when needed.
 - `serviceWorker.js` handles background-only tasks such as the optional IP reputation refresh.
 - Platform parsers normalize raw endpoint shapes into shared usage snapshots.
-- `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, and optional IP risk settings.
+- `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, language preference, and optional IP risk settings.
 
 No project-owned backend is used.
 
@@ -127,7 +128,7 @@ RateBucket is designed to stay local where possible:
 - It does not read or save chat content.
 - It does not include analytics or telemetry.
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
-- It stores only normalized usage data, local counters, retry metadata, and optional IP risk settings in `chrome.storage.local`.
+- It stores only normalized usage data, local counters, retry metadata, language preference, and optional IP risk settings in `chrome.storage.local`.
 
 The extension requests host access only for Grok, Claude, ChatGPT, and the optional IP reputation services.
 
