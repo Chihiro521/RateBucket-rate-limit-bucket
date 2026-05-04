@@ -5,13 +5,37 @@ import type {
   IpRiskSettingsUpdate,
   IpRiskState
 } from "../platforms/ipRisk";
-import { formatAge, formatReset } from "../utils/time";
+import {
+  DEFAULT_LANGUAGE_MODE,
+  formatAgeLocalized,
+  formatConfidenceLabelLocalized,
+  formatGptSectionLabelLocalized,
+  formatMeterLabelLocalized,
+  formatMeterValueLocalized,
+  formatResetLocalized,
+  formatRiskLabelLocalized,
+  formatSourceLabelLocalized,
+  formatStatusLabelLocalized,
+  languageModeFromValue,
+  resolveLanguage,
+  t,
+  type LanguageMode,
+  type ResolvedLanguage,
+  type TextKey
+} from "../utils/i18n";
 import { WIDGET_CSS } from "./styles";
 
 type RefreshHandler = () => void;
 type WidgetHandlers = {
   onIpRiskRefresh?: () => void;
   onIpRiskSettingsSave?: (update: IpRiskSettingsUpdate) => void;
+  onLanguageModeSave?: (mode: LanguageMode) => void;
+};
+type IpRiskSettingsDraft = {
+  enabled: boolean;
+  apiKeyValue: string;
+  keyDirty: boolean;
+  revealKey: boolean;
 };
 type ChipEdge = "left" | "right" | "top" | "bottom";
 
@@ -30,48 +54,6 @@ const GPT_SECTION_ORDER = [
 ] as const;
 
 type GptSectionKey = (typeof GPT_SECTION_ORDER)[number];
-
-const GPT_SECTION_LABELS: Record<GptSectionKey, string> = {
-  input: "输入与附件",
-  features: "GPT 功能额度",
-  windows: "用量窗口",
-  codex: "余额 / Codex",
-  other: "其他"
-};
-
-const SOURCE_LABEL: Record<string, string> = {
-  api: "接口",
-  intercepted: "捕获",
-  estimate: "估算",
-  unknown: "未知"
-};
-
-const CONFIDENCE_LABEL: Record<string, string> = {
-  high: "高",
-  medium: "中",
-  low: "低"
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  ok: "正常",
-  partial: "部分可用",
-  unknown: "未知",
-  error: "错误"
-};
-
-const METER_LABELS: Record<string, string> = {
-  "File Upload": "文件上传",
-  "Paste Text To File": "粘贴文本转文件",
-  Dictation: "听写",
-  "Deep Research": "深度研究",
-  "Image Generation": "图像生成",
-  "Primary window": "主窗口",
-  "Weekly window": "每周窗口",
-  "Tasks rate limit": "任务限额",
-  "Code Review": "代码审查",
-  Credits: "余额",
-  "Credits (unlimited)": "余额（无限）"
-};
 
 type NahidaAssetName =
   | "capsule-mascot.png"
@@ -105,7 +87,10 @@ export class UsageWidget {
   };
   private ipRiskRefreshing = false;
   private ipRiskSettingsOpen = false;
+  private ipRiskSettingsDraft: IpRiskSettingsDraft | null = null;
   private backoffUntil = 0;
+  private languageMode: LanguageMode = DEFAULT_LANGUAGE_MODE;
+  private resolvedLanguage: ResolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
   private readonly timerId: number;
 
   constructor(
@@ -167,9 +152,35 @@ export class UsageWidget {
     this.render();
   }
 
+  setLanguageMode(value: LanguageMode): void {
+    this.languageMode = value;
+    this.resolvedLanguage = resolveLanguage(value);
+    this.render();
+  }
+
+  private text(key: TextKey, params?: Record<string, string | number>): string {
+    return t(this.resolvedLanguage, key, params);
+  }
+
+  private createIpRiskSettingsDraft(): IpRiskSettingsDraft {
+    return {
+      enabled: this.ipRiskSettings.enabled,
+      apiKeyValue: this.ipRiskSettings.apiKeyPreview ?? "",
+      keyDirty: false,
+      revealKey: false
+    };
+  }
+
+  private closeIpRiskSettingsDialog(): void {
+    this.ipRiskSettingsOpen = false;
+    this.ipRiskSettingsDraft = null;
+    this.render();
+  }
+
   private render(): void {
     if (this.hidden) {
       this.ipRiskSettingsOpen = false;
+      this.ipRiskSettingsDraft = null;
       this.root.replaceChildren(
         this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
       );
@@ -202,7 +213,7 @@ export class UsageWidget {
     const button = el("button", "gpt-restore-chip");
     button.type = "button";
     this.applyChipPosition();
-    button.setAttribute("aria-label", "恢复 GPT 用量面板");
+    button.setAttribute("aria-label", this.text("action.restoreGptPanel"));
     this.installChipDrag(button, () => {
       this.hidden = false;
       this.expanded = true;
@@ -337,22 +348,22 @@ export class UsageWidget {
 
   private renderChatGptCollapsed(): HTMLElement {
     const panel = el("section", "gpt-collapsed-panel");
-    const title = titleNode("gpt-title", "GPT 用量", "clover-medallion.png");
+    const title = titleNode("gpt-title", this.text("gpt.title"), "clover-medallion.png");
     const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
     const actions = el("div", "gpt-actions");
 
     const refresh = this.renderActionButton(
       this.loading ? "..." : "↻",
-      "刷新用量",
+      this.text("action.refreshUsage"),
       () => this.onRefresh()
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
-    const expand = this.renderActionButton("+", "展开用量面板", () => {
+    const expand = this.renderActionButton("+", this.text("action.expandPanel"), () => {
       this.expanded = true;
       this.render();
     });
-    const close = this.renderActionButton("×", "隐藏用量面板", () => {
+    const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
       this.hidden = true;
       this.render();
     });
@@ -376,23 +387,25 @@ export class UsageWidget {
 
   private renderChatGptHeader(): HTMLElement {
     const header = el("div", "header gpt-header");
-    const title = titleNode("title gpt-title", "GPT 用量", "clover-medallion.png");
+    const title = titleNode("title gpt-title", this.text("gpt.title"), "clover-medallion.png");
     const right = el("div", "gpt-header-right");
-    right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
+    right.append(
+      textEl("span", "gpt-alerts", this.text("gpt.alertCount", { count: this.alertCount() }))
+    );
 
     const actions = el("div", "actions gpt-actions");
     const refresh = this.renderActionButton(
       this.loading ? "..." : "↻",
-      "刷新用量",
+      this.text("action.refreshUsage"),
       () => this.onRefresh()
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
-    const collapse = this.renderActionButton("−", "折叠用量面板", () => {
+    const collapse = this.renderActionButton("−", this.text("action.collapsePanel"), () => {
       this.expanded = false;
       this.render();
     });
-    const close = this.renderActionButton("×", "隐藏用量面板", () => {
+    const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
       this.hidden = true;
       this.render();
     });
@@ -416,11 +429,11 @@ export class UsageWidget {
     const meters = this.chatGptMeters();
     if (meters.length === 0) {
       if (!sentinelSection && !this.ipRiskSettings.enabled) {
-        content.append(textEl("div", "empty", "暂无用量数据"));
+        content.append(textEl("div", "empty", this.text("usage.empty")));
       }
       return content;
     }
-    for (const section of groupChatGptMeters(meters)) {
+    for (const section of groupChatGptMeters(meters, this.resolvedLanguage)) {
       content.append(this.renderMeterSection(section.label, section.meters));
     }
     return content;
@@ -433,20 +446,23 @@ export class UsageWidget {
     }
     const section = el("section", "meter-section sentinel-section");
     section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
-    section.append(sectionTitle("账号状态", "leaf-small.png"));
+    section.append(sectionTitle(this.text("sentinel.accountStatus"), "leaf-small.png"));
 
     const gate = el("div", "sentinel-block");
     gate.append(
       this.renderSentinelRow(
-        "发送门禁",
-        `${state.sentinelRisk.label} ${state.sentinelRisk.score}/100`
+        this.text("sentinel.gate"),
+        `${formatRiskLabelLocalized(
+          this.resolvedLanguage,
+          state.sentinelRisk.label
+        )} ${state.sentinelRisk.score}/100`
       ),
       this.renderSentinelBar(state.sentinelRisk.score),
       this.renderSentinelRow(
         "PoW",
         `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
       ),
-      textEl("div", "sentinel-explanation", `说明：${state.explanation}`)
+      textEl("div", "sentinel-explanation", this.text("sentinel.explanation"))
     );
     section.append(gate);
     return section;
@@ -455,20 +471,23 @@ export class UsageWidget {
   private renderIpRiskSection(): HTMLElement {
     const section = el("section", "meter-section ip-risk-section");
     section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
-    section.append(sectionTitle("网络风险", "leaf-small.png"));
+    section.append(sectionTitle(this.text("usage.networkRisk"), "leaf-small.png"));
 
     const block = el("div", "sentinel-block ip-risk-block");
-    block.append(this.renderSentinelRow("IP 检测", this.ipRiskStatusText()));
+    block.append(this.renderSentinelRow(this.text("ip.check"), this.ipRiskStatusText()));
 
     const freshIpRisk = this.freshIpRiskState();
     if (freshIpRisk) {
       block.append(
         this.renderSentinelBar(freshIpRisk.score),
-        this.renderSentinelRow("信号", formatIpRiskSignals(freshIpRisk)),
-        this.renderSentinelRow("来源", freshIpRisk.source)
+        this.renderSentinelRow(
+          this.text("ip.signal"),
+          formatIpRiskSignals(freshIpRisk, this.resolvedLanguage)
+        ),
+        this.renderSentinelRow(this.text("ip.source"), freshIpRisk.source)
       );
     } else if (this.ipRiskRefreshing) {
-      block.append(textEl("div", "sentinel-explanation", "正在查询 proxycheck.io。"));
+      block.append(textEl("div", "sentinel-explanation", this.text("ip.querying")));
     } else if (
       this.ipRiskSettings.enabled &&
       this.ipRiskSettings.hasApiKey &&
@@ -478,7 +497,7 @@ export class UsageWidget {
         textEl(
           "div",
           "sentinel-explanation error-text",
-          this.ipRiskState.errorMessage ?? "检测失败"
+          this.ipRiskState.errorMessage ?? this.text("ip.errorFallback")
         )
       );
     } else {
@@ -487,8 +506,8 @@ export class UsageWidget {
           "div",
           "sentinel-explanation",
           this.ipRiskSettings.enabled
-            ? "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。"
-            : "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。"
+            ? this.text("ip.enabledHelp")
+            : this.text("ip.disabledHelp")
         )
       );
     }
@@ -500,41 +519,64 @@ export class UsageWidget {
   private renderIpRiskSettingsDialog(): HTMLElement {
     const panel = el("section", "settings-popover");
     const header = el("div", "settings-header");
+    const draft = this.ipRiskSettingsDraft ?? this.createIpRiskSettingsDraft();
+    this.ipRiskSettingsDraft = draft;
     header.append(
-      titleNode("settings-title", "IP 检测设置", "shield.png"),
-      this.renderActionButton("×", "关闭 IP 检测设置", () => {
-        this.ipRiskSettingsOpen = false;
-        this.render();
+      titleNode("settings-title", this.text("settings.title"), "shield.png"),
+      this.renderActionButton("×", this.text("action.closeSettings"), () => {
+        this.closeIpRiskSettingsDialog();
       })
     );
 
+    const languageSelect = document.createElement("select");
+    languageSelect.className = "settings-input";
+    for (const [value, label] of [
+      ["auto", this.text("language.auto")],
+      ["zh-CN", this.text("language.zhCN")],
+      ["en", this.text("language.en")]
+    ] as const) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      languageSelect.append(option);
+    }
+    languageSelect.value = this.languageMode;
+
     const enabledInput = document.createElement("input");
     enabledInput.type = "checkbox";
-    enabledInput.checked = this.ipRiskSettings.enabled;
+    enabledInput.checked = draft.enabled;
+    enabledInput.addEventListener("change", () => {
+      draft.enabled = enabledInput.checked;
+    });
 
     const enabledLabel = el("label", "settings-check");
-    enabledLabel.append(enabledInput, textEl("span", "", "启用 proxycheck.io"));
+    enabledLabel.append(
+      enabledInput,
+      textEl("span", "", this.text("ip.enableProxycheck"))
+    );
 
     const keyInputWrap = el("div", "settings-input-wrap");
     const keyInput = document.createElement("input");
     keyInput.className = "settings-input";
-    keyInput.type = "password";
+    keyInput.type = draft.revealKey ? "text" : "password";
     keyInput.autocomplete = "off";
     keyInput.spellcheck = false;
-    let keyDirty = false;
-    if (this.ipRiskSettings.apiKeyPreview) {
-      keyInput.value = this.ipRiskSettings.apiKeyPreview;
-    }
-    keyInput.placeholder = this.ipRiskSettings.hasApiKey
-      ? "已保存密钥，留空则不修改"
-      : "输入 proxycheck.io API 密钥";
+    keyInput.value = draft.apiKeyValue;
+    keyInput.placeholder =
+      draft.keyDirty && this.ipRiskSettings.hasApiKey
+        ? this.text("ip.newKeyPlaceholder")
+        : this.ipRiskSettings.hasApiKey
+          ? this.text("ip.savedKeyPlaceholder")
+          : this.text("ip.keyPlaceholder");
     const prepareKeyEdit = (): void => {
-      if (!keyDirty && this.ipRiskSettings.hasApiKey) {
-        keyDirty = true;
+      if (!draft.keyDirty && this.ipRiskSettings.hasApiKey) {
+        draft.keyDirty = true;
         keyInput.value = "";
-        keyInput.placeholder = "输入新的 proxycheck.io API 密钥";
+        keyInput.placeholder = this.text("ip.newKeyPlaceholder");
         keyInput.type = "password";
+        draft.revealKey = false;
       }
+      draft.apiKeyValue = keyInput.value;
     };
     keyInput.addEventListener("keydown", (event) => {
       if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
@@ -543,31 +585,60 @@ export class UsageWidget {
     });
     keyInput.addEventListener("paste", prepareKeyEdit);
     keyInput.addEventListener("input", () => {
-      keyDirty = true;
+      draft.keyDirty = true;
+      draft.apiKeyValue = keyInput.value;
+      draft.revealKey = keyInput.type !== "password";
+    });
+    const syncDraft = (): void => {
+      draft.enabled = enabledInput.checked;
+      draft.apiKeyValue = keyInput.value;
+      draft.revealKey = keyInput.type !== "password";
+    };
+    languageSelect.addEventListener("change", () => {
+      syncDraft();
+      const nextMode = languageModeFromValue(languageSelect.value);
+      this.languageMode = nextMode;
+      this.resolvedLanguage = resolveLanguage(nextMode);
+      this.handlers.onLanguageModeSave?.(nextMode);
+      this.render();
     });
 
-    const reveal = this.renderActionButton("👁", "显示或隐藏密钥", () => {
-      keyInput.type = keyInput.type === "password" ? "text" : "password";
-    });
+    const reveal = this.renderActionButton(
+      "👁",
+      this.text("action.toggleSecret"),
+      () => {
+        keyInput.type = keyInput.type === "password" ? "text" : "password";
+        draft.revealKey = keyInput.type !== "password";
+      }
+    );
     reveal.classList.add("settings-eye-button");
     keyInputWrap.append(keyInput, reveal);
 
     const actions = el("div", "settings-actions");
-    const save = textEl("button", "settings-button primary-button", "保存");
+    const save = textEl(
+      "button",
+      "settings-button primary-button",
+      this.text("settings.save")
+    );
     save.type = "button";
     save.addEventListener("click", () => {
-      const inputValue = keyInput.value.trim();
+      draft.enabled = enabledInput.checked;
+      draft.apiKeyValue = keyInput.value;
+      const inputValue = draft.apiKeyValue.trim();
       const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
       this.handlers.onIpRiskSettingsSave?.({
-        enabled: enabledInput.checked,
+        enabled: draft.enabled,
         apiKey:
           inputValue && inputValue !== previewValue ? inputValue : undefined
       });
-      this.ipRiskSettingsOpen = false;
-      this.render();
+      this.closeIpRiskSettingsDialog();
     });
 
-    const refresh = textEl("button", "settings-button", "立即检测");
+    const refresh = textEl(
+      "button",
+      "settings-button",
+      this.text("settings.checkNow")
+    );
     refresh.type = "button";
     refresh.disabled =
       this.ipRiskRefreshing ||
@@ -575,11 +646,14 @@ export class UsageWidget {
       !this.ipRiskSettings.hasApiKey;
     refresh.addEventListener("click", () => {
       this.handlers.onIpRiskRefresh?.();
-      this.ipRiskSettingsOpen = false;
-      this.render();
+      this.closeIpRiskSettingsDialog();
     });
 
-    const remove = textEl("button", "settings-button danger-button", "删除密钥");
+    const remove = textEl(
+      "button",
+      "settings-button danger-button",
+      this.text("ip.deleteKey")
+    );
     remove.type = "button";
     remove.disabled = !this.ipRiskSettings.hasApiKey;
     remove.addEventListener("click", () => {
@@ -587,22 +661,19 @@ export class UsageWidget {
         enabled: enabledInput.checked,
         clearApiKey: true
       });
-      this.ipRiskSettingsOpen = false;
-      this.render();
+      this.closeIpRiskSettingsDialog();
     });
 
     actions.append(save, refresh, remove);
 
     panel.append(
       header,
+      textEl("label", "settings-label", this.text("language.label")),
+      languageSelect,
       enabledLabel,
-      textEl("label", "settings-label", "proxycheck.io API 密钥"),
+      textEl("label", "settings-label", this.text("ip.apiKeyLabel")),
       keyInputWrap,
-      textEl(
-        "div",
-        "settings-help",
-        "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。"
-      ),
+      textEl("div", "settings-help", this.text("ip.help")),
       actions
     );
     return panel;
@@ -610,26 +681,29 @@ export class UsageWidget {
 
   private ipRiskStatusText(): string {
     if (!this.ipRiskSettings.enabled) {
-      return "未启用";
+      return this.text("ip.status.disabled");
     }
     if (!this.ipRiskSettings.hasApiKey) {
-      return "未配置密钥";
+      return this.text("ip.status.missingKey");
     }
     if (this.ipRiskRefreshing) {
-      return "检测中";
+      return this.text("ip.status.checking");
     }
     if (
       this.ipRiskSettings.enabled &&
       this.ipRiskSettings.hasApiKey &&
       this.ipRiskState?.status === "error"
     ) {
-      return "检测失败";
+      return this.text("ip.status.failed");
     }
     const freshIpRisk = this.freshIpRiskState();
     if (freshIpRisk) {
-      return `${freshIpRisk.label} ${freshIpRisk.score}/100`;
+      return `${formatRiskLabelLocalized(
+        this.resolvedLanguage,
+        freshIpRisk.label
+      )} ${freshIpRisk.score}/100`;
     }
-    return "等待检测";
+    return this.text("ip.status.waiting");
   }
 
   private freshIpRiskState(): (IpRiskState & { score: number }) | null {
@@ -684,8 +758,11 @@ export class UsageWidget {
   }
 
   private renderSettingsButton(): HTMLButtonElement {
-    return this.renderActionButton("⚙", "IP 检测设置", () => {
+    return this.renderActionButton("⚙", this.text("action.settings"), () => {
       this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
+      if (!this.ipRiskSettingsOpen) {
+        this.ipRiskSettingsDraft = null;
+      }
       this.render();
     });
   }
@@ -693,7 +770,10 @@ export class UsageWidget {
   private renderCollapsed(): HTMLElement {
     const button = el("button", "collapsed");
     button.type = "button";
-    button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
+    button.setAttribute(
+      "aria-label",
+      this.text("action.openUsage", { platform: PLATFORM_LABEL[this.platform] })
+    );
     this.applyChipPosition();
     this.installChipDrag(button, () => {
       this.expanded = true;
@@ -729,22 +809,22 @@ export class UsageWidget {
     const header = el("div", "header");
     const title = titleNode(
       "title",
-      `${PLATFORM_LABEL[this.platform]} 用量`,
+      this.text("usage.title", { platform: PLATFORM_LABEL[this.platform] }),
       platformTitleAsset(this.platform)
     );
     const actions = el("div", "actions");
 
     const refresh = textEl("button", "icon-button", this.loading ? "..." : "↻");
     refresh.type = "button";
-    refresh.setAttribute("aria-label", "刷新用量");
-    refresh.title = "刷新用量";
+    refresh.setAttribute("aria-label", this.text("action.refreshUsage"));
+    refresh.title = this.text("action.refreshUsage");
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
     refresh.addEventListener("click", this.onRefresh);
 
     const close = textEl("button", "icon-button", "×");
     close.type = "button";
-    close.setAttribute("aria-label", "收起用量组件");
-    close.title = "收起";
+    close.setAttribute("aria-label", this.text("action.collapseWidget"));
+    close.title = this.text("action.collapseWidget");
     close.addEventListener("click", () => {
       this.expanded = false;
       this.render();
@@ -758,15 +838,21 @@ export class UsageWidget {
   private renderMeta(): HTMLElement {
     const meta = el("div", "meta");
     const updated = this.snapshot
-      ? `更新于 ${formatAge(this.snapshot.updatedAt)}`
-      : "尚未更新";
+      ? this.text("meta.updatedAt", {
+          age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt)
+        })
+      : this.text("meta.neverUpdated");
     const right =
       this.backoffRemainingMs() > 0
-        ? `等待 ${Math.ceil(this.backoffRemainingMs() / 1000)}秒`
+        ? this.text("meta.waitSeconds", {
+            seconds: Math.ceil(this.backoffRemainingMs() / 1000)
+          })
         : this.snapshot?.cacheAgeMs !== undefined
-          ? `缓存 ${Math.floor(this.snapshot.cacheAgeMs / 1000)}秒`
+          ? this.text("meta.cacheSeconds", {
+              seconds: Math.floor(this.snapshot.cacheAgeMs / 1000)
+            })
           : this.loading
-            ? "加载中"
+            ? this.text("meta.loading")
             : "";
     meta.append(
       iconText("span", "meta-item", "leaf-small.png", updated),
@@ -783,7 +869,7 @@ export class UsageWidget {
     const meta = el("div", "model-meta");
     const value = textEl("span", "model-value", summary);
     value.title = summary;
-    meta.append(textEl("span", "model-label", "模型"), value);
+    meta.append(textEl("span", "model-label", this.text("model.label")), value);
     return meta;
   }
 
@@ -807,8 +893,16 @@ export class UsageWidget {
     const row = el("div", "meter");
     const top = el("div", "meter-top");
     top.append(
-      textEl("div", "meter-label", formatMeterLabel(meter)),
-      textEl("div", "meter-value", formatMeterValue(meter))
+      textEl(
+        "div",
+        "meter-label",
+        formatMeterLabelLocalized(this.resolvedLanguage, meter)
+      ),
+      textEl(
+        "div",
+        "meter-value",
+        formatMeterValueLocalized(this.resolvedLanguage, meter)
+      )
     );
 
     const progress = meterProgress(meter);
@@ -822,14 +916,22 @@ export class UsageWidget {
     bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
 
     const bottom = el("div", "meter-bottom");
-    const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
+    const age = meter.observedAt
+      ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}`
+      : "";
     bottom.append(
       textEl(
         "span",
         "badge",
-        `${sourceLabel(meter.source)} · ${confidenceLabel(meter.confidence)}${age}`
+        `${formatSourceLabelLocalized(
+          this.resolvedLanguage,
+          meter.source
+        )} · ${formatConfidenceLabelLocalized(
+          this.resolvedLanguage,
+          meter.confidence
+        )}${age}`
       ),
-      textEl("span", "", formatReset(meter))
+      textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
     );
 
     row.append(top, bar, bottom);
@@ -851,7 +953,9 @@ export class UsageWidget {
       byRemainingPercent?.remainingPercent !== undefined &&
       byRemainingPercent.remainingPercent !== null
     ) {
-      return `${Math.round(byRemainingPercent.remainingPercent)}% 剩余`;
+      return this.text("meter.remainingPercent", {
+        percent: Math.round(byRemainingPercent.remainingPercent)
+      });
     }
     const byPercent = meters.find((meter) => typeof meter.usedPercent === "number");
     if (byPercent?.usedPercent !== undefined && byPercent.usedPercent !== null) {
@@ -882,18 +986,29 @@ export class UsageWidget {
         .filter((meter) => typeof meter.remaining === "number")
         .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
     if (!alert) {
-      return statusLabel(this.snapshot?.status ?? "unknown");
+      return formatStatusLabelLocalized(
+        this.resolvedLanguage,
+        this.snapshot?.status ?? "unknown"
+      );
     }
     if (typeof alert.remainingPercent === "number") {
-      return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.remainingPercent)}% 剩余`;
+      return `${shortLabel(
+        formatMeterLabelLocalized(this.resolvedLanguage, alert)
+      )} ${this.text("meter.remainingPercent", {
+        percent: Math.round(alert.remainingPercent)
+      })}`;
     }
     if (typeof alert.usedPercent === "number") {
-      return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.usedPercent)}%`;
+      return `${shortLabel(
+        formatMeterLabelLocalized(this.resolvedLanguage, alert)
+      )} ${Math.round(alert.usedPercent)}%`;
     }
     if (typeof alert.remaining === "number") {
-      return `${shortLabel(formatMeterLabel(alert))} 剩余 ${alert.remaining}`;
+      return `${shortLabel(
+        formatMeterLabelLocalized(this.resolvedLanguage, alert)
+      )} ${this.text("meter.remaining", { remaining: alert.remaining })}`;
     }
-    return shortLabel(formatMeterLabel(alert));
+    return shortLabel(formatMeterLabelLocalized(this.resolvedLanguage, alert));
   }
 
   private chatGptMeters(): UsageMeter[] {
@@ -912,7 +1027,7 @@ export class UsageWidget {
         .filter((meter) => typeof meter.remainingPercent === "number")
         .sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0]
       ?? meters.find((meter) => typeof meter.usedPercent === "number");
-    return alert ? formatMeterValue(alert) : "?";
+    return alert ? formatMeterValueLocalized(this.resolvedLanguage, alert) : "?";
   }
 
   private backoffRemainingMs(): number {
@@ -933,7 +1048,7 @@ export class UsageWidget {
     if (!meter) {
       return this.primaryValue();
     }
-    return formatMeterValue(meter);
+    return formatMeterValueLocalized(this.resolvedLanguage, meter);
   }
 
   private grokPrimaryMeter(): UsageMeter | null {
@@ -946,56 +1061,6 @@ export class UsageWidget {
       )[0] ?? null
     );
   }
-}
-
-function formatMeterValue(meter: UsageMeter): string {
-  if (typeof meter.remainingPercent === "number") {
-    return `${Math.round(meter.remainingPercent)}% 剩余`;
-  }
-  if (typeof meter.remaining === "number" && typeof meter.total === "number") {
-    return `${meter.remaining}/${meter.total}`;
-  }
-  if (typeof meter.remaining === "number") {
-    return `剩余 ${meter.remaining}`;
-  }
-  if (typeof meter.used === "number" && typeof meter.total === "number") {
-    return `已用 ${meter.used}/${meter.total}`;
-  }
-  if (typeof meter.usedPercent === "number") {
-    return `${Math.round(meter.usedPercent)}% 已用`;
-  }
-  return "未知";
-}
-
-function formatMeterLabel(meter: UsageMeter): string {
-  const direct = METER_LABELS[meter.label];
-  if (direct) {
-    return direct;
-  }
-  return meter.label
-    .replace(/\bquery limit\b/gi, "查询额度")
-    .replace(/\btoken limit\b/gi, "token 额度")
-    .replace(/\bLow \/ Fast \/ Normal\b/g, "低 / 快速 / 普通")
-    .replace(/\bHigh \/ Thinking \/ Expert\b/g, "高 / 思考 / 专家")
-    .replace(/\bCodex usage\b/gi, "Codex 用量")
-    .replace(/\bPrimary window\b/gi, "主窗口")
-    .replace(/\bWeekly window\b/gi, "每周窗口")
-    .replace(/\b5[- ]?hour\b/gi, "5 小时")
-    .replace(/\bweekly\b/gi, "每周")
-    .replace(/\busage limit\b/gi, "使用限额")
-    .replace(/\brate limit\b/gi, "使用限额");
-}
-
-function sourceLabel(source: string): string {
-  return SOURCE_LABEL[source] ?? source;
-}
-
-function confidenceLabel(confidence: string): string {
-  return CONFIDENCE_LABEL[confidence] ?? confidence;
-}
-
-function statusLabel(status: string): string {
-  return STATUS_LABEL[status] ?? status;
 }
 
 function meterProgress(meter: UsageMeter): number {
@@ -1032,7 +1097,10 @@ function sentinelRiskClass(score: number): string {
   return "sentinel-risk-normal";
 }
 
-function formatIpRiskSignals(state: IpRiskState): string {
+function formatIpRiskSignals(
+  state: IpRiskState,
+  language: ResolvedLanguage
+): string {
   const signals: string[] = [];
   if (state.signals.proxy) {
     signals.push("Proxy");
@@ -1049,7 +1117,7 @@ function formatIpRiskSignals(state: IpRiskState): string {
   if (state.signals.type && !signals.includes(state.signals.type)) {
     signals.push(state.signals.type);
   }
-  return signals.length > 0 ? signals.join(" / ") : "未见明显代理信号";
+  return signals.length > 0 ? signals.join(" / ") : t(language, "ip.noProxySignals");
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1094,7 +1162,8 @@ function chatGptMeterPriority(meter: UsageMeter): number {
 }
 
 function groupChatGptMeters(
-  meters: UsageMeter[]
+  meters: UsageMeter[],
+  language: ResolvedLanguage
 ): Array<{ label: string; meters: UsageMeter[] }> {
   const groups: Record<GptSectionKey, UsageMeter[]> = {
     input: [],
@@ -1107,7 +1176,7 @@ function groupChatGptMeters(
     groups[chatGptMeterSection(meter)].push(meter);
   }
   return GPT_SECTION_ORDER.map((key) => ({
-    label: GPT_SECTION_LABELS[key],
+    label: formatGptSectionLabelLocalized(language, key),
     meters: groups[key]
   })).filter((section) => section.meters.length > 0);
 }

@@ -187,7 +187,7 @@
   function estimateKey(platform2) {
     return `aiUsage:${platform2}:estimate`;
   }
-  function storageGet$2(keys) {
+  function storageGet$3(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, (items) => {
         const error = chrome.runtime.lastError;
@@ -199,7 +199,7 @@
       });
     });
   }
-  function storageSet$2(items) {
+  function storageSet$3(items) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(items, () => {
         const error = chrome.runtime.lastError;
@@ -213,7 +213,7 @@
   }
   async function getCachedSnapshot(platform2) {
     const key = snapshotKey(platform2);
-    const items = await storageGet$2(key);
+    const items = await storageGet$3(key);
     const value = items[key];
     if (!isUsageSnapshot(value, platform2)) {
       return null;
@@ -225,35 +225,35 @@
   }
   function setCachedSnapshot(snapshot) {
     const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-    return storageSet$2({ [snapshotKey(snapshot.platform)]: persisted });
+    return storageSet$3({ [snapshotKey(snapshot.platform)]: persisted });
   }
   async function getLastRefreshAt(platform2) {
     const key = lastRefreshKey(platform2);
-    const items = await storageGet$2(key);
+    const items = await storageGet$3(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setLastRefreshAt(platform2, value) {
-    return storageSet$2({ [lastRefreshKey(platform2)]: value });
+    return storageSet$3({ [lastRefreshKey(platform2)]: value });
   }
   async function getBackoffUntil(platform2) {
     const key = backoffKey(platform2);
-    const items = await storageGet$2(key);
+    const items = await storageGet$3(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setBackoffUntil(platform2, value) {
-    return storageSet$2({ [backoffKey(platform2)]: value });
+    return storageSet$3({ [backoffKey(platform2)]: value });
   }
   async function getFailureCount(platform2) {
     const key = failureCountKey(platform2);
-    const items = await storageGet$2(key);
+    const items = await storageGet$3(key);
     return typeof items[key] === "number" ? items[key] : 0;
   }
   function setFailureCount(platform2, value) {
-    return storageSet$2({ [failureCountKey(platform2)]: value });
+    return storageSet$3({ [failureCountKey(platform2)]: value });
   }
   async function getEstimateState(platform2) {
     const key = estimateKey(platform2);
-    const items = await storageGet$2(key);
+    const items = await storageGet$3(key);
     const value = items[key];
     if (!isEstimateState(value)) {
       return null;
@@ -268,7 +268,7 @@
       firstSentAt: existing?.firstSentAt ?? now,
       lastSentAt: now
     };
-    await storageSet$2({ [estimateKey(platform2)]: next });
+    await storageSet$3({ [estimateKey(platform2)]: next });
     return next;
   }
   function isUsageSnapshot(value, platform2) {
@@ -346,24 +346,6 @@
     ].filter((value) => Boolean(value)).join(" ").toLowerCase();
     return /\bsend\b|发送|submit|composer-submit|send-button/.test(label);
   }
-  function formatAge(timestamp, now = Date.now()) {
-    const seconds = Math.max(0, Math.floor((now - timestamp) / 1e3));
-    if (seconds < 5) {
-      return "刚刚";
-    }
-    if (seconds < 60) {
-      return `${seconds}秒前`;
-    }
-    const minutes = Math.floor(seconds / 60);
-    if (minutes < 60) {
-      return `${minutes}分钟前`;
-    }
-    const hours = Math.floor(minutes / 60);
-    if (hours < 24) {
-      return `${hours}小时前`;
-    }
-    return `${Math.floor(hours / 24)}天前`;
-  }
   function resolveResetMs(meter, now = Date.now()) {
     if (typeof meter.resetAfterSeconds === "number") {
       return now + meter.resetAfterSeconds * 1e3;
@@ -385,24 +367,336 @@
     }
     return null;
   }
-  function formatReset(meter, now = Date.now()) {
+  const DEFAULT_LANGUAGE_MODE = "auto";
+  const ZH_TEXT = {
+    "action.closeSettings": "关闭设置",
+    "action.collapsePanel": "折叠用量面板",
+    "action.collapseWidget": "收起用量组件",
+    "action.expandPanel": "展开用量面板",
+    "action.hidePanel": "隐藏用量面板",
+    "action.openUsage": "打开 {platform} 用量",
+    "action.refreshUsage": "刷新用量",
+    "action.restoreGptPanel": "恢复 GPT 用量面板",
+    "action.settings": "设置",
+    "action.toggleSecret": "显示或隐藏密钥",
+    "gpt.alertCount": "{count} 项预警",
+    "gpt.title": "GPT 用量",
+    "ip.apiKeyLabel": "proxycheck.io API 密钥",
+    "ip.check": "IP 检测",
+    "ip.deleteKey": "删除密钥",
+    "ip.enableProxycheck": "启用 proxycheck.io",
+    "ip.enabledHelp": "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。",
+    "ip.errorFallback": "检测失败",
+    "ip.help": "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。",
+    "ip.keyPlaceholder": "输入 proxycheck.io API 密钥",
+    "ip.newKeyPlaceholder": "输入新的 proxycheck.io API 密钥",
+    "ip.noProxySignals": "未见明显代理信号",
+    "ip.querying": "正在查询 proxycheck.io。",
+    "ip.savedKeyPlaceholder": "已保存密钥，留空则不修改",
+    "ip.source": "来源",
+    "ip.disabledHelp": "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。",
+    "ip.signal": "信号",
+    "ip.status.checking": "检测中",
+    "ip.status.disabled": "未启用",
+    "ip.status.failed": "检测失败",
+    "ip.status.missingKey": "未配置密钥",
+    "ip.status.waiting": "等待检测",
+    "language.auto": "跟随浏览器",
+    "language.en": "English",
+    "language.label": "语言",
+    "language.zhCN": "简体中文",
+    "meta.cacheSeconds": "缓存 {seconds}秒",
+    "meta.loading": "加载中",
+    "meta.neverUpdated": "尚未更新",
+    "meta.updatedAt": "更新于 {age}",
+    "meta.waitSeconds": "等待 {seconds}秒",
+    "meter.unknown": "未知",
+    "meter.used": "已用 {used}/{total}",
+    "meter.usedPercent": "{percent}% 已用",
+    "meter.remaining": "剩余 {remaining}",
+    "meter.remainingPercent": "{percent}% 剩余",
+    "model.label": "模型",
+    "settings.checkNow": "立即检测",
+    "settings.save": "保存",
+    "settings.title": "设置",
+    "sentinel.accountStatus": "账号状态",
+    "sentinel.explanation": "说明：当前仅验证 PoW 难度，不判断模型 fallback。",
+    "sentinel.gate": "发送门禁",
+    "usage.empty": "暂无用量数据",
+    "usage.networkRisk": "网络风险",
+    "usage.title": "{platform} 用量"
+  };
+  const EN_TEXT = {
+    "action.closeSettings": "Close settings",
+    "action.collapsePanel": "Collapse usage panel",
+    "action.collapseWidget": "Collapse usage widget",
+    "action.expandPanel": "Expand usage panel",
+    "action.hidePanel": "Hide usage panel",
+    "action.openUsage": "Open {platform} usage",
+    "action.refreshUsage": "Refresh usage",
+    "action.restoreGptPanel": "Restore GPT usage panel",
+    "action.settings": "Settings",
+    "action.toggleSecret": "Show or hide key",
+    "gpt.alertCount": "{count} alerts",
+    "gpt.title": "GPT Usage",
+    "ip.apiKeyLabel": "proxycheck.io API key",
+    "ip.check": "IP check",
+    "ip.deleteKey": "Delete key",
+    "ip.enableProxycheck": "Enable proxycheck.io",
+    "ip.enabledHelp": "The proxycheck.io key is stored locally only. Results do not represent official OpenAI account status.",
+    "ip.errorFallback": "Check failed",
+    "ip.help": "The key is stored in chrome.storage.local. Checks temporarily fetch the current public IP, query proxycheck.io, and do not keep IP history.",
+    "ip.keyPlaceholder": "Enter proxycheck.io API key",
+    "ip.newKeyPlaceholder": "Enter a new proxycheck.io API key",
+    "ip.noProxySignals": "No clear proxy signals",
+    "ip.querying": "Querying proxycheck.io.",
+    "ip.savedKeyPlaceholder": "Key saved. Leave blank to keep it",
+    "ip.source": "Source",
+    "ip.disabledHelp": "Enable proxycheck.io in settings as a third-party IP reputation source.",
+    "ip.signal": "Signals",
+    "ip.status.checking": "Checking",
+    "ip.status.disabled": "Disabled",
+    "ip.status.failed": "Check failed",
+    "ip.status.missingKey": "Missing key",
+    "ip.status.waiting": "Waiting to check",
+    "language.auto": "Follow browser",
+    "language.en": "English",
+    "language.label": "Language",
+    "language.zhCN": "Simplified Chinese",
+    "meta.cacheSeconds": "Cached {seconds}s",
+    "meta.loading": "Loading",
+    "meta.neverUpdated": "Not updated yet",
+    "meta.updatedAt": "Updated {age}",
+    "meta.waitSeconds": "Wait {seconds}s",
+    "meter.unknown": "Unknown",
+    "meter.used": "Used {used}/{total}",
+    "meter.usedPercent": "{percent}% used",
+    "meter.remaining": "Remaining {remaining}",
+    "meter.remainingPercent": "{percent}% remaining",
+    "model.label": "Model",
+    "settings.checkNow": "Check now",
+    "settings.save": "Save",
+    "settings.title": "Settings",
+    "sentinel.accountStatus": "Account status",
+    "sentinel.explanation": "Note: currently only validates PoW difficulty, not model fallback.",
+    "sentinel.gate": "Send gate",
+    "usage.empty": "No usage data yet",
+    "usage.networkRisk": "Network risk",
+    "usage.title": "{platform} Usage"
+  };
+  const TEXT = {
+    "zh-CN": ZH_TEXT,
+    en: EN_TEXT
+  };
+  const GPT_SECTION_LABELS = {
+    "zh-CN": {
+      input: "输入与附件",
+      features: "GPT 功能额度",
+      windows: "用量窗口",
+      codex: "余额 / Codex",
+      other: "其他"
+    },
+    en: {
+      input: "Input and attachments",
+      features: "GPT feature limits",
+      windows: "Usage windows",
+      codex: "Balance / Codex",
+      other: "Other"
+    }
+  };
+  const SOURCE_LABELS = {
+    "zh-CN": {
+      api: "接口",
+      intercepted: "捕获",
+      estimate: "估算",
+      unknown: "未知"
+    },
+    en: {
+      api: "API",
+      intercepted: "Captured",
+      estimate: "Estimate",
+      unknown: "Unknown"
+    }
+  };
+  const CONFIDENCE_LABELS = {
+    "zh-CN": {
+      high: "高",
+      medium: "中",
+      low: "低"
+    },
+    en: {
+      high: "High",
+      medium: "Medium",
+      low: "Low"
+    }
+  };
+  const STATUS_LABELS = {
+    "zh-CN": {
+      ok: "正常",
+      partial: "部分可用",
+      unknown: "未知",
+      error: "错误"
+    },
+    en: {
+      ok: "OK",
+      partial: "Partial",
+      unknown: "Unknown",
+      error: "Error"
+    }
+  };
+  const RISK_LABELS = {
+    "zh-CN": {
+      正常: "正常",
+      偏高: "偏高",
+      高: "高",
+      严重: "严重",
+      未知: "未知"
+    },
+    en: {
+      正常: "Normal",
+      偏高: "Elevated",
+      高: "High",
+      严重: "Severe",
+      未知: "Unknown"
+    }
+  };
+  const METER_LABELS_ZH = {
+    "File Upload": "文件上传",
+    "Paste Text To File": "粘贴文本转文件",
+    Dictation: "听写",
+    "Deep Research": "深度研究",
+    "Image Generation": "图像生成",
+    "Primary window": "主窗口",
+    "Weekly window": "每周窗口",
+    "Tasks rate limit": "任务限额",
+    "Code Review": "代码审查",
+    Credits: "余额",
+    "Credits (unlimited)": "余额（无限）"
+  };
+  function isLanguageMode(value) {
+    return value === "auto" || value === "zh-CN" || value === "en";
+  }
+  function languageModeFromValue(value) {
+    return isLanguageMode(value) ? value : DEFAULT_LANGUAGE_MODE;
+  }
+  function resolveLanguage(mode, browserLanguages = browserLanguageCandidates()) {
+    if (mode !== "auto") {
+      return mode;
+    }
+    for (const language of browserLanguages) {
+      const normalized = language.trim().toLowerCase();
+      if (normalized.startsWith("zh")) {
+        return "zh-CN";
+      }
+      if (normalized.startsWith("en")) {
+        return "en";
+      }
+    }
+    return "en";
+  }
+  function t(language, key, params = {}) {
+    return TEXT[language][key].replace(
+      /\{(\w+)\}/g,
+      (_, name) => params[name] === void 0 ? "" : String(params[name])
+    );
+  }
+  function formatAgeLocalized(language, timestamp, now = Date.now()) {
+    const seconds = Math.max(0, Math.floor((now - timestamp) / 1e3));
+    if (seconds < 5) {
+      return language === "zh-CN" ? "刚刚" : "just now";
+    }
+    if (seconds < 60) {
+      return language === "zh-CN" ? `${seconds}秒前` : `${seconds}s ago`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) {
+      return language === "zh-CN" ? `${minutes}分钟前` : `${minutes}m ago`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+      return language === "zh-CN" ? `${hours}小时前` : `${hours}h ago`;
+    }
+    const days = Math.floor(hours / 24);
+    return language === "zh-CN" ? `${days}天前` : `${days}d ago`;
+  }
+  function formatResetLocalized(language, meter, now = Date.now()) {
     const resetMs = resolveResetMs(meter, now);
     if (resetMs === null) {
       return "";
     }
     const seconds = Math.max(0, Math.floor((resetMs - now) / 1e3));
     if (seconds < 60) {
-      return `${seconds}秒`;
+      return language === "zh-CN" ? `${seconds}秒` : `${seconds}s`;
     }
     const minutes = Math.floor(seconds / 60);
     if (minutes < 60) {
-      return `${minutes}分钟`;
+      return language === "zh-CN" ? `${minutes}分钟` : `${minutes}m`;
     }
     const hours = Math.floor(minutes / 60);
     if (hours < 48) {
-      return `${hours}小时`;
+      return language === "zh-CN" ? `${hours}小时` : `${hours}h`;
     }
-    return `${Math.floor(hours / 24)}天`;
+    const days = Math.floor(hours / 24);
+    return language === "zh-CN" ? `${days}天` : `${days}d`;
+  }
+  function formatMeterValueLocalized(language, meter) {
+    if (typeof meter.remainingPercent === "number") {
+      return t(language, "meter.remainingPercent", {
+        percent: Math.round(meter.remainingPercent)
+      });
+    }
+    if (typeof meter.remaining === "number" && typeof meter.total === "number") {
+      return `${meter.remaining}/${meter.total}`;
+    }
+    if (typeof meter.remaining === "number") {
+      return t(language, "meter.remaining", { remaining: meter.remaining });
+    }
+    if (typeof meter.used === "number" && typeof meter.total === "number") {
+      return t(language, "meter.used", {
+        used: meter.used,
+        total: meter.total
+      });
+    }
+    if (typeof meter.usedPercent === "number") {
+      return t(language, "meter.usedPercent", {
+        percent: Math.round(meter.usedPercent)
+      });
+    }
+    return t(language, "meter.unknown");
+  }
+  function formatMeterLabelLocalized(language, meter) {
+    if (language === "en") {
+      return meter.label;
+    }
+    const direct = METER_LABELS_ZH[meter.label];
+    if (direct) {
+      return direct;
+    }
+    return meter.label.replace(/\bquery limit\b/gi, "查询额度").replace(/\btoken limit\b/gi, "token 额度").replace(/\bLow \/ Fast \/ Normal\b/g, "低 / 快速 / 普通").replace(/\bHigh \/ Thinking \/ Expert\b/g, "高 / 思考 / 专家").replace(/\bCodex usage\b/gi, "Codex 用量").replace(/\bPrimary window\b/gi, "主窗口").replace(/\bWeekly window\b/gi, "每周窗口").replace(/\b5[- ]?hour\b/gi, "5 小时").replace(/\bweekly\b/gi, "每周").replace(/\busage limit\b/gi, "使用限额").replace(/\brate limit\b/gi, "使用限额");
+  }
+  function formatGptSectionLabelLocalized(language, section) {
+    return GPT_SECTION_LABELS[language][section];
+  }
+  function formatSourceLabelLocalized(language, source) {
+    return SOURCE_LABELS[language][source] ?? source;
+  }
+  function formatConfidenceLabelLocalized(language, confidence) {
+    return CONFIDENCE_LABELS[language][confidence] ?? confidence;
+  }
+  function formatStatusLabelLocalized(language, status) {
+    return STATUS_LABELS[language][status] ?? status;
+  }
+  function formatRiskLabelLocalized(language, label) {
+    return RISK_LABELS[language][label] ?? label;
+  }
+  function browserLanguageCandidates() {
+    if (typeof navigator === "undefined") {
+      return [];
+    }
+    if (Array.isArray(navigator.languages) && navigator.languages.length > 0) {
+      return [...navigator.languages];
+    }
+    return navigator.language ? [navigator.language] : [];
   }
   const WIDGET_CSS = `
 :host {
@@ -873,6 +1167,10 @@ button {
   color: CanvasText;
   padding: 6px 8px;
   outline: none;
+}
+
+.settings-popover > .settings-input {
+  margin-bottom: 12px;
 }
 
 .settings-input-wrap {
@@ -1881,43 +2179,6 @@ button {
     "codex",
     "other"
   ];
-  const GPT_SECTION_LABELS = {
-    input: "输入与附件",
-    features: "GPT 功能额度",
-    windows: "用量窗口",
-    codex: "余额 / Codex",
-    other: "其他"
-  };
-  const SOURCE_LABEL = {
-    api: "接口",
-    intercepted: "捕获",
-    estimate: "估算",
-    unknown: "未知"
-  };
-  const CONFIDENCE_LABEL = {
-    high: "高",
-    medium: "中",
-    low: "低"
-  };
-  const STATUS_LABEL = {
-    ok: "正常",
-    partial: "部分可用",
-    unknown: "未知",
-    error: "错误"
-  };
-  const METER_LABELS = {
-    "File Upload": "文件上传",
-    "Paste Text To File": "粘贴文本转文件",
-    Dictation: "听写",
-    "Deep Research": "深度研究",
-    "Image Generation": "图像生成",
-    "Primary window": "主窗口",
-    "Weekly window": "每周窗口",
-    "Tasks rate limit": "任务限额",
-    "Code Review": "代码审查",
-    Credits: "余额",
-    "Credits (unlimited)": "余额（无限）"
-  };
   class UsageWidget {
     constructor(platform2, onRefresh, handlers = {}) {
       this.platform = platform2;
@@ -1949,7 +2210,10 @@ button {
     };
     ipRiskRefreshing = false;
     ipRiskSettingsOpen = false;
+    ipRiskSettingsDraft = null;
     backoffUntil = 0;
+    languageMode = DEFAULT_LANGUAGE_MODE;
+    resolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
     timerId;
     mount() {
       document.documentElement.append(this.host);
@@ -1987,9 +2251,31 @@ button {
       this.backoffUntil = value;
       this.render();
     }
+    setLanguageMode(value) {
+      this.languageMode = value;
+      this.resolvedLanguage = resolveLanguage(value);
+      this.render();
+    }
+    text(key, params) {
+      return t(this.resolvedLanguage, key, params);
+    }
+    createIpRiskSettingsDraft() {
+      return {
+        enabled: this.ipRiskSettings.enabled,
+        apiKeyValue: this.ipRiskSettings.apiKeyPreview ?? "",
+        keyDirty: false,
+        revealKey: false
+      };
+    }
+    closeIpRiskSettingsDialog() {
+      this.ipRiskSettingsOpen = false;
+      this.ipRiskSettingsDraft = null;
+      this.render();
+    }
     render() {
       if (this.hidden) {
         this.ipRiskSettingsOpen = false;
+        this.ipRiskSettingsDraft = null;
         this.root.replaceChildren(
           this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
         );
@@ -2020,7 +2306,7 @@ button {
       const button = el("button", "gpt-restore-chip");
       button.type = "button";
       this.applyChipPosition();
-      button.setAttribute("aria-label", "恢复 GPT 用量面板");
+      button.setAttribute("aria-label", this.text("action.restoreGptPanel"));
       this.installChipDrag(button, () => {
         this.hidden = false;
         this.expanded = true;
@@ -2143,20 +2429,20 @@ button {
     }
     renderChatGptCollapsed() {
       const panel = el("section", "gpt-collapsed-panel");
-      const title = titleNode("gpt-title", "GPT 用量", "clover-medallion.png");
+      const title = titleNode("gpt-title", this.text("gpt.title"), "clover-medallion.png");
       const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
       const actions = el("div", "gpt-actions");
       const refresh = this.renderActionButton(
         this.loading ? "..." : "↻",
-        "刷新用量",
+        this.text("action.refreshUsage"),
         () => this.onRefresh()
       );
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const expand = this.renderActionButton("+", "展开用量面板", () => {
+      const expand = this.renderActionButton("+", this.text("action.expandPanel"), () => {
         this.expanded = true;
         this.render();
       });
-      const close = this.renderActionButton("×", "隐藏用量面板", () => {
+      const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
         this.hidden = true;
         this.render();
       });
@@ -2177,21 +2463,23 @@ button {
     }
     renderChatGptHeader() {
       const header = el("div", "header gpt-header");
-      const title = titleNode("title gpt-title", "GPT 用量", "clover-medallion.png");
+      const title = titleNode("title gpt-title", this.text("gpt.title"), "clover-medallion.png");
       const right = el("div", "gpt-header-right");
-      right.append(textEl("span", "gpt-alerts", `${this.alertCount()} 项预警`));
+      right.append(
+        textEl("span", "gpt-alerts", this.text("gpt.alertCount", { count: this.alertCount() }))
+      );
       const actions = el("div", "actions gpt-actions");
       const refresh = this.renderActionButton(
         this.loading ? "..." : "↻",
-        "刷新用量",
+        this.text("action.refreshUsage"),
         () => this.onRefresh()
       );
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const collapse = this.renderActionButton("−", "折叠用量面板", () => {
+      const collapse = this.renderActionButton("−", this.text("action.collapsePanel"), () => {
         this.expanded = false;
         this.render();
       });
-      const close = this.renderActionButton("×", "隐藏用量面板", () => {
+      const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
         this.hidden = true;
         this.render();
       });
@@ -2213,11 +2501,11 @@ button {
       const meters = this.chatGptMeters();
       if (meters.length === 0) {
         if (!sentinelSection && !this.ipRiskSettings.enabled) {
-          content.append(textEl("div", "empty", "暂无用量数据"));
+          content.append(textEl("div", "empty", this.text("usage.empty")));
         }
         return content;
       }
-      for (const section of groupChatGptMeters(meters)) {
+      for (const section of groupChatGptMeters(meters, this.resolvedLanguage)) {
         content.append(this.renderMeterSection(section.label, section.meters));
       }
       return content;
@@ -2229,19 +2517,22 @@ button {
       }
       const section = el("section", "meter-section sentinel-section");
       section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
-      section.append(sectionTitle("账号状态", "leaf-small.png"));
+      section.append(sectionTitle(this.text("sentinel.accountStatus"), "leaf-small.png"));
       const gate = el("div", "sentinel-block");
       gate.append(
         this.renderSentinelRow(
-          "发送门禁",
-          `${state.sentinelRisk.label} ${state.sentinelRisk.score}/100`
+          this.text("sentinel.gate"),
+          `${formatRiskLabelLocalized(
+            this.resolvedLanguage,
+            state.sentinelRisk.label
+          )} ${state.sentinelRisk.score}/100`
         ),
         this.renderSentinelBar(state.sentinelRisk.score),
         this.renderSentinelRow(
           "PoW",
           `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
         ),
-        textEl("div", "sentinel-explanation", `说明：${state.explanation}`)
+        textEl("div", "sentinel-explanation", this.text("sentinel.explanation"))
       );
       section.append(gate);
       return section;
@@ -2249,24 +2540,27 @@ button {
     renderIpRiskSection() {
       const section = el("section", "meter-section ip-risk-section");
       section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
-      section.append(sectionTitle("网络风险", "leaf-small.png"));
+      section.append(sectionTitle(this.text("usage.networkRisk"), "leaf-small.png"));
       const block = el("div", "sentinel-block ip-risk-block");
-      block.append(this.renderSentinelRow("IP 检测", this.ipRiskStatusText()));
+      block.append(this.renderSentinelRow(this.text("ip.check"), this.ipRiskStatusText()));
       const freshIpRisk = this.freshIpRiskState();
       if (freshIpRisk) {
         block.append(
           this.renderSentinelBar(freshIpRisk.score),
-          this.renderSentinelRow("信号", formatIpRiskSignals(freshIpRisk)),
-          this.renderSentinelRow("来源", freshIpRisk.source)
+          this.renderSentinelRow(
+            this.text("ip.signal"),
+            formatIpRiskSignals(freshIpRisk, this.resolvedLanguage)
+          ),
+          this.renderSentinelRow(this.text("ip.source"), freshIpRisk.source)
         );
       } else if (this.ipRiskRefreshing) {
-        block.append(textEl("div", "sentinel-explanation", "正在查询 proxycheck.io。"));
+        block.append(textEl("div", "sentinel-explanation", this.text("ip.querying")));
       } else if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
         block.append(
           textEl(
             "div",
             "sentinel-explanation error-text",
-            this.ipRiskState.errorMessage ?? "检测失败"
+            this.ipRiskState.errorMessage ?? this.text("ip.errorFallback")
           )
         );
       } else {
@@ -2274,7 +2568,7 @@ button {
           textEl(
             "div",
             "sentinel-explanation",
-            this.ipRiskSettings.enabled ? "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。" : "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。"
+            this.ipRiskSettings.enabled ? this.text("ip.enabledHelp") : this.text("ip.disabledHelp")
           )
         );
       }
@@ -2284,36 +2578,55 @@ button {
     renderIpRiskSettingsDialog() {
       const panel = el("section", "settings-popover");
       const header = el("div", "settings-header");
+      const draft = this.ipRiskSettingsDraft ?? this.createIpRiskSettingsDraft();
+      this.ipRiskSettingsDraft = draft;
       header.append(
-        titleNode("settings-title", "IP 检测设置", "shield.png"),
-        this.renderActionButton("×", "关闭 IP 检测设置", () => {
-          this.ipRiskSettingsOpen = false;
-          this.render();
+        titleNode("settings-title", this.text("settings.title"), "shield.png"),
+        this.renderActionButton("×", this.text("action.closeSettings"), () => {
+          this.closeIpRiskSettingsDialog();
         })
       );
+      const languageSelect = document.createElement("select");
+      languageSelect.className = "settings-input";
+      for (const [value, label] of [
+        ["auto", this.text("language.auto")],
+        ["zh-CN", this.text("language.zhCN")],
+        ["en", this.text("language.en")]
+      ]) {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        languageSelect.append(option);
+      }
+      languageSelect.value = this.languageMode;
       const enabledInput = document.createElement("input");
       enabledInput.type = "checkbox";
-      enabledInput.checked = this.ipRiskSettings.enabled;
+      enabledInput.checked = draft.enabled;
+      enabledInput.addEventListener("change", () => {
+        draft.enabled = enabledInput.checked;
+      });
       const enabledLabel = el("label", "settings-check");
-      enabledLabel.append(enabledInput, textEl("span", "", "启用 proxycheck.io"));
+      enabledLabel.append(
+        enabledInput,
+        textEl("span", "", this.text("ip.enableProxycheck"))
+      );
       const keyInputWrap = el("div", "settings-input-wrap");
       const keyInput = document.createElement("input");
       keyInput.className = "settings-input";
-      keyInput.type = "password";
+      keyInput.type = draft.revealKey ? "text" : "password";
       keyInput.autocomplete = "off";
       keyInput.spellcheck = false;
-      let keyDirty = false;
-      if (this.ipRiskSettings.apiKeyPreview) {
-        keyInput.value = this.ipRiskSettings.apiKeyPreview;
-      }
-      keyInput.placeholder = this.ipRiskSettings.hasApiKey ? "已保存密钥，留空则不修改" : "输入 proxycheck.io API 密钥";
+      keyInput.value = draft.apiKeyValue;
+      keyInput.placeholder = draft.keyDirty && this.ipRiskSettings.hasApiKey ? this.text("ip.newKeyPlaceholder") : this.ipRiskSettings.hasApiKey ? this.text("ip.savedKeyPlaceholder") : this.text("ip.keyPlaceholder");
       const prepareKeyEdit = () => {
-        if (!keyDirty && this.ipRiskSettings.hasApiKey) {
-          keyDirty = true;
+        if (!draft.keyDirty && this.ipRiskSettings.hasApiKey) {
+          draft.keyDirty = true;
           keyInput.value = "";
-          keyInput.placeholder = "输入新的 proxycheck.io API 密钥";
+          keyInput.placeholder = this.text("ip.newKeyPlaceholder");
           keyInput.type = "password";
+          draft.revealKey = false;
         }
+        draft.apiKeyValue = keyInput.value;
       };
       keyInput.addEventListener("keydown", (event) => {
         if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
@@ -2322,35 +2635,67 @@ button {
       });
       keyInput.addEventListener("paste", prepareKeyEdit);
       keyInput.addEventListener("input", () => {
-        keyDirty = true;
+        draft.keyDirty = true;
+        draft.apiKeyValue = keyInput.value;
+        draft.revealKey = keyInput.type !== "password";
       });
-      const reveal = this.renderActionButton("👁", "显示或隐藏密钥", () => {
-        keyInput.type = keyInput.type === "password" ? "text" : "password";
+      const syncDraft = () => {
+        draft.enabled = enabledInput.checked;
+        draft.apiKeyValue = keyInput.value;
+        draft.revealKey = keyInput.type !== "password";
+      };
+      languageSelect.addEventListener("change", () => {
+        syncDraft();
+        const nextMode = languageModeFromValue(languageSelect.value);
+        this.languageMode = nextMode;
+        this.resolvedLanguage = resolveLanguage(nextMode);
+        this.handlers.onLanguageModeSave?.(nextMode);
+        this.render();
       });
+      const reveal = this.renderActionButton(
+        "👁",
+        this.text("action.toggleSecret"),
+        () => {
+          keyInput.type = keyInput.type === "password" ? "text" : "password";
+          draft.revealKey = keyInput.type !== "password";
+        }
+      );
       reveal.classList.add("settings-eye-button");
       keyInputWrap.append(keyInput, reveal);
       const actions = el("div", "settings-actions");
-      const save = textEl("button", "settings-button primary-button", "保存");
+      const save = textEl(
+        "button",
+        "settings-button primary-button",
+        this.text("settings.save")
+      );
       save.type = "button";
       save.addEventListener("click", () => {
-        const inputValue = keyInput.value.trim();
+        draft.enabled = enabledInput.checked;
+        draft.apiKeyValue = keyInput.value;
+        const inputValue = draft.apiKeyValue.trim();
         const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
         this.handlers.onIpRiskSettingsSave?.({
-          enabled: enabledInput.checked,
+          enabled: draft.enabled,
           apiKey: inputValue && inputValue !== previewValue ? inputValue : void 0
         });
-        this.ipRiskSettingsOpen = false;
-        this.render();
+        this.closeIpRiskSettingsDialog();
       });
-      const refresh = textEl("button", "settings-button", "立即检测");
+      const refresh = textEl(
+        "button",
+        "settings-button",
+        this.text("settings.checkNow")
+      );
       refresh.type = "button";
       refresh.disabled = this.ipRiskRefreshing || !this.ipRiskSettings.enabled || !this.ipRiskSettings.hasApiKey;
       refresh.addEventListener("click", () => {
         this.handlers.onIpRiskRefresh?.();
-        this.ipRiskSettingsOpen = false;
-        this.render();
+        this.closeIpRiskSettingsDialog();
       });
-      const remove = textEl("button", "settings-button danger-button", "删除密钥");
+      const remove = textEl(
+        "button",
+        "settings-button danger-button",
+        this.text("ip.deleteKey")
+      );
       remove.type = "button";
       remove.disabled = !this.ipRiskSettings.hasApiKey;
       remove.addEventListener("click", () => {
@@ -2358,42 +2703,42 @@ button {
           enabled: enabledInput.checked,
           clearApiKey: true
         });
-        this.ipRiskSettingsOpen = false;
-        this.render();
+        this.closeIpRiskSettingsDialog();
       });
       actions.append(save, refresh, remove);
       panel.append(
         header,
+        textEl("label", "settings-label", this.text("language.label")),
+        languageSelect,
         enabledLabel,
-        textEl("label", "settings-label", "proxycheck.io API 密钥"),
+        textEl("label", "settings-label", this.text("ip.apiKeyLabel")),
         keyInputWrap,
-        textEl(
-          "div",
-          "settings-help",
-          "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。"
-        ),
+        textEl("div", "settings-help", this.text("ip.help")),
         actions
       );
       return panel;
     }
     ipRiskStatusText() {
       if (!this.ipRiskSettings.enabled) {
-        return "未启用";
+        return this.text("ip.status.disabled");
       }
       if (!this.ipRiskSettings.hasApiKey) {
-        return "未配置密钥";
+        return this.text("ip.status.missingKey");
       }
       if (this.ipRiskRefreshing) {
-        return "检测中";
+        return this.text("ip.status.checking");
       }
       if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
-        return "检测失败";
+        return this.text("ip.status.failed");
       }
       const freshIpRisk = this.freshIpRiskState();
       if (freshIpRisk) {
-        return `${freshIpRisk.label} ${freshIpRisk.score}/100`;
+        return `${formatRiskLabelLocalized(
+          this.resolvedLanguage,
+          freshIpRisk.label
+        )} ${freshIpRisk.score}/100`;
       }
-      return "等待检测";
+      return this.text("ip.status.waiting");
     }
     freshIpRiskState() {
       const state = this.ipRiskState;
@@ -2433,15 +2778,21 @@ button {
       return button;
     }
     renderSettingsButton() {
-      return this.renderActionButton("⚙", "IP 检测设置", () => {
+      return this.renderActionButton("⚙", this.text("action.settings"), () => {
         this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
+        if (!this.ipRiskSettingsOpen) {
+          this.ipRiskSettingsDraft = null;
+        }
         this.render();
       });
     }
     renderCollapsed() {
       const button = el("button", "collapsed");
       button.type = "button";
-      button.setAttribute("aria-label", `打开 ${PLATFORM_LABEL[this.platform]} 用量`);
+      button.setAttribute(
+        "aria-label",
+        this.text("action.openUsage", { platform: PLATFORM_LABEL[this.platform] })
+      );
       this.applyChipPosition();
       this.installChipDrag(button, () => {
         this.expanded = true;
@@ -2474,20 +2825,20 @@ button {
       const header = el("div", "header");
       const title = titleNode(
         "title",
-        `${PLATFORM_LABEL[this.platform]} 用量`,
+        this.text("usage.title", { platform: PLATFORM_LABEL[this.platform] }),
         platformTitleAsset(this.platform)
       );
       const actions = el("div", "actions");
       const refresh = textEl("button", "icon-button", this.loading ? "..." : "↻");
       refresh.type = "button";
-      refresh.setAttribute("aria-label", "刷新用量");
-      refresh.title = "刷新用量";
+      refresh.setAttribute("aria-label", this.text("action.refreshUsage"));
+      refresh.title = this.text("action.refreshUsage");
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
       refresh.addEventListener("click", this.onRefresh);
       const close = textEl("button", "icon-button", "×");
       close.type = "button";
-      close.setAttribute("aria-label", "收起用量组件");
-      close.title = "收起";
+      close.setAttribute("aria-label", this.text("action.collapseWidget"));
+      close.title = this.text("action.collapseWidget");
       close.addEventListener("click", () => {
         this.expanded = false;
         this.render();
@@ -2498,8 +2849,14 @@ button {
     }
     renderMeta() {
       const meta = el("div", "meta");
-      const updated = this.snapshot ? `更新于 ${formatAge(this.snapshot.updatedAt)}` : "尚未更新";
-      const right = this.backoffRemainingMs() > 0 ? `等待 ${Math.ceil(this.backoffRemainingMs() / 1e3)}秒` : this.snapshot?.cacheAgeMs !== void 0 ? `缓存 ${Math.floor(this.snapshot.cacheAgeMs / 1e3)}秒` : this.loading ? "加载中" : "";
+      const updated = this.snapshot ? this.text("meta.updatedAt", {
+        age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt)
+      }) : this.text("meta.neverUpdated");
+      const right = this.backoffRemainingMs() > 0 ? this.text("meta.waitSeconds", {
+        seconds: Math.ceil(this.backoffRemainingMs() / 1e3)
+      }) : this.snapshot?.cacheAgeMs !== void 0 ? this.text("meta.cacheSeconds", {
+        seconds: Math.floor(this.snapshot.cacheAgeMs / 1e3)
+      }) : this.loading ? this.text("meta.loading") : "";
       meta.append(
         iconText("span", "meta-item", "leaf-small.png", updated),
         right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
@@ -2514,7 +2871,7 @@ button {
       const meta = el("div", "model-meta");
       const value = textEl("span", "model-value", summary);
       value.title = summary;
-      meta.append(textEl("span", "model-label", "模型"), value);
+      meta.append(textEl("span", "model-label", this.text("model.label")), value);
       return meta;
     }
     renderContent() {
@@ -2536,8 +2893,16 @@ button {
       const row = el("div", "meter");
       const top = el("div", "meter-top");
       top.append(
-        textEl("div", "meter-label", formatMeterLabel(meter)),
-        textEl("div", "meter-value", formatMeterValue(meter))
+        textEl(
+          "div",
+          "meter-label",
+          formatMeterLabelLocalized(this.resolvedLanguage, meter)
+        ),
+        textEl(
+          "div",
+          "meter-value",
+          formatMeterValueLocalized(this.resolvedLanguage, meter)
+        )
       );
       const progress = meterProgress(meter);
       const bar = el("div", "bar");
@@ -2549,14 +2914,20 @@ button {
       bar.style.setProperty("--meter-progress", `${progress}%`);
       bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
       const bottom = el("div", "meter-bottom");
-      const age = meter.observedAt ? ` · ${formatAge(meter.observedAt)}` : "";
+      const age = meter.observedAt ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}` : "";
       bottom.append(
         textEl(
           "span",
           "badge",
-          `${sourceLabel(meter.source)} · ${confidenceLabel(meter.confidence)}${age}`
+          `${formatSourceLabelLocalized(
+            this.resolvedLanguage,
+            meter.source
+          )} · ${formatConfidenceLabelLocalized(
+            this.resolvedLanguage,
+            meter.confidence
+          )}${age}`
         ),
-        textEl("span", "", formatReset(meter))
+        textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
       );
       row.append(top, bar, bottom);
       return row;
@@ -2569,7 +2940,9 @@ button {
       }
       const byRemainingPercent = meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0];
       if (byRemainingPercent?.remainingPercent !== void 0 && byRemainingPercent.remainingPercent !== null) {
-        return `${Math.round(byRemainingPercent.remainingPercent)}% 剩余`;
+        return this.text("meter.remainingPercent", {
+          percent: Math.round(byRemainingPercent.remainingPercent)
+        });
       }
       const byPercent = meters.find((meter) => typeof meter.usedPercent === "number");
       if (byPercent?.usedPercent !== void 0 && byPercent.usedPercent !== null) {
@@ -2590,18 +2963,29 @@ button {
       const meters = this.chatGptMeters();
       const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.usedPercent === "number").sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
       if (!alert) {
-        return statusLabel(this.snapshot?.status ?? "unknown");
+        return formatStatusLabelLocalized(
+          this.resolvedLanguage,
+          this.snapshot?.status ?? "unknown"
+        );
       }
       if (typeof alert.remainingPercent === "number") {
-        return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.remainingPercent)}% 剩余`;
+        return `${shortLabel(
+          formatMeterLabelLocalized(this.resolvedLanguage, alert)
+        )} ${this.text("meter.remainingPercent", {
+          percent: Math.round(alert.remainingPercent)
+        })}`;
       }
       if (typeof alert.usedPercent === "number") {
-        return `${shortLabel(formatMeterLabel(alert))} ${Math.round(alert.usedPercent)}%`;
+        return `${shortLabel(
+          formatMeterLabelLocalized(this.resolvedLanguage, alert)
+        )} ${Math.round(alert.usedPercent)}%`;
       }
       if (typeof alert.remaining === "number") {
-        return `${shortLabel(formatMeterLabel(alert))} 剩余 ${alert.remaining}`;
+        return `${shortLabel(
+          formatMeterLabelLocalized(this.resolvedLanguage, alert)
+        )} ${this.text("meter.remaining", { remaining: alert.remaining })}`;
       }
-      return shortLabel(formatMeterLabel(alert));
+      return shortLabel(formatMeterLabelLocalized(this.resolvedLanguage, alert));
     }
     chatGptMeters() {
       const meters = [...this.snapshot?.meters ?? []];
@@ -2610,7 +2994,7 @@ button {
     chatGptPrimaryValue() {
       const meters = this.chatGptMeters();
       const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0] ?? meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0] ?? meters.find((meter) => typeof meter.usedPercent === "number");
-      return alert ? formatMeterValue(alert) : "?";
+      return alert ? formatMeterValueLocalized(this.resolvedLanguage, alert) : "?";
     }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
@@ -2626,7 +3010,7 @@ button {
       if (!meter) {
         return this.primaryValue();
       }
-      return formatMeterValue(meter);
+      return formatMeterValueLocalized(this.resolvedLanguage, meter);
     }
     grokPrimaryMeter() {
       const meters = [...this.snapshot?.meters ?? []];
@@ -2634,40 +3018,6 @@ button {
         (a, b) => grokMeterPriority(a) - grokMeterPriority(b) || (b.observedAt ?? 0) - (a.observedAt ?? 0)
       )[0] ?? null;
     }
-  }
-  function formatMeterValue(meter) {
-    if (typeof meter.remainingPercent === "number") {
-      return `${Math.round(meter.remainingPercent)}% 剩余`;
-    }
-    if (typeof meter.remaining === "number" && typeof meter.total === "number") {
-      return `${meter.remaining}/${meter.total}`;
-    }
-    if (typeof meter.remaining === "number") {
-      return `剩余 ${meter.remaining}`;
-    }
-    if (typeof meter.used === "number" && typeof meter.total === "number") {
-      return `已用 ${meter.used}/${meter.total}`;
-    }
-    if (typeof meter.usedPercent === "number") {
-      return `${Math.round(meter.usedPercent)}% 已用`;
-    }
-    return "未知";
-  }
-  function formatMeterLabel(meter) {
-    const direct = METER_LABELS[meter.label];
-    if (direct) {
-      return direct;
-    }
-    return meter.label.replace(/\bquery limit\b/gi, "查询额度").replace(/\btoken limit\b/gi, "token 额度").replace(/\bLow \/ Fast \/ Normal\b/g, "低 / 快速 / 普通").replace(/\bHigh \/ Thinking \/ Expert\b/g, "高 / 思考 / 专家").replace(/\bCodex usage\b/gi, "Codex 用量").replace(/\bPrimary window\b/gi, "主窗口").replace(/\bWeekly window\b/gi, "每周窗口").replace(/\b5[- ]?hour\b/gi, "5 小时").replace(/\bweekly\b/gi, "每周").replace(/\busage limit\b/gi, "使用限额").replace(/\brate limit\b/gi, "使用限额");
-  }
-  function sourceLabel(source) {
-    return SOURCE_LABEL[source] ?? source;
-  }
-  function confidenceLabel(confidence) {
-    return CONFIDENCE_LABEL[confidence] ?? confidence;
-  }
-  function statusLabel(status) {
-    return STATUS_LABEL[status] ?? status;
   }
   function meterProgress(meter) {
     if (typeof meter.remainingPercent === "number") {
@@ -2696,7 +3046,7 @@ button {
     }
     return "sentinel-risk-normal";
   }
-  function formatIpRiskSignals(state) {
+  function formatIpRiskSignals(state, language) {
     const signals = [];
     if (state.signals.proxy) {
       signals.push("Proxy");
@@ -2713,7 +3063,7 @@ button {
     if (state.signals.type && !signals.includes(state.signals.type)) {
       signals.push(state.signals.type);
     }
-    return signals.length > 0 ? signals.join(" / ") : "未见明显代理信号";
+    return signals.length > 0 ? signals.join(" / ") : t(language, "ip.noProxySignals");
   }
   function clamp$1(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -2753,7 +3103,7 @@ button {
     }
     return 80;
   }
-  function groupChatGptMeters(meters) {
+  function groupChatGptMeters(meters, language) {
     const groups = {
       input: [],
       features: [],
@@ -2765,7 +3115,7 @@ button {
       groups[chatGptMeterSection(meter)].push(meter);
     }
     return GPT_SECTION_ORDER.map((key) => ({
-      label: GPT_SECTION_LABELS[key],
+      label: formatGptSectionLabelLocalized(language, key),
       meters: groups[key]
     })).filter((section) => section.meters.length > 0);
   }
@@ -4219,7 +4569,7 @@ button {
   const STATE_KEY = "aiUsage:chatgpt:sentinelState";
   const OBSERVATIONS_KEY = "aiUsage:chatgpt:sentinelObservations";
   async function getChatGptSentinelState() {
-    const items = await storageGet$1(STATE_KEY);
+    const items = await storageGet$2(STATE_KEY);
     const value = items[STATE_KEY];
     return isChatGptSentinelState(value) ? value : null;
   }
@@ -4229,20 +4579,20 @@ button {
     }
     const existing = await getChatGptSentinelObservations();
     const observations = [observation, ...existing].slice(0, OBSERVATION_LIMIT);
-    await storageSet$1({
+    await storageSet$2({
       [STATE_KEY]: state,
       [OBSERVATIONS_KEY]: observations
     });
   }
   async function getChatGptSentinelObservations() {
-    const items = await storageGet$1(OBSERVATIONS_KEY);
+    const items = await storageGet$2(OBSERVATIONS_KEY);
     const value = items[OBSERVATIONS_KEY];
     if (!Array.isArray(value)) {
       return [];
     }
     return value.filter(isChatGptSentinelObservation).slice(0, OBSERVATION_LIMIT);
   }
-  function storageGet$1(keys) {
+  function storageGet$2(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, (items) => {
         const error = chrome.runtime.lastError;
@@ -4254,7 +4604,7 @@ button {
       });
     });
   }
-  function storageSet$1(items) {
+  function storageSet$2(items) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(items, () => {
         const error = chrome.runtime.lastError;
@@ -4277,7 +4627,7 @@ button {
   const IP_RISK_SETTINGS_KEY = "aiUsage:ipRisk:settings";
   const IP_RISK_STATE_KEY = "aiUsage:ipRisk:state";
   async function getStoredIpRiskSettings() {
-    const items = await storageGet(IP_RISK_SETTINGS_KEY);
+    const items = await storageGet$1(IP_RISK_SETTINGS_KEY);
     return storedIpRiskSettingsFromValue(items[IP_RISK_SETTINGS_KEY]);
   }
   async function getIpRiskPublicSettings() {
@@ -4297,16 +4647,16 @@ button {
     if (update.clearApiKey) {
       delete next.proxycheckApiKey;
     }
-    await storageSet({ [IP_RISK_SETTINGS_KEY]: next });
+    await storageSet$1({ [IP_RISK_SETTINGS_KEY]: next });
     return publicIpRiskSettings(next);
   }
   async function getIpRiskState() {
-    const items = await storageGet(IP_RISK_STATE_KEY);
+    const items = await storageGet$1(IP_RISK_STATE_KEY);
     const state = items[IP_RISK_STATE_KEY];
     return isIpRiskState(state) ? state : null;
   }
   function setIpRiskState(state) {
-    return storageSet({ [IP_RISK_STATE_KEY]: state });
+    return storageSet$1({ [IP_RISK_STATE_KEY]: state });
   }
   function publicSettingsFromStorageValue(value) {
     return publicIpRiskSettings(storedIpRiskSettingsFromValue(value));
@@ -4332,6 +4682,43 @@ button {
   function isIpRiskState(value) {
     const candidate = value;
     return typeof value === "object" && value !== null && candidate.provider === "proxycheck" && candidate.source === "proxycheck.io" && typeof candidate.updatedAt === "number" && typeof candidate.signals === "object" && candidate.signals !== null;
+  }
+  function storageGet$1(keys) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.get(keys, (items) => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve(items);
+      });
+    });
+  }
+  function storageSet$1(items) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.set(items, () => {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        resolve();
+      });
+    });
+  }
+  const LANGUAGE_SETTINGS_KEY = "aiUsage:language";
+  async function getLanguageMode() {
+    const items = await storageGet(LANGUAGE_SETTINGS_KEY);
+    return languageModeFromStorageValue(items[LANGUAGE_SETTINGS_KEY]);
+  }
+  async function saveLanguageMode(mode) {
+    const next = languageModeFromValue(mode);
+    await storageSet({ [LANGUAGE_SETTINGS_KEY]: next });
+    return next;
+  }
+  function languageModeFromStorageValue(value) {
+    return languageModeFromValue(value);
   }
   function storageGet(keys) {
     return new Promise((resolve, reject) => {
@@ -4433,6 +4820,9 @@ button {
       widget.setIpRiskSettings(settings);
       await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
     };
+    const saveLanguage = async (mode) => {
+      widget.setLanguageMode(await saveLanguageMode(mode));
+    };
     widget = new UsageWidget(
       platformId,
       () => {
@@ -4446,9 +4836,15 @@ button {
           void saveIpRisk(update).catch((error) => {
             debugLog("failed to save IP risk settings", error);
           });
+        },
+        onLanguageModeSave: (mode) => {
+          void saveLanguage(mode).catch((error) => {
+            debugLog("failed to save language settings", error);
+          });
         }
       }
     );
+    widget.setLanguageMode(await getLanguageMode());
     const maybeStartCodexProbe = (snapshot) => {
       if (platformId !== "chatgpt" || codexProbeStarted || hasCodexMeter(snapshot)) {
         return;
@@ -4576,6 +4972,12 @@ button {
         if (state) {
           widget.setIpRiskState(state);
         }
+      }
+      const languageChange = changes[LANGUAGE_SETTINGS_KEY];
+      if (languageChange) {
+        widget.setLanguageMode(
+          languageModeFromStorageValue(languageChange.newValue)
+        );
       }
     };
     chrome.storage.onChanged.addListener(onStorageChanged);

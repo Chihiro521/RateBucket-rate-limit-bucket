@@ -469,6 +469,10 @@ button {
   outline: none;
 }
 
+.settings-popover > .settings-input {
+  margin-bottom: 12px;
+}
+
 .settings-input-wrap {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 34px;
