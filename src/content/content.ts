@@ -46,6 +46,13 @@ import {
   saveIpRiskSettings,
   setIpRiskState
 } from "../storage/ipRisk";
+import {
+  LANGUAGE_SETTINGS_KEY,
+  getLanguageMode,
+  languageModeFromStorageValue,
+  saveLanguageMode
+} from "../storage/language";
+import type { LanguageMode } from "../utils/i18n";
 import { debugLog } from "../utils/logger";
 
 const platform = detectPlatform(window.location);
@@ -121,6 +128,10 @@ async function start(platformId: PlatformId): Promise<void> {
     await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
   };
 
+  const saveLanguage = async (mode: LanguageMode): Promise<void> => {
+    widget.setLanguageMode(await saveLanguageMode(mode));
+  };
+
   widget = new UsageWidget(
     platformId,
     () => {
@@ -134,9 +145,15 @@ async function start(platformId: PlatformId): Promise<void> {
         void saveIpRisk(update).catch((error: unknown) => {
           debugLog("failed to save IP risk settings", error);
         });
+      },
+      onLanguageModeSave: (mode) => {
+        void saveLanguage(mode).catch((error: unknown) => {
+          debugLog("failed to save language settings", error);
+        });
       }
     }
   );
+  widget.setLanguageMode(await getLanguageMode());
 
   const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
     if (
@@ -286,6 +303,12 @@ async function start(platformId: PlatformId): Promise<void> {
       if (state) {
         widget.setIpRiskState(state);
       }
+    }
+    const languageChange = changes[LANGUAGE_SETTINGS_KEY];
+    if (languageChange) {
+      widget.setLanguageMode(
+        languageModeFromStorageValue(languageChange.newValue)
+      );
     }
   };
   chrome.storage.onChanged.addListener(onStorageChanged);
