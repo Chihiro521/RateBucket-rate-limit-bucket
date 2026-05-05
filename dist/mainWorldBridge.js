@@ -284,6 +284,12 @@
         platform: "chatgpt",
         method: "GET",
         url: "https://chatgpt.com/codex/settings/usage"
+      },
+      "kimi:subscription": {
+        platform: "kimi",
+        method: "POST",
+        url: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription",
+        body: {}
       }
     };
     if (endpointKey === "grok:rate-limits") {
@@ -399,12 +405,23 @@
     }
     window.__AI_USAGE_FLOATING_MONITOR_FETCH_PATCHED__ = true;
     const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const usageRequest = getUsageRequest(input, init);
-      const response = await originalFetch(input, init);
-      try {
-        if (usageRequest) {
-          response.clone().json().then(async (json) => {
+    function makePatchedFetch() {
+      return async (input, init) => {
+        const usageRequest = getUsageRequest(input, init);
+        const response = await originalFetch(input, init);
+        try {
+          if (usageRequest) {
+            const text = await response.text();
+            const newResponse = new Response(text, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers
+            });
+            let json;
+            try {
+              json = JSON.parse(text);
+            } catch {
+            }
             const usageContext = await usageRequest.usageContext;
             postInterceptedUsage({
               platform: usageRequest.platform,
@@ -413,12 +430,21 @@
               usageContext,
               json
             });
-          }).catch(() => void 0);
+            return newResponse;
+          }
+        } catch {
         }
-      } catch {
+        return response;
+      };
+    }
+    var currentPatchedFetch = makePatchedFetch();
+    window.fetch = currentPatchedFetch;
+    window.setInterval(() => {
+      if (window.fetch !== currentPatchedFetch) {
+        currentPatchedFetch = makePatchedFetch();
+        window.fetch = currentPatchedFetch;
       }
-      return response;
-    };
+    }, 2e3);
   }
   function isSafeGrokModelName(value) {
     return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
@@ -562,6 +588,9 @@
           endpointKey: "chatgpt:codexSettingsUsage"
         };
       }
+    }
+    if (url.origin === "https://www.kimi.com" && url.pathname === "/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription") {
+      return { platform: "kimi", endpointKey: "kimi:subscription" };
     }
     return null;
   }

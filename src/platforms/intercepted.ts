@@ -5,6 +5,7 @@ import {
   rememberGrokRateLimitContext
 } from "./grok";
 import { normalizeChatGptIntercepted } from "./chatgpt";
+import { normalizeKimiUsage } from "./kimi";
 import type {
   EndpointKey,
   PlatformId,
@@ -53,6 +54,9 @@ function normalizeInterceptedMeters(args: {
   }
   if (args.platform === "claude") {
     return normalizeClaudeUsage(args.json, "intercepted");
+  }
+  if (args.platform === "kimi") {
+    return normalizeKimiUsage(args.json, "intercepted");
   }
   return normalizeChatGptIntercepted(args.url, args.json);
 }

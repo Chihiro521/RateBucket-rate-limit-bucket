@@ -42,7 +42,8 @@ type ChipEdge = "left" | "right" | "top" | "bottom";
 const PLATFORM_LABEL: Record<PlatformId, string> = {
   grok: "Grok",
   claude: "Claude",
-  chatgpt: "GPT"
+  chatgpt: "GPT",
+  kimi: "Kimi"
 };
 
 const GPT_SECTION_ORDER = [
@@ -1340,6 +1341,9 @@ function platformTitleAsset(platform: PlatformId): NahidaAssetName {
     return "clover-medallion.png";
   }
   if (platform === "claude") {
+    return "leaf-emblem.png";
+  }
+  if (platform === "kimi") {
     return "leaf-emblem.png";
   }
   return "leaf-small.png";
