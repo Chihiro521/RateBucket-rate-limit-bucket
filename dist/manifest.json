@@ -2,12 +2,13 @@
   "manifest_version": 3,
   "name": "AI 用量浮窗",
   "version": "0.1.0",
-  "description": "用于 Grok、Claude 和 ChatGPT 的浮动用量监控器。",
+  "description": "用于 Grok、Claude、ChatGPT 和 Kimi 的浮动用量监控器。",
   "permissions": ["storage", "scripting"],
   "host_permissions": [
     "https://grok.com/*",
     "https://claude.ai/*",
     "https://chatgpt.com/*",
+    "https://www.kimi.com/*",
     "https://proxycheck.io/*",
     "https://api64.ipify.org/*"
   ],
@@ -20,7 +21,8 @@
       "matches": [
         "https://grok.com/*",
         "https://claude.ai/*",
-        "https://chatgpt.com/*"
+        "https://chatgpt.com/*",
+        "https://www.kimi.com/*"
       ]
     }
   ],
@@ -29,7 +31,8 @@
       "matches": [
         "https://grok.com/*",
         "https://claude.ai/*",
-        "https://chatgpt.com/*"
+        "https://chatgpt.com/*",
+        "https://www.kimi.com/*"
       ],
       "js": ["mainWorldBridge.js"],
       "run_at": "document_start",
@@ -40,7 +43,8 @@
       "matches": [
         "https://grok.com/*",
         "https://claude.ai/*",
-        "https://chatgpt.com/*"
+        "https://chatgpt.com/*",
+        "https://www.kimi.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_start"

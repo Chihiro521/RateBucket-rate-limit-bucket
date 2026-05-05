@@ -2170,7 +2170,8 @@ button {
   const PLATFORM_LABEL = {
     grok: "Grok",
     claude: "Claude",
-    chatgpt: "GPT"
+    chatgpt: "GPT",
+    kimi: "Kimi"
   };
   const GPT_SECTION_ORDER = [
     "input",
@@ -3235,6 +3236,9 @@ button {
     if (platform2 === "claude") {
       return "leaf-emblem.png";
     }
+    if (platform2 === "kimi") {
+      return "leaf-emblem.png";
+    }
     return "leaf-small.png";
   }
   function unique(values) {
@@ -3270,6 +3274,9 @@ button {
     }
     if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
       return "chatgpt";
+    }
+    if (hostname === "www.kimi.com" || hostname === "kimi.com") {
+      return "kimi";
     }
     return null;
   }
@@ -3307,7 +3314,7 @@ button {
     const status = error.status ? `${error.status} ` : "";
     return `${prefix}${status}${error.message}`;
   }
-  const FEATURE_LABELS = {
+  const FEATURE_LABELS$1 = {
     deep_research: "Deep Research",
     image_gen: "Image Generation",
     file_upload: "File Upload",
@@ -3330,7 +3337,7 @@ button {
       const resetAt = typeof resetAfter === "string" || typeof resetAfter === "number" ? resetAfter : null;
       meters.push({
         key: `limits_progress:${featureName}`,
-        label: FEATURE_LABELS[featureName] ?? titleFromKey(featureName),
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
         remaining,
         resetAt,
         source,
@@ -4272,12 +4279,77 @@ button {
   function isSafeGrokRequestKind(value) {
     return value !== void 0 && /^[A-Z_]{1,40}$/.test(value);
   }
+  const FEATURE_LABELS = {
+    FEATURE_OMNI: "Credit"
+  };
+  function parseDateToTimestamp(value) {
+    const str = typeof value === "string" ? value : null;
+    if (!str) {
+      return null;
+    }
+    const date = new Date(str);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return date.getTime();
+  }
+  function normalizeKimiUsage(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const balances = asArray(root.balances);
+    const subscription = asRecord(root.subscription);
+    const meters = [];
+    let planTitle = null;
+    if (subscription) {
+      const goods = getRecord(subscription, "goods");
+      planTitle = goods ? getString(goods, "title") : null;
+    }
+    for (const item of balances) {
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const feature = getString(record, "feature") ?? "unknown";
+      const usedRatio = getNumber(record, "amountUsedRatio");
+      const expireTime = parseDateToTimestamp(record.expireTime);
+      if (usedRatio === null) {
+        continue;
+      }
+      const usedPercent = usedRatio >= 0 && usedRatio <= 1 ? usedRatio * 100 : usedRatio;
+      const remainingPercent = Math.max(0, Math.min(100, 100 - usedPercent));
+      meters.push({
+        key: feature.toLowerCase().replace(/^feature_/, ""),
+        label: planTitle ?? FEATURE_LABELS[feature] ?? feature,
+        usedPercent,
+        remainingPercent,
+        resetAt: expireTime,
+        source,
+        confidence: "high",
+        rawKind: feature
+      });
+    }
+    return meters;
+  }
+  async function fetchKimiUsage() {
+    return {
+      platform: "kimi",
+      meters: [],
+      source: "unknown",
+      updatedAt: Date.now(),
+      status: "unknown"
+    };
+  }
   function fetchPlatformUsage(platform2, fetcher) {
     if (platform2 === "grok") {
       return fetchGrokUsage(fetcher);
     }
     if (platform2 === "claude") {
       return fetchClaudeUsage(fetcher);
+    }
+    if (platform2 === "kimi") {
+      return fetchKimiUsage();
     }
     return fetchChatGptUsage(fetcher);
   }
@@ -4307,6 +4379,9 @@ button {
     }
     if (args.platform === "claude") {
       return normalizeClaudeUsage(args.json, "intercepted");
+    }
+    if (args.platform === "kimi") {
+      return normalizeKimiUsage(args.json, "intercepted");
     }
     return normalizeChatGptIntercepted(args.url, args.json);
   }

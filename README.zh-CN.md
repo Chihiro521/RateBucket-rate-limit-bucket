@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude 和 ChatGPT 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
+RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude、ChatGPT 和 Kimi 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
 
 本项目是独立的个人工具，不隶属于 OpenAI、Anthropic、xAI、Google 或 proxycheck.io。
 
@@ -16,7 +16,7 @@ RateBucket 目前适合从源码本地安装使用，尚未发布到 Chrome Web 
 
 - 在支持的 AI 网页应用上显示浮动用量组件。
 - 支持紧凑折叠 chip 和展开详情面板。
-- 通过平台专用 normalizer 跟踪 Grok、Claude 和 ChatGPT 的用量信号。
+- 通过平台专用 normalizer 跟踪 Grok、Claude、ChatGPT 和 Kimi 的用量信号。
 - 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示。
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
 - 在平台缺少可靠额度数据时提供本地估算计数。
@@ -30,6 +30,7 @@ RateBucket 目前适合从源码本地安装使用，尚未发布到 Chrome Web 
 | Grok | `https://grok.com/*` | `/rest/rate-limits` |
 | Claude | `https://claude.ai/*` | `/api/organizations`、`/api/organizations/{orgId}/usage` |
 | ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/wham/usage`、`/backend-api/wham/tasks/rate_limit`、`/codex/settings/usage` |
+| Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 
 扩展也会观察页面自身对允许列表内用量端点的 fetch 响应。被观察到的响应会经过和主动刷新相同的 normalizer。
 
@@ -130,7 +131,7 @@ RateBucket 尽量保持本地运行：
 - 不申请 `cookies`、`webRequest`、`tabs` 或 `activeTab` 权限。
 - 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据、语言偏好和可选 IP 风险设置。
 
-扩展只请求 Grok、Claude、ChatGPT 和可选 IP 信誉服务的 host access。
+扩展只请求 Grok、Claude、ChatGPT、Kimi 和可选 IP 信誉服务的 host access。
 
 ## 可选 IP 信誉检测
 
@@ -196,5 +197,6 @@ RateBucket 使用 MIT License 发布，见 [LICENSE](LICENSE)。
 - GPT，最务实的结对编程伙伴。
 - Grok，小道消息来源。
 - Gemini，偶尔点亮灵感，虽然经常像是在打酱油。
+- Kimi，勤勤恳恳的记账员，专门盯额度。
 
 这个项目由人类完成，中间借了很多场对话的力。
