@@ -47,6 +47,18 @@ describe("i18n", () => {
         label: "grok-4 query limit"
       })
     ).toBe("grok-4 查询额度");
+    expect(
+      formatMeterLabelLocalized("zh-CN", {
+        ...baseMeter,
+        label: "Gemini 5h"
+      })
+    ).toBe("Gemini 5 小时");
+    expect(
+      formatMeterLabelLocalized("zh-CN", {
+        ...baseMeter,
+        label: "Gemini weekly"
+      })
+    ).toBe("Gemini 每周");
   });
 
   it("localizes meter values", () => {

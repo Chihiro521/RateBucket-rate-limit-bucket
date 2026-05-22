@@ -11,6 +11,9 @@ export function detectPlatform(location: Location): PlatformId | null {
   if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
     return "chatgpt";
   }
+  if (hostname === "gemini.google.com") {
+    return "gemini";
+  }
   if (hostname === "www.kimi.com" || hostname === "kimi.com") {
     return "kimi";
   }

@@ -321,6 +321,7 @@ async function start(platformId: PlatformId): Promise<void> {
       platform: platformId,
       url: message.url,
       json: message.json,
+      text: message.text,
       ts: message.ts,
       endpointKey: message.endpointKey,
       usageContext: message.usageContext

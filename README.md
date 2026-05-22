@@ -2,7 +2,7 @@
 
 [中文文档](README.zh-CN.md)
 
-RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, and Kimi. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
+RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, and Kimi. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
 This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, or proxycheck.io.
 
@@ -16,7 +16,7 @@ Before a public Chrome Web Store release, the project still needs store-ready ic
 
 - Shows a floating usage widget on supported AI web apps.
 - Supports compact collapsed chips and expanded detail panels.
-- Tracks Grok, Claude, ChatGPT, and Kimi usage signals through platform-specific normalizers.
+- Tracks Grok, Claude, ChatGPT, Gemini, and Kimi usage signals through platform-specific normalizers.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
@@ -30,6 +30,7 @@ Before a public Chrome Web Store release, the project still needs store-ready ic
 | Grok | `https://grok.com/*` | `/rest/rate-limits` |
 | Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
 | ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage` |
+| Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
@@ -121,7 +122,7 @@ RateBucket is designed to stay local where possible:
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
 - It stores only normalized usage data, local counters, retry metadata, language preference, and optional IP risk settings in `chrome.storage.local`.
 
-The extension requests host access only for Grok, Claude, ChatGPT, Kimi, and the optional IP reputation services.
+The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, and the optional IP reputation services.
 
 ## Optional IP Reputation Check
 
@@ -169,6 +170,7 @@ Until then, use the source installation flow above.
 
 - Supported platforms use internal web APIs that may change without notice.
 - ChatGPT usage fields are expected to be the least stable.
+- Gemini uses a Google Web internal batchexecute RPC, so fields and token sources may change with the page implementation.
 - Claude and Grok response shapes may also change.
 - Estimate mode only counts local actions in the current browser and is not authoritative quota data.
 - The extension is not designed for multiple accounts, team plans, enterprise plans, or cross-device sync.
@@ -181,7 +183,7 @@ The bundled visual assets are part of the current project package. Before publis
 
 ## Acknowledgements
 
-A small nod to my four informal teachers and collaborators:
+A small nod to my five informal teachers and collaborators:
 
 - Claude, the resident philosopher.
 - GPT, the most pragmatic pair-programming partner.

@@ -43,7 +43,8 @@ const PLATFORM_LABEL: Record<PlatformId, string> = {
   grok: "Grok",
   claude: "Claude",
   chatgpt: "GPT",
-  kimi: "Kimi"
+  kimi: "Kimi",
+  gemini: "Gemini"
 };
 
 const GPT_SECTION_ORDER = [
@@ -1345,6 +1346,9 @@ function platformTitleAsset(platform: PlatformId): NahidaAssetName {
   }
   if (platform === "kimi") {
     return "leaf-emblem.png";
+  }
+  if (platform === "gemini") {
+    return "gem-square.png";
   }
   return "leaf-small.png";
 }

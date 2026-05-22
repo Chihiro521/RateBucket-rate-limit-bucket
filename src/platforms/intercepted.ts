@@ -5,6 +5,7 @@ import {
   rememberGrokRateLimitContext
 } from "./grok";
 import { normalizeChatGptIntercepted } from "./chatgpt";
+import { normalizeGeminiUsageText } from "./gemini";
 import { normalizeKimiUsage } from "./kimi";
 import type {
   EndpointKey,
@@ -18,6 +19,7 @@ export function normalizeInterceptedUsage(args: {
   platform: PlatformId;
   url: string;
   json: unknown;
+  text?: string;
   ts: number;
   endpointKey?: EndpointKey;
   usageContext?: UsageRequestContext;
@@ -40,6 +42,7 @@ function normalizeInterceptedMeters(args: {
   platform: PlatformId;
   url: string;
   json: unknown;
+  text?: string;
   endpointKey?: EndpointKey;
   usageContext?: UsageRequestContext;
 }): UsageMeter[] {
@@ -57,6 +60,11 @@ function normalizeInterceptedMeters(args: {
   }
   if (args.platform === "kimi") {
     return normalizeKimiUsage(args.json, "intercepted");
+  }
+  if (args.platform === "gemini") {
+    return typeof args.text === "string"
+      ? normalizeGeminiUsageText(args.text, "intercepted").meters
+      : [];
   }
   return normalizeChatGptIntercepted(args.url, args.json);
 }

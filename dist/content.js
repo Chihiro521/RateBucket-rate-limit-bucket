@@ -571,7 +571,9 @@
     "Tasks rate limit": "任务限额",
     "Code Review": "代码审查",
     Credits: "余额",
-    "Credits (unlimited)": "余额（无限）"
+    "Credits (unlimited)": "余额（无限）",
+    "Gemini 5h": "Gemini 5 小时",
+    "Gemini weekly": "Gemini 每周"
   };
   function isLanguageMode(value) {
     return value === "auto" || value === "zh-CN" || value === "en";
@@ -2171,7 +2173,8 @@ button {
     grok: "Grok",
     claude: "Claude",
     chatgpt: "GPT",
-    kimi: "Kimi"
+    kimi: "Kimi",
+    gemini: "Gemini"
   };
   const GPT_SECTION_ORDER = [
     "input",
@@ -2756,7 +2759,7 @@ button {
     renderSentinelBar(score) {
       const bar = el("div", "bar sentinel-bar");
       const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-      const progress = clampPercent(score);
+      const progress = clampPercent$1(score);
       fill.style.width = `${progress}%`;
       bar.style.setProperty("--meter-progress", `${progress}%`);
       bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
@@ -3022,17 +3025,17 @@ button {
   }
   function meterProgress(meter) {
     if (typeof meter.remainingPercent === "number") {
-      return clampPercent(meter.remainingPercent);
+      return clampPercent$1(meter.remainingPercent);
     }
     if (typeof meter.usedPercent === "number") {
-      return clampPercent(meter.usedPercent);
+      return clampPercent$1(meter.usedPercent);
     }
     if (typeof meter.remaining === "number" && typeof meter.total === "number" && meter.total > 0) {
-      return clampPercent((meter.total - meter.remaining) / meter.total * 100);
+      return clampPercent$1((meter.total - meter.remaining) / meter.total * 100);
     }
     return 0;
   }
-  function clampPercent(value) {
+  function clampPercent$1(value) {
     return Math.max(0, Math.min(100, value));
   }
   function sentinelRiskClass(score) {
@@ -3239,6 +3242,9 @@ button {
     if (platform2 === "kimi") {
       return "leaf-emblem.png";
     }
+    if (platform2 === "gemini") {
+      return "gem-square.png";
+    }
     return "leaf-small.png";
   }
   function unique(values) {
@@ -3274,6 +3280,9 @@ button {
     }
     if (hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com")) {
       return "chatgpt";
+    }
+    if (hostname === "gemini.google.com") {
+      return "gemini";
     }
     if (hostname === "www.kimi.com" || hostname === "kimi.com") {
       return "kimi";
@@ -3839,7 +3848,7 @@ button {
     }
     return null;
   }
-  function responseFailure$2(response) {
+  function responseFailure$3(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "chatgpt"
@@ -3858,25 +3867,25 @@ button {
       defaultModelSlug = normalized.defaultModelSlug;
       blockedFeatures = normalized.blockedFeatures;
     } else {
-      requiredFailures.push(responseFailure$2(conversation));
+      requiredFailures.push(responseFailure$3(conversation));
     }
     const wham = await fetcher("chatgpt:whamUsage");
     if (wham.ok) {
       meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$2(wham));
+      optionalFailures.push(responseFailure$3(wham));
     }
     const tasks = await fetcher("chatgpt:whamTasksRateLimit");
     if (tasks.ok) {
       meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$2(tasks));
+      optionalFailures.push(responseFailure$3(tasks));
     }
     const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
     if (codexUsage.ok) {
       meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$2(codexUsage));
+      optionalFailures.push(responseFailure$3(codexUsage));
     }
     const hasBlocking = blockedFeatures.length > 0;
     const hasOptionalFailures = optionalFailures.length > 0;
@@ -3993,7 +4002,7 @@ button {
     }
     return meters;
   }
-  function responseFailure$1(response) {
+  function responseFailure$2(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "claude"
@@ -4008,7 +4017,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$1(organizations),
+        errorMessage: responseFailure$2(organizations),
         debug: {
           endpoint: "claude:organizations",
           parser: "claude.organizations"
@@ -4038,7 +4047,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$1(usage),
+        errorMessage: responseFailure$2(usage),
         debug: {
           endpoint: "claude:usage",
           parser: "claude.usage"
@@ -4057,6 +4066,210 @@ button {
         parser: "claude.usage"
       }
     };
+  }
+  const GEMINI_ENDPOINT_KEY = "gemini:usageBatchExecute";
+  const GEMINI_USAGE_RPC_ID = "jSf9Qc";
+  function parseGeminiBatchExecuteFrames(text) {
+    const withoutXssi = text.startsWith(")]}'") ? text.slice(4) : text;
+    const frames = [];
+    for (const line of withoutXssi.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || /^\d+$/.test(trimmed)) {
+        continue;
+      }
+      frames.push(JSON.parse(trimmed));
+    }
+    return frames;
+  }
+  function normalizeGeminiUsageText(text, source = "api") {
+    let frames;
+    try {
+      frames = parseGeminiBatchExecuteFrames(text);
+    } catch {
+      return {
+        meters: [],
+        errorMessage: "Gemini batchexecute 响应结构变化"
+      };
+    }
+    const errorStatus = findGeminiErrorStatus(frames);
+    if (errorStatus !== null) {
+      return {
+        meters: [],
+        errorStatus,
+        errorMessage: `Gemini usage RPC failed (${errorStatus})`
+      };
+    }
+    const payloadString = findWrbPayloadString(frames);
+    if (!payloadString) {
+      return {
+        meters: [],
+        errorMessage: "Gemini usage payload missing"
+      };
+    }
+    let payload;
+    try {
+      payload = JSON.parse(payloadString);
+    } catch {
+      return {
+        meters: [],
+        errorMessage: "Gemini usage payload parse failed"
+      };
+    }
+    const values = asArray(payload);
+    const payloadStatus = asNumber(values[0]) ?? void 0;
+    const buckets = asArray(values[1]);
+    const meters = buckets.map((bucket) => normalizeGeminiBucket(bucket, source)).filter((meter) => meter !== null);
+    return {
+      meters,
+      payloadStatus,
+      errorMessage: meters.length === 0 ? "Gemini usage buckets missing" : void 0
+    };
+  }
+  async function fetchGeminiUsage(fetcher) {
+    const response = await fetcher(GEMINI_ENDPOINT_KEY);
+    if (!response.ok) {
+      const missingReplayParams = response.error?.message === "Missing Gemini usage replay parameters";
+      return {
+        platform: "gemini",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: missingReplayParams ? "unknown" : "error",
+        errorMessage: missingReplayParams ? "等待 Gemini 页面用量参数" : responseFailure$1(response),
+        debug: {
+          endpoint: GEMINI_ENDPOINT_KEY,
+          parser: "gemini.batchexecute"
+        }
+      };
+    }
+    if (typeof response.text !== "string") {
+      return {
+        platform: "gemini",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "error",
+        errorMessage: "Gemini usage response text missing",
+        debug: {
+          endpoint: GEMINI_ENDPOINT_KEY,
+          parser: "gemini.batchexecute"
+        }
+      };
+    }
+    const parsed = normalizeGeminiUsageText(response.text, "api");
+    return {
+      platform: "gemini",
+      meters: parsed.meters,
+      source: parsed.meters.length > 0 ? "api" : "unknown",
+      updatedAt: Date.now(),
+      status: parsed.meters.length > 0 ? "ok" : "error",
+      errorMessage: parsed.errorMessage,
+      debug: {
+        endpoint: GEMINI_ENDPOINT_KEY,
+        parser: parsed.payloadStatus !== void 0 ? `gemini.status=${parsed.payloadStatus}` : "gemini.batchexecute"
+      }
+    };
+  }
+  function normalizeGeminiBucket(value, source) {
+    const bucket = asArray(value);
+    const remaining = asNumber(bucket[0]);
+    const ratio = asNumber(bucket[1]);
+    const type = asNumber(bucket[2]);
+    const resetAt = resetAtFromBucket(bucket[3]);
+    if (remaining === null || ratio === null || type === null) {
+      return null;
+    }
+    const usedPercent = percentFromRatioOrPercent(ratio);
+    const remainingPercent = usedPercent === null ? null : clampPercent(100 - usedPercent);
+    const total = ratio >= 0 && ratio < 1 ? Math.round(remaining / (1 - ratio)) : null;
+    const label = labelForBucketType(type);
+    return {
+      key: keyForBucketType(type),
+      label,
+      remaining,
+      total,
+      used: total !== null ? Math.max(0, Math.round(total - remaining)) : null,
+      usedPercent,
+      remainingPercent,
+      resetAt,
+      windowSeconds: windowSecondsForBucketType(type),
+      source,
+      confidence: resetAt !== null ? "high" : "medium",
+      rawKind: `type:${type}`
+    };
+  }
+  function resetAtFromBucket(value) {
+    const timestamp = asArray(asArray(value)[0]);
+    const sec = asNumber(timestamp[0]);
+    const nano = asNumber(timestamp[1]) ?? 0;
+    if (sec === null) {
+      return null;
+    }
+    return Math.round((sec + nano / 1e9) * 1e3);
+  }
+  function clampPercent(value) {
+    return Math.max(0, Math.min(100, value));
+  }
+  function labelForBucketType(type) {
+    if (type === 1) {
+      return "Gemini 5h";
+    }
+    if (type === 2) {
+      return "Gemini weekly";
+    }
+    return `Gemini bucket ${type}`;
+  }
+  function keyForBucketType(type) {
+    if (type === 1) {
+      return "gemini:5h";
+    }
+    if (type === 2) {
+      return "gemini:weekly";
+    }
+    return `gemini:type-${type}`;
+  }
+  function windowSecondsForBucketType(type) {
+    if (type === 1) {
+      return 5 * 60 * 60;
+    }
+    if (type === 2) {
+      return 7 * 24 * 60 * 60;
+    }
+    return null;
+  }
+  function findWrbPayloadString(value) {
+    if (Array.isArray(value)) {
+      if (value[0] === "wrb.fr" && value[1] === GEMINI_USAGE_RPC_ID && typeof value[2] === "string") {
+        return value[2];
+      }
+      for (const item of value) {
+        const found = findWrbPayloadString(item);
+        if (found) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+  function findGeminiErrorStatus(value) {
+    if (Array.isArray(value)) {
+      if (value[0] === "er") {
+        return asNumber(value[5]);
+      }
+      for (const item of value) {
+        const found = findGeminiErrorStatus(item);
+        if (found !== null) {
+          return found;
+        }
+      }
+    }
+    return null;
+  }
+  function responseFailure$1(response) {
+    return formatUsageError(
+      usageErrorFromBridge(response),
+      response.endpointKey ?? "gemini"
+    );
   }
   const GROK_ENDPOINT_KEY = "grok:rate-limits";
   const MAX_OBSERVED_CONTEXTS = 12;
@@ -4351,6 +4564,9 @@ button {
     if (platform2 === "kimi") {
       return fetchKimiUsage();
     }
+    if (platform2 === "gemini") {
+      return fetchGeminiUsage(fetcher);
+    }
     return fetchChatGptUsage(fetcher);
   }
   function normalizeInterceptedUsage(args) {
@@ -4382,6 +4598,9 @@ button {
     }
     if (args.platform === "kimi") {
       return normalizeKimiUsage(args.json, "intercepted");
+    }
+    if (args.platform === "gemini") {
+      return typeof args.text === "string" ? normalizeGeminiUsageText(args.text, "intercepted").meters : [];
     }
     return normalizeChatGptIntercepted(args.url, args.json);
   }
@@ -5064,6 +5283,7 @@ button {
         platform: platformId,
         url: message.url,
         json: message.json,
+        text: message.text,
         ts: message.ts,
         endpointKey: message.endpointKey,
         usageContext: message.usageContext
