@@ -204,6 +204,8 @@
     return isRecord(value) && value.source === SOURCE && value.direction === "content-to-main" && typeof value.requestId === "string" && typeof value.action === "string" && typeof value.platform === "string";
   }
   const FETCH_TIMEOUT_MS = 1e4;
+  const GEMINI_USAGE_RPC_ID = "jSf9Qc";
+  const geminiBatchExecuteState = {};
   if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
     window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
     installChatGptSentinelHook();
@@ -250,11 +252,13 @@
         ok: false,
         platform: request.platform,
         endpointKey: request.endpointKey,
-        error: { message: "Endpoint is not allowed" }
+        error: {
+          message: request.endpointKey === "gemini:usageBatchExecute" ? "Missing Gemini usage replay parameters" : "Endpoint is not allowed"
+        }
       });
       return;
     }
-    const response = await fetchJson(endpoint, request.requestId, request.endpointKey);
+    const response = await fetchEndpoint(endpoint, request.requestId, request.endpointKey);
     postResponse(response);
   }
   function resolveEndpoint(platform, endpointKey, payload) {
@@ -324,23 +328,119 @@
         url: `https://claude.ai/api/organizations/${encodeURIComponent(orgId)}/usage`
       };
     }
+    if (endpointKey === "gemini:usageBatchExecute") {
+      if (platform !== "gemini") {
+        return null;
+      }
+      return resolveGeminiUsageEndpoint();
+    }
     const endpoint = endpoints[endpointKey];
     if (!endpoint || endpoint.platform !== platform) {
       return null;
     }
     return endpoint;
   }
-  async function fetchJson(endpoint, requestId, endpointKey) {
+  function resolveGeminiUsageEndpoint() {
+    const params = currentGeminiReplayParams();
+    if (!params) {
+      return null;
+    }
+    const authPath = params.authuser === "0" ? "" : `/u/${params.authuser}`;
+    const url = new URL(
+      `https://gemini.google.com${authPath}/_/BardChatUi/data/batchexecute`
+    );
+    url.searchParams.set("rpcids", GEMINI_USAGE_RPC_ID);
+    url.searchParams.set(
+      "source-path",
+      params.authuser === "0" ? "/usage" : `/u/${params.authuser}/usage`
+    );
+    url.searchParams.set("bl", params.bl);
+    url.searchParams.set("f.sid", params.fSid);
+    url.searchParams.set("hl", params.hl);
+    url.searchParams.set("_reqid", params.reqid);
+    url.searchParams.set("rt", params.rt);
+    url.searchParams.set("authuser", params.authuser);
+    const body = new URLSearchParams();
+    body.set("f.req", JSON.stringify([[[GEMINI_USAGE_RPC_ID, "[]", null, "generic"]]]));
+    body.set("at", params.at);
+    return {
+      platform: "gemini",
+      method: "POST",
+      url: url.toString(),
+      headers: {
+        "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+        "x-goog-authuser": params.authuser
+      },
+      body: `${body.toString()}&`,
+      responseType: "text"
+    };
+  }
+  function currentGeminiReplayParams() {
+    const wiz = readGeminiWizGlobalData();
+    const at = geminiBatchExecuteState.at ?? wiz.at;
+    const bl = geminiBatchExecuteState.bl ?? wiz.bl;
+    const fSid = geminiBatchExecuteState.fSid ?? wiz.fSid;
+    const authuser = geminiBatchExecuteState.authuser ?? currentGeminiAuthUser();
+    if (!at || !bl || !fSid || !authuser) {
+      return null;
+    }
+    return {
+      at,
+      bl,
+      fSid,
+      reqid: nextGeminiReqid(geminiBatchExecuteState.reqid),
+      rt: geminiBatchExecuteState.rt ?? "c",
+      hl: geminiBatchExecuteState.hl ?? pageLanguage(),
+      authuser
+    };
+  }
+  function readGeminiWizGlobalData() {
+    const data = asRecord(window.WIZ_global_data);
+    if (!data) {
+      return {};
+    }
+    return {
+      at: getString(data, "SNlM0e") ?? void 0,
+      fSid: getString(data, "FdrFJe") ?? void 0,
+      bl: getString(data, "cfb2h") ?? void 0
+    };
+  }
+  function nextGeminiReqid(value) {
+    const parsed = value ? Number(value) : NaN;
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return String(Math.floor(parsed) + 1e5);
+    }
+    return String(1e5 + Math.floor(Date.now() % 9e4));
+  }
+  function endpointHeaders(endpoint) {
+    if (endpoint.headers) {
+      return endpoint.headers;
+    }
+    if (endpoint.body === void 0) {
+      return void 0;
+    }
+    return {
+      "Content-Type": "application/json"
+    };
+  }
+  function endpointBody(endpoint) {
+    if (endpoint.body === void 0) {
+      return void 0;
+    }
+    if (typeof endpoint.body === "string") {
+      return endpoint.body;
+    }
+    return JSON.stringify(endpoint.body);
+  }
+  async function fetchEndpoint(endpoint, requestId, endpointKey) {
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const response = await fetch(endpoint.url, {
         method: endpoint.method,
         credentials: "include",
-        headers: endpoint.body === void 0 ? void 0 : {
-          "Content-Type": "application/json"
-        },
-        body: endpoint.body === void 0 ? void 0 : JSON.stringify(endpoint.body),
+        headers: endpointHeaders(endpoint),
+        body: endpointBody(endpoint),
         signal: controller.signal
       });
       if (!response.ok) {
@@ -355,6 +455,17 @@
             status: response.status,
             message: response.statusText || "Usage endpoint failed"
           }
+        };
+      }
+      if (endpoint.responseType === "text") {
+        return {
+          source: SOURCE,
+          direction: "main-to-content",
+          requestId,
+          ok: true,
+          platform: endpoint.platform,
+          endpointKey,
+          text: await response.text()
         };
       }
       let json;
@@ -407,6 +518,7 @@
     const originalFetch = window.fetch.bind(window);
     function makePatchedFetch() {
       return async (input, init) => {
+        rememberGeminiBatchExecuteRequest(input, init);
         const usageRequest = getUsageRequest(input, init);
         const response = await originalFetch(input, init);
         try {
@@ -428,7 +540,8 @@
               endpointKey: usageRequest.endpointKey,
               url: usageRequest.url,
               usageContext,
-              json
+              json,
+              text: usageRequest.responseType === "text" ? text : void 0
             });
             return newResponse;
           }
@@ -452,6 +565,135 @@
   function isSafeGrokRequestKind(value) {
     return value !== null && /^[A-Z_]{1,40}$/.test(value);
   }
+  function rememberGeminiBatchExecuteRequest(input, init) {
+    let rawUrl;
+    try {
+      rawUrl = requestUrl(input);
+    } catch {
+      return;
+    }
+    let url;
+    try {
+      url = new URL(rawUrl, window.location.origin);
+    } catch {
+      return;
+    }
+    if (!isGeminiBatchExecuteUrl(url)) {
+      return;
+    }
+    const authuser = resolveGeminiAuthUser(
+      url,
+      requestHeaderValue(input, init, "x-goog-authuser")
+    );
+    if (!hasGeminiUsageRpcId(url.searchParams.get("rpcids"))) {
+      rememberGeminiBatchExecuteMetadata(url, authuser);
+      return;
+    }
+    const bodyText = requestBodyText(input, init);
+    if (bodyText instanceof Promise) {
+      void bodyText.then((text) => {
+        rememberGeminiBatchExecuteMetadata(url, authuser, text);
+      });
+      return;
+    }
+    rememberGeminiBatchExecuteMetadata(url, authuser, bodyText);
+  }
+  function rememberGeminiBatchExecuteMetadata(url, authuser, bodyText) {
+    setGeminiStateValue("bl", url.searchParams.get("bl"));
+    setGeminiStateValue("fSid", url.searchParams.get("f.sid"));
+    setGeminiStateValue("reqid", url.searchParams.get("_reqid"));
+    setGeminiStateValue("rt", url.searchParams.get("rt"));
+    setGeminiStateValue("hl", url.searchParams.get("hl"));
+    geminiBatchExecuteState.authuser = authuser;
+    if (bodyText) {
+      try {
+        const params = new URLSearchParams(bodyText);
+        setGeminiStateValue("at", params.get("at"));
+      } catch {
+      }
+    }
+  }
+  function setGeminiStateValue(key, value) {
+    if (value) {
+      geminiBatchExecuteState[key] = value;
+    }
+  }
+  function requestBodyText(input, init) {
+    if (init?.body !== void 0) {
+      return bodyTextFromBody(init.body);
+    }
+    if (input instanceof Request && !input.bodyUsed) {
+      return input.clone().text().then((text) => text || void 0).catch(() => void 0);
+    }
+    return void 0;
+  }
+  function bodyTextFromBody(body) {
+    if (typeof body === "string") {
+      return body;
+    }
+    if (body instanceof URLSearchParams) {
+      return body.toString();
+    }
+    if (body instanceof FormData) {
+      const params = new URLSearchParams();
+      body.forEach((value, key) => {
+        if (typeof value === "string") {
+          params.append(key, value);
+        }
+      });
+      return params.toString();
+    }
+    if (body instanceof Blob) {
+      return body.text().then((text) => text || void 0).catch(() => void 0);
+    }
+    return void 0;
+  }
+  function requestHeaderValue(input, init, name) {
+    return headerValue(init?.headers, name) ?? (input instanceof Request ? input.headers.get(name) : null);
+  }
+  function headerValue(headers, name) {
+    if (!headers) {
+      return null;
+    }
+    const normalizedName = name.toLowerCase();
+    if (headers instanceof Headers) {
+      return headers.get(name);
+    }
+    if (Array.isArray(headers)) {
+      const pair = headers.find(([key]) => key.toLowerCase() === normalizedName);
+      return pair?.[1] ?? null;
+    }
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === normalizedName) {
+        return value;
+      }
+    }
+    return null;
+  }
+  function currentGeminiAuthUser() {
+    return resolveGeminiAuthUser();
+  }
+  function resolveGeminiAuthUser(url, headerAuthuser) {
+    return sanitizeGeminiAuthUser(headerAuthuser) ?? sanitizeGeminiAuthUser(url?.searchParams.get("authuser")) ?? sanitizeGeminiAuthUser(currentPageUrl().searchParams.get("authuser")) ?? authUserFromPath(window.location.pathname) ?? "0";
+  }
+  function currentPageUrl() {
+    try {
+      return new URL(window.location.href);
+    } catch {
+      return new URL("https://gemini.google.com/");
+    }
+  }
+  function sanitizeGeminiAuthUser(value) {
+    return value && /^\d{1,3}$/.test(value) ? value : null;
+  }
+  function authUserFromPath(pathname) {
+    const match = /^\/u\/(\d{1,3})(?:\/|$)/.exec(pathname);
+    return match?.[1] ?? null;
+  }
+  function pageLanguage() {
+    const language = document.documentElement.lang || navigator.language || "zh-CN";
+    return /^[A-Za-z0-9_-]{2,20}$/.test(language) ? language : "zh-CN";
+  }
   function getUsageRequest(input, init) {
     let rawUrl;
     try {
@@ -467,6 +709,7 @@
       platform: info.platform,
       endpointKey: info.endpointKey,
       url: sanitizeUrl(rawUrl),
+      responseType: info.responseType,
       usageContext: info.platform === "grok" ? grokRequestContext(input, init) : void 0
     };
   }
@@ -540,6 +783,7 @@
       url: args.url,
       usageContext: args.usageContext,
       json: args.json,
+      text: args.text,
       ts: Date.now()
     };
     window.postMessage(message, window.location.origin);
@@ -592,7 +836,20 @@
     if (url.origin === "https://www.kimi.com" && url.pathname === "/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription") {
       return { platform: "kimi", endpointKey: "kimi:subscription" };
     }
+    if (isGeminiBatchExecuteUrl(url) && hasGeminiUsageRpcId(url.searchParams.get("rpcids"))) {
+      return {
+        platform: "gemini",
+        endpointKey: "gemini:usageBatchExecute",
+        responseType: "text"
+      };
+    }
     return null;
+  }
+  function isGeminiBatchExecuteUrl(url) {
+    return url.origin === "https://gemini.google.com" && /^\/(?:u\/\d{1,3}\/)?_\/BardChatUi\/data\/batchexecute$/.test(url.pathname);
+  }
+  function hasGeminiUsageRpcId(value) {
+    return value?.split(",").includes(GEMINI_USAGE_RPC_ID) ?? false;
   }
   function sanitizeUrl(rawUrl) {
     try {

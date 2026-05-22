@@ -1,4 +1,4 @@
-export type PlatformId = "grok" | "claude" | "chatgpt" | "kimi";
+export type PlatformId = "grok" | "claude" | "chatgpt" | "kimi" | "gemini";
 
 export type UsageSource = "api" | "intercepted" | "estimate" | "unknown";
 
@@ -57,6 +57,7 @@ export type EndpointKey =
   | "chatgpt:whamUsage"
   | "chatgpt:whamTasksRateLimit"
   | "chatgpt:codexSettingsUsage"
+  | "gemini:usageBatchExecute"
   | "kimi:subscription";
 
 export type BridgeAction = "fetchUsage" | "enableIntercept";
@@ -79,6 +80,7 @@ export type BridgeResponse = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   json?: unknown;
+  text?: string;
   error?: {
     status?: number;
     message: string;
@@ -94,6 +96,7 @@ export type InterceptedUsageMessage = {
   url: string;
   usageContext?: UsageRequestContext;
   json: unknown;
+  text?: string;
   ts: number;
 };
 

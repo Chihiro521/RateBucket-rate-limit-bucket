@@ -1,0 +1,438 @@
+```markdown
+# Gemini Usage RPC 已知信息整理
+
+## 1. 接口定位
+
+Gemini Web 的用量数据来自一个 Google `batchexecute` RPC。
+
+它不是公开 API，而是 Gemini Web 前端页面内部使用的 RPC。
+
+目标 RPC ID：
+
+```text
+jSf9Qc
+```
+
+典型请求：
+
+```http
+POST https://gemini.google.com/_/BardChatUi/data/batchexecute
+  ?rpcids=jSf9Qc
+  &source-path=%2Fusage
+  &bl=<BL>
+  &f.sid=<F_SID>
+  &hl=zh-CN
+  &_reqid=<REQID>
+  &rt=c
+```
+
+多账号场景下，非默认账号一般是：
+
+```http
+POST https://gemini.google.com/u/N/_/BardChatUi/data/batchexecute
+  ?rpcids=jSf9Qc
+  &source-path=%2Fu%2FN%2Fusage
+  &bl=<BL>
+  &f.sid=<F_SID>
+  &hl=zh-CN
+  &_reqid=<REQID>
+  &rt=c
+  &authuser=N
+```
+
+请求 body：
+
+```text
+f.req=[[["jSf9Qc","[]",null,"generic"]]]&at=<AT>&
+```
+
+## 2. 关键请求参数
+
+| 参数 | 含义 | 备注 |
+|---|---|---|
+| `rpcids` | RPC ID | 用量 RPC 为 `jSf9Qc` |
+| `source-path` | 来源路径 | `/usage`、`/u/N/usage`、`/app` 均观察到可用 |
+| `bl` | 前端 build label | 例如 `boq_assistant-bard-web-server_...` |
+| `f.sid` | Google batchexecute session id | 必需 |
+| `at` | 请求 token / anti-CSRF token | 在 body 中，必需 |
+| `_reqid` | 请求序号 | 不太关键，`native + 100000` 也可成功 |
+| `rt` | response type | 当前为 `c` |
+| `authuser` | Google 多账号索引 | 非默认账号必须放在 URL query 中 |
+| `x-goog-authuser` | Google 多账号 header | 可加，但不能替代 URL query 的 `authuser` |
+| `x-goog-ext-*` | Google 扩展 header | 可复制，但当前实验看不是关键 |
+| `x-client-data` | Chrome client data header | 可复制，但当前实验看不是关键 |
+
+请求必须带浏览器 cookie：
+
+```js
+credentials: "include"
+```
+
+## 3. token 来源
+
+### 推荐来源：原生 batchexecute 请求
+
+在 Gemini 聊天页监听任意原生 batchexecute 请求，可从中提取：
+
+- `bl`
+- `f.sid`
+- `_reqid`
+- `rt`
+- `source-path`
+- `at`
+- `authuser`
+- `x-goog-authuser`
+- `x-goog-ext-*`
+- `x-client-data`
+
+### 备用来源：页面全局数据
+
+当前观察到 `window.WIZ_global_data` 中存在类似字段：
+
+| 字段 | 推测含义 |
+|---|---|
+| `SNlM0e` | `at` |
+| `FdrFJe` | `f.sid` |
+| `cfb2h` | `bl` |
+
+但这些 key 属于内部实现，可能变化。更稳妥的方式还是从原生 batchexecute 请求中抓取。
+
+## 4. 多账号 authuser 结论
+
+多账号下，`authuser=N` 是关键。
+
+检测优先级建议：
+
+1. 原生请求 header：`x-goog-authuser`
+2. 原生请求 URL query：`authuser`
+3. 当前页面 URL query：`authuser`
+4. 当前路径：`/u/N/`
+5. 默认值：`0`
+
+实测结论：
+
+| 场景 | 结果 |
+|---|---|
+| 默认账号 `/app`，不带 `authuser` | 成功 |
+| 默认账号 `/app`，带 `authuser=0` | 成功 |
+| 非默认账号 `/u/1/app`，不带 `authuser` | 失败，HTTP 400 |
+| 非默认账号 `/u/1/app`，只带 `source-path=/u/1/app` | 失败，HTTP 400 |
+| 非默认账号，只加 header `x-goog-authuser: 1` | 失败，HTTP 400 |
+| 非默认账号，URL query 加 `authuser=1` | 成功 |
+| 非默认账号，URL query `authuser=1` + header `x-goog-authuser: 1` | 成功 |
+| 非默认账号，`source-path=/u/1/usage` + `authuser=1` | 成功 |
+
+关键结论：
+
+> 非默认账号 replay 返回 400 的核心原因，是 URL query 中缺少 `authuser=N`。  
+> `x-goog-authuser` header 可以作为增强兼容项，但不能单独替代 URL query 的 `authuser=N`。
+
+## 5. 推荐 replay 策略
+
+默认账号：
+
+```js
+authuser = "0";
+sourcePath = "/usage";
+```
+
+非默认账号：
+
+```js
+authuser = "N";
+sourcePath = `/u/${N}/usage`;
+```
+
+推荐请求形态：
+
+```js
+const url = new URL(`https://gemini.google.com/u/${authuser}/_/BardChatUi/data/batchexecute`);
+
+url.searchParams.set("rpcids", "jSf9Qc");
+url.searchParams.set("source-path", `/u/${authuser}/usage`);
+url.searchParams.set("bl", bl);
+url.searchParams.set("f.sid", fSid);
+url.searchParams.set("hl", "zh-CN");
+url.searchParams.set("_reqid", String(reqid));
+url.searchParams.set("rt", "c");
+url.searchParams.set("authuser", authuser);
+
+const body = new URLSearchParams();
+body.set("f.req", JSON.stringify([[["jSf9Qc", "[]", null, "generic"]]]));
+body.set("at", at);
+
+const res = await fetch(url.toString(), {
+  method: "POST",
+  credentials: "include",
+  headers: {
+    "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+    "x-goog-authuser": authuser
+  },
+  body: body.toString() + "&"
+});
+```
+
+默认账号也可以统一加：
+
+```text
+authuser=0
+x-goog-authuser: 0
+```
+
+## 6. 响应格式
+
+成功响应示例：
+
+```text
+)]}'
+
+201
+[["wrb.fr","jSf9Qc","[2,[[46815,0.03241196,2,[[1779799240,527944000]]],[2396,0.01,1,[[1779428440,527781000]]]],false]",null,null,null,"generic"],["di",455],["af.httprm",454,"...",2]]
+25
+[["e",4,null,null,237]]
+```
+
+失败响应示例：
+
+```text
+)]}'
+
+103
+[["er",null,null,null,null,400,null,null,null,3],["di",14],["af.httprm",13,"...",1]]
+25
+[["e",4,null,null,139]]
+```
+
+注意：
+
+- 真正 HTTP status 成功时是 `200`。
+- 响应文本里的 `201`、`200`、`199` 通常是 batchexecute chunk length line，不是 HTTP status。
+- 错误码可从 frame 中查找：
+
+```js
+["er", null, null, null, null, 400, ...]
+```
+
+其中 `er[5]` 通常是 `400`。
+
+## 7. 响应解析方法
+
+### parseBatchExecute
+
+步骤：
+
+1. 去掉开头 XSSI 前缀：
+
+```text
+)]}'
+```
+
+2. 按换行拆分。
+3. 跳过纯数字 length line。
+4. 对 JSON 行执行 `JSON.parse`。
+5. 得到 frames。
+
+### findWrbPayload
+
+在 frames 中深度遍历，查找：
+
+```js
+["wrb.fr", "jSf9Qc", payloadString, ...]
+```
+
+其中 `payloadString` 是字符串 JSON，需要再次：
+
+```js
+JSON.parse(payloadString)
+```
+
+### payload 结构
+
+```js
+[status, buckets, flag]
+```
+
+示例：
+
+```js
+[
+  2,
+  [
+    [46815, 0.03241196, 2, [[1779799240, 527944000]]],
+    [2396, 0.01, 1, [[1779428440, 527781000]]]
+  ],
+  false
+]
+```
+
+## 8. bucket 结构
+
+每个 bucket：
+
+```js
+[value, ratio, type, [[sec, nano]]]
+```
+
+解释：
+
+| 字段 | 含义 |
+|---|---|
+| `value` | 当前剩余量 |
+| `ratio` | 当前已用比例 / 占用比例 |
+| `type` | 桶类型 |
+| `sec` | Unix timestamp 秒 |
+| `nano` | 纳秒补充精度 |
+
+可解码为：
+
+```js
+{
+  value,
+  ratio,
+  percent: ratio * 100,
+  type,
+  resetAt: sec + nano / 1e9,
+  isoTime: new Date((sec + nano / 1e9) * 1000).toISOString()
+}
+```
+
+## 9. timestamp 结论
+
+bucket 里的时间戳：
+
+```js
+[[sec, nano]]
+```
+
+是 Unix timestamp。
+
+Unix timestamp 的 epoch 是：
+
+```text
+1970-01-01 00:00:00 UTC
+```
+
+这里的 timestamp 表示该桶的：
+
+```text
+重置时间点 / 窗口边界时间点
+```
+
+不是请求发生时间，也不是首次使用时间。
+
+当前理解：
+
+| type | 含义 |
+|---|---|
+| `1` | 短周期桶，目前观察为 5 小时窗口 |
+| `2` | 长周期桶，目前观察为周窗口 |
+
+## 10. Pro 桶 vs Free 桶
+
+当前观察到两套桶：
+
+| 维度 | Pro 桶 | Free 桶 |
+|---|---:|---:|
+| payload status | `2` | `1` |
+| 5h Pool ID | `527781000` | `980412000` |
+| 周 Pool ID | `527944000` | `980543000` |
+| 5h 估算总量 | 约 `2400` | 约 `600` |
+| 周估算总量 | 约 `48400` | 约 `12100` |
+| 总量比例 | 约 `4x` | 基准 |
+
+关键结论：
+
+> Pro 的配额大约是 Free 的 4 倍。  
+> 两者 bucket 结构同构，只是配额总量不同。
+
+## 11. 当前实测数据
+
+### 默认账号 / Free 桶
+
+从 `https://gemini.google.com/app` replay 成功拿到：
+
+```js
+[
+  [599, 0.01, 1, [[1779442614, 980412000]]],
+  [11937, 0.01312496, 2, [[1779993414, 980543000]]]
+]
+```
+
+解读：
+
+| 桶 | value | ratio | percent | reset timestamp |
+|---|---:|---:|---:|---:|
+| 5h | `599` | `0.01` | `1%` | `1779442614.980412` |
+| 周 | `11937` | `0.01312496` | `1.312496%` | `1779993414.980543` |
+
+### 非默认账号 / Pro 桶
+
+从 `https://gemini.google.com/u/1/app` replay 成功拿到：
+
+```js
+[
+  [2277, 0.05, 1, [[1779446440, 527781000]]],
+  [45244, 0.06488441, 2, [[1779799240, 527944000]]]
+]
+```
+
+解读：
+
+| 桶 | value | ratio | percent | reset timestamp |
+|---|---:|---:|---:|---:|
+| 5h | `2277` | `0.05` | `5%` | `1779446440.527781` |
+| 周 | `45244` | `0.06488441` | `6.488441%` | `1779799240.527944` |
+
+## 12. 5h 窗口与周窗口观察
+
+旧数据与当前数据对比显示：
+
+- 5h timestamp 正好推进了 `+18000 秒`，即 `+5 小时`。
+- 周 timestamp 没变，说明仍处于同一个周窗口。
+- Pro 与 Free 的 5h 重置时间不同，说明短周期窗口不是全局对齐。
+- Pro 与 Free 的周重置时间也不同，说明两者是独立配额账户，不是同一个池子的不同视图。
+
+## 13. 配额消耗模型
+
+观察到一次请求会同时影响：
+
+- 短周期桶
+- 周期桶
+
+即双桶并行扣减。
+
+旧观察中，某次请求导致 Pro：
+
+```text
+5h 桶减少 392
+周桶减少 392
+```
+
+说明一次 Gemini 请求会同时消耗短期配额和长期配额。
+
+## 14. 是否需要 fallback usage tab
+
+当前实验显示：
+
+- 默认账号 direct replay 成功。
+- 非默认账号只要带 `authuser=N` query，也能 direct replay 成功。
+- B5 / B6 / B7 均成功。
+
+因此：
+
+> 不需要把 inactive `/usage` tab 作为主路径。  
+> fallback tab 只需要作为极端情况下的兜底方案。
+
+## 15. 最终核心结论
+
+1. Gemini usage 数据可通过当前聊天页无感 replay `jSf9Qc` 获取。
+2. 不需要打开 `/usage` 页面，也不需要新建 tab 或跳转当前聊天页。
+3. 默认账号不带 `authuser` 也能成功，因为默认就是 `authuser=0`。
+4. 非默认账号必须在 URL query 中带 `authuser=N`。
+5. `x-goog-authuser` header 不能单独解决非默认账号 400。
+6. `source-path=/u/N/usage` 是推荐写法，但关键仍是 query `authuser=N`。
+7. `x-goog-ext-*` 和 `x-client-data` 当前看不是关键。
+8. `_reqid` 不是导致 400 的关键。
+9. bucket 时间戳是 Unix timestamp，表示重置时间 / 窗口边界。
+10. Pro 和 Free 桶同构，Pro 配额约为 Free 的 4 倍。
+```

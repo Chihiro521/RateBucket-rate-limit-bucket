@@ -2,12 +2,13 @@
   "manifest_version": 3,
   "name": "AI 用量浮窗",
   "version": "0.1.0",
-  "description": "用于 Grok、Claude、ChatGPT 和 Kimi 的浮动用量监控器。",
+  "description": "用于 Grok、Claude、ChatGPT、Gemini 和 Kimi 的浮动用量监控器。",
   "permissions": ["storage", "scripting"],
   "host_permissions": [
     "https://grok.com/*",
     "https://claude.ai/*",
     "https://chatgpt.com/*",
+    "https://gemini.google.com/*",
     "https://www.kimi.com/*",
     "https://proxycheck.io/*",
     "https://api64.ipify.org/*"
@@ -22,6 +23,7 @@
         "https://grok.com/*",
         "https://claude.ai/*",
         "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
         "https://www.kimi.com/*"
       ]
     }
@@ -32,6 +34,7 @@
         "https://grok.com/*",
         "https://claude.ai/*",
         "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
         "https://www.kimi.com/*"
       ],
       "js": ["mainWorldBridge.js"],
@@ -44,6 +47,7 @@
         "https://grok.com/*",
         "https://claude.ai/*",
         "https://chatgpt.com/*",
+        "https://gemini.google.com/*",
         "https://www.kimi.com/*"
       ],
       "js": ["content.js"],

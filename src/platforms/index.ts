@@ -1,5 +1,6 @@
 import { fetchChatGptUsage } from "./chatgpt";
 import { fetchClaudeUsage } from "./claude";
+import { fetchGeminiUsage } from "./gemini";
 import { fetchGrokUsage } from "./grok";
 import { fetchKimiUsage } from "./kimi";
 import type { PlatformId, UsageEndpointFetcher, UsageSnapshot } from "./types";
@@ -16,6 +17,9 @@ export function fetchPlatformUsage(
   }
   if (platform === "kimi") {
     return fetchKimiUsage();
+  }
+  if (platform === "gemini") {
+    return fetchGeminiUsage(fetcher);
   }
   return fetchChatGptUsage(fetcher);
 }
