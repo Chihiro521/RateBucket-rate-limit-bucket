@@ -3193,7 +3193,7 @@ button {
     return meter.modelName;
   }
   function assetUrl(name) {
-    const path = `assets/nahida/${name}`;
+    const path = `assets/little-chihiro/${name}`;
     if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
       return chrome.runtime.getURL(path);
     }

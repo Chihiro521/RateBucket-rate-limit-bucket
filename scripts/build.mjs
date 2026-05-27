@@ -49,9 +49,9 @@ for (const item of entries) {
 
 await copyFile(path.join(root, "manifest.json"), path.join(dist, "manifest.json"));
 
-const nahidaAssetSource = path.join(root, "assets", "nahida");
-const nahidaAssetDist = path.join(dist, "assets", "nahida");
-const nahidaAssetFiles = [
+const chihiroAssetSource = path.join(root, "assets", "little-chihiro");
+const chihiroAssetDist = path.join(dist, "assets", "little-chihiro");
+const chihiroAssetFiles = [
   "capsule-mascot.png",
   "clover-medallion.png",
   "corner-bottom-left.png",
@@ -68,10 +68,10 @@ const nahidaAssetFiles = [
   "shield.png",
   "vine-wallpaper.png"
 ];
-await mkdir(nahidaAssetDist, { recursive: true });
-for (const fileName of nahidaAssetFiles) {
+await mkdir(chihiroAssetDist, { recursive: true });
+for (const fileName of chihiroAssetFiles) {
   await copyFile(
-    path.join(nahidaAssetSource, fileName),
-    path.join(nahidaAssetDist, fileName)
+    path.join(chihiroAssetSource, fileName),
+    path.join(chihiroAssetDist, fileName)
   );
 }

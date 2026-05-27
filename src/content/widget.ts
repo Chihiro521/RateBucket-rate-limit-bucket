@@ -57,7 +57,7 @@ const GPT_SECTION_ORDER = [
 
 type GptSectionKey = (typeof GPT_SECTION_ORDER)[number];
 
-type NahidaAssetName =
+type ChihiroAssetName =
   | "capsule-mascot.png"
   | "clover-medallion.png"
   | "corner-bottom-left.png"
@@ -1275,15 +1275,15 @@ function modelSummaryFromMeter(meter: UsageMeter): string | null {
   return meter.modelName;
 }
 
-function assetUrl(name: NahidaAssetName): string {
-  const path = `assets/nahida/${name}`;
+function assetUrl(name: ChihiroAssetName): string {
+  const path = `assets/little-chihiro/${name}`;
   if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
     return chrome.runtime.getURL(path);
   }
   return path;
 }
 
-function decorativeAsset(name: NahidaAssetName, className: string): HTMLImageElement {
+function decorativeAsset(name: ChihiroAssetName, className: string): HTMLImageElement {
   const image = document.createElement("img");
   image.className = className;
   image.src = assetUrl(name);
@@ -1297,7 +1297,7 @@ function decorativeAsset(name: NahidaAssetName, className: string): HTMLImageEle
 function titleNode(
   className: string,
   label: string,
-  assetName: NahidaAssetName
+  assetName: ChihiroAssetName
 ): HTMLElement {
   const title = el("div", className);
   title.append(
@@ -1307,7 +1307,7 @@ function titleNode(
   return title;
 }
 
-function sectionTitle(label: string, assetName: NahidaAssetName): HTMLElement {
+function sectionTitle(label: string, assetName: ChihiroAssetName): HTMLElement {
   const title = el("div", "meter-section-title");
   title.append(
     decorativeAsset(assetName, "section-title-icon"),
@@ -1319,7 +1319,7 @@ function sectionTitle(label: string, assetName: NahidaAssetName): HTMLElement {
 function iconText<K extends keyof HTMLElementTagNameMap>(
   tagName: K,
   className: string,
-  assetName: NahidaAssetName,
+  assetName: ChihiroAssetName,
   label: string
 ): HTMLElementTagNameMap[K] {
   const element = el(tagName, className);
@@ -1356,7 +1356,7 @@ function vineDivider(): HTMLElement {
   return divider;
 }
 
-function platformTitleAsset(platform: PlatformId): NahidaAssetName {
+function platformTitleAsset(platform: PlatformId): ChihiroAssetName {
   if (platform === "chatgpt") {
     return "clover-medallion.png";
   }
