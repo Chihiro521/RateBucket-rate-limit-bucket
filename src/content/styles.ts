@@ -833,37 +833,55 @@ button {
 .collapsed,
 .gpt-restore-chip {
   position: relative;
-  width: min(286px, calc(100vw - 22px));
-  min-width: 252px;
-  height: 60px;
-  min-height: 60px;
-  grid-template-columns: 110px 10px minmax(0, 1fr);
-  gap: 8px;
+  width: min(172px, calc(100vw - 14px));
+  min-width: 160px;
+  height: 44px;
+  min-height: 44px;
+  grid-template-columns: 78px 7px minmax(0, 1fr);
+  gap: 3px;
   align-items: center;
   overflow: visible;
-  border: 2px solid var(--rb-line-strong);
+  border: 1.5px solid var(--rb-line-strong);
   border-radius: 999px;
   background:
-    linear-gradient(90deg, var(--rb-blue) 0 82px, transparent 82px),
+    linear-gradient(90deg, var(--rb-blue) 0 46px, transparent 46px),
     linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
   color: var(--rb-ink);
   box-shadow: var(--rb-soft-shadow), var(--rb-inner);
-  padding: 0 18px 0 10px;
+  padding: 0 7px 0 6px;
 }
 
 .collapsed::before,
 .gpt-restore-chip::before {
   content: "";
   position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 5px;
+  width: 36px;
+  border-radius: 999px 7px 7px 999px;
+  background: linear-gradient(145deg, #344963, var(--rb-blue-deep));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 249, 237, 0.28),
+    inset -8px 0 14px rgba(8, 17, 30, 0.18);
+  pointer-events: none;
+}
+
+.collapsed::after,
+.gpt-restore-chip::after {
+  content: "";
+  position: absolute;
   top: 8px;
-  bottom: 8px;
-  left: 8px;
-  width: 66px;
-  border-radius: 999px 8px 8px 999px;
+  left: 11px;
+  z-index: 1;
+  width: 30px;
+  height: 28px;
+  border-radius: 999px;
   background:
-    radial-gradient(circle at 38px 34px, var(--rb-mustard) 0 5px, transparent 6px),
-    radial-gradient(circle at 26px 18px, var(--rb-paper-warm) 0 8px, transparent 9px),
-    linear-gradient(145deg, #30435d, var(--rb-blue-deep));
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpolygon fill='%23fffaf1' points='8,0 10.3,5.3 16,6 11.7,9.8 12.9,16 8,12.8 3.1,16 4.3,9.8 0,6 5.7,5.3'/%3E%3C/svg%3E") 3px 18px / 9px 9px no-repeat,
+    radial-gradient(circle at 8px 7px, var(--rb-paper-warm) 0 4px, transparent 5px),
+    radial-gradient(circle at 19px 20px, var(--rb-mustard) 0 3px, transparent 4px),
+    radial-gradient(circle at 27px 8px, #c5cbd0 0 3px, transparent 4px);
   pointer-events: none;
 }
 
@@ -871,27 +889,31 @@ button {
 .gpt-restore-chip:hover {
   border-color: rgba(35, 50, 70, 0.86);
   background:
-    linear-gradient(90deg, #2d405a 0 82px, transparent 82px),
+    linear-gradient(90deg, #2d405a 0 46px, transparent 46px),
     linear-gradient(180deg, #fffdf7, #f1e9db);
   transform: translateY(-1px);
 }
 
 .chip-icon {
-  position: relative;
+  position: absolute;
+  top: 50%;
+  left: 32px;
   z-index: 2;
-  width: 22px;
-  height: 22px;
-  justify-self: center;
-  opacity: 0.94;
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transform: translateY(-50%);
   filter: drop-shadow(0 1px 2px rgba(10, 18, 30, 0.34));
 }
 
 .status-dot {
   position: relative;
-  z-index: 2;
-  width: 10px;
-  height: 10px;
-  box-shadow: 0 0 0 2px rgba(255, 250, 241, 0.88);
+  z-index: 3;
+  grid-column: 2;
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 1.5px rgba(255, 250, 241, 0.88);
 }
 
 .status-ok {
@@ -909,28 +931,50 @@ button {
 .collapsed-main {
   position: relative;
   z-index: 2;
+  display: grid;
+  grid-column: 3;
+  grid-template-columns: minmax(0, 1fr) 1px auto;
+  column-gap: 4px;
+  align-items: center;
   min-width: 0;
-  padding-left: 2px;
+  padding-left: 0;
+}
+
+.collapsed-main::before {
+  content: "";
+  grid-column: 2;
+  grid-row: 1;
+  width: 1px;
+  height: 22px;
+  background: rgba(125, 114, 99, 0.34);
 }
 
 .platform {
+  grid-column: 1;
+  grid-row: 1;
   color: var(--rb-ink-soft);
-  font-size: 11px;
+  overflow: hidden;
+  font-size: 10px;
   font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .primary {
+  grid-column: 3;
+  grid-row: 1;
   color: var(--rb-ink);
-  font-size: 14px;
+  font-size: 11px;
   font-weight: 780;
+  text-align: right;
 }
 
 .capsule-mascot {
   position: absolute;
-  left: 70px;
-  bottom: 2px;
+  left: 72px;
+  bottom: -22px;
   z-index: 5;
-  width: 112px;
+  width: 166px;
   height: auto;
   max-width: none;
   object-fit: contain;
@@ -1300,14 +1344,57 @@ button {
 @media (max-width: 480px) {
   .collapsed,
   .gpt-restore-chip {
-    width: min(270px, calc(100vw - 18px));
-    min-width: 238px;
-    grid-template-columns: 100px 10px minmax(0, 1fr);
+    width: min(160px, calc(100vw - 12px));
+    min-width: 152px;
+    height: 42px;
+    min-height: 42px;
+    grid-template-columns: 72px 7px minmax(0, 1fr);
+    gap: 3px;
+    background:
+      linear-gradient(90deg, var(--rb-blue) 0 42px, transparent 42px),
+      linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
+    padding: 0 6px 0 5px;
+  }
+
+  .collapsed::before,
+  .gpt-restore-chip::before {
+    width: 32px;
+  }
+
+  .collapsed::after,
+  .gpt-restore-chip::after {
+    left: 10px;
+    transform: scale(0.76);
+    transform-origin: left center;
+  }
+
+  .collapsed:hover,
+  .gpt-restore-chip:hover {
+    background:
+      linear-gradient(90deg, #2d405a 0 42px, transparent 42px),
+      linear-gradient(180deg, #fffdf7, #f1e9db);
+  }
+
+  .collapsed-main {
+    column-gap: 3px;
+  }
+
+  .collapsed-main::before {
+    height: 20px;
+  }
+
+  .platform {
+    font-size: 9px;
+  }
+
+  .primary {
+    font-size: 10px;
   }
 
   .capsule-mascot {
-    left: 64px;
-    width: 104px;
+    left: 66px;
+    bottom: -20px;
+    width: 154px;
   }
 
   .gpt-panel {
