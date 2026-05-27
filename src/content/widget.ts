@@ -211,6 +211,23 @@ export class UsageWidget {
     this.root.replaceChildren(main);
   }
 
+  private schedulePlatformOverflowCheck(button: HTMLElement): void {
+    const platformLabel = button.querySelector<HTMLElement>(".platform");
+    if (!platformLabel) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (!button.isConnected) {
+        return;
+      }
+      button.classList.remove("platform-overflow");
+      const platformName = platformLabel.textContent?.trim() ?? "";
+      const overflows = platformLabel.scrollWidth > platformLabel.clientWidth + 1;
+      const shouldSitBehindMascot = overflows || platformName.length >= 6;
+      button.classList.toggle("platform-overflow", shouldSitBehindMascot);
+    });
+  }
+
   private renderChatGptRestoreChip(): HTMLElement {
     const button = el("button", "gpt-restore-chip");
     button.type = "button";
@@ -231,6 +248,7 @@ export class UsageWidget {
         textEl("span", "primary", this.chatGptPrimaryValue())
       ])
     );
+    this.schedulePlatformOverflowCheck(button);
     return button;
   }
 
@@ -791,6 +809,7 @@ export class UsageWidget {
         textEl("span", "primary", this.collapsedPrimaryValue())
       ])
     );
+    this.schedulePlatformOverflowCheck(button);
     return button;
   }
 

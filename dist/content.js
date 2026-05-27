@@ -1646,6 +1646,8 @@ button {
   content: "";
   grid-column: 2;
   grid-row: 1;
+  position: relative;
+  z-index: 3;
   width: 1px;
   height: 22px;
   background: rgba(125, 114, 99, 0.34);
@@ -1654,10 +1656,12 @@ button {
 .platform {
   grid-column: 1;
   grid-row: 1;
+  min-width: 0;
   color: var(--rb-ink-soft);
   overflow: hidden;
   font-size: 10px;
   font-weight: 760;
+  line-height: 1;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1665,10 +1669,49 @@ button {
 .primary {
   grid-column: 3;
   grid-row: 1;
+  position: relative;
+  z-index: 4;
   color: var(--rb-ink);
   font-size: 11px;
   font-weight: 780;
+  line-height: 1;
+  padding-left: 5px;
+  background: linear-gradient(90deg, rgba(255, 250, 241, 0.08), var(--rb-paper-warm) 7px);
   text-align: right;
+}
+
+.platform-overflow .platform {
+  position: absolute;
+  left: -42px;
+  right: 46px;
+  z-index: 1;
+  box-sizing: border-box;
+  padding-left: 14px;
+}
+
+.platform-overflow .platform::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--rb-blue-soft);
+  box-shadow: 0 0 0 1.5px rgba(255, 250, 241, 0.88);
+  transform: translateY(-50%);
+}
+
+.platform-overflow .status-dot {
+  opacity: 0;
+}
+
+.platform-overflow .status-partial + .collapsed-main .platform::before {
+  background: var(--rb-mustard);
+}
+
+.platform-overflow .status-error + .collapsed-main .platform::before {
+  background: var(--rb-red);
 }
 
 .capsule-mascot {
@@ -2093,6 +2136,17 @@ button {
     font-size: 10px;
   }
 
+  .platform-overflow .platform {
+    left: -36px;
+    right: 40px;
+    padding-left: 13px;
+  }
+
+  .platform-overflow .platform::before {
+    width: 6px;
+    height: 6px;
+  }
+
   .capsule-mascot {
     left: 66px;
     bottom: -20px;
@@ -2258,6 +2312,22 @@ button {
       }
       this.root.replaceChildren(main);
     }
+    schedulePlatformOverflowCheck(button) {
+      const platformLabel = button.querySelector(".platform");
+      if (!platformLabel) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        if (!button.isConnected) {
+          return;
+        }
+        button.classList.remove("platform-overflow");
+        const platformName = platformLabel.textContent?.trim() ?? "";
+        const overflows = platformLabel.scrollWidth > platformLabel.clientWidth + 1;
+        const shouldSitBehindMascot = overflows || platformName.length >= 6;
+        button.classList.toggle("platform-overflow", shouldSitBehindMascot);
+      });
+    }
     renderChatGptRestoreChip() {
       const button = el("button", "gpt-restore-chip");
       button.type = "button";
@@ -2278,6 +2348,7 @@ button {
           textEl("span", "primary", this.chatGptPrimaryValue())
         ])
       );
+      this.schedulePlatformOverflowCheck(button);
       return button;
     }
     applyChipPosition() {
@@ -2763,6 +2834,7 @@ button {
           textEl("span", "primary", this.collapsedPrimaryValue())
         ])
       );
+      this.schedulePlatformOverflowCheck(button);
       return button;
     }
     renderPanel() {
