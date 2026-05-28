@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RateBucket Privacy Policy</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.7;
+      color: #1a1a1a;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px;
+      background: #fafafa;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin: 0 0 8px;
+      color: #0f172a;
+    }
+    .effective-date {
+      color: #64748b;
+      font-size: 14px;
+      margin-bottom: 32px;
+    }
+    h2 {
+      font-size: 20px;
+      font-weight: 600;
+      margin: 40px 0 16px;
+      color: #0f172a;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    h3 {
+      font-size: 16px;
+      font-weight: 600;
+      margin: 24px 0 12px;
+      color: #1e293b;
+    }
+    p { margin: 0 0 16px; }
+    .highlight {
+      background: #f1f5f9;
+      padding: 16px 20px;
+      border-radius: 8px;
+      border-left: 4px solid #0ea5e9;
+      margin: 16px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    th {
+      background: #f8fafc;
+      font-weight: 600;
+      color: #334155;
+    }
+    ul {
+      margin: 0 0 16px;
+      padding-left: 24px;
+    }
+    li { margin-bottom: 6px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-family: "SF Mono", Monaco, monospace;
+    }
+    a { color: #0ea5e9; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .footer {
+      margin-top: 48px;
+      padding-top: 24px;
+      border-top: 1px solid #e2e8f0;
+      color: #64748b;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>RateBucket Privacy Policy</h1>
+  <p class="effective-date">Effective Date: 2026-05-27</p>
+
+  <div class="highlight">
+    <strong>Key principle:</strong> All data is processed locally. There is no backend server, no analytics, and no telemetry.
+  </div>
+
+  <h2>Overview</h2>
+  <p>RateBucket is a browser extension that displays a floating usage widget on AI platform websites (Grok, Claude, ChatGPT, Gemini, Kimi). This privacy policy explains what data the extension collects, how it is used, and where it is stored.</p>
+
+  <h2>Data We Collect</h2>
+
+  <h3>1. Usage Quota Data (Functional Data)</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td><strong>What</strong></td><td>Numerical usage counters: <code>remaining</code>, <code>total</code>, <code>used</code>, <code>resetAt</code>, <code>windowSeconds</code></td></tr>
+    <tr><td><strong>Source</strong></td><td>Public API endpoints on the AI platform websites you visit</td></tr>
+    <tr><td><strong>How</strong></td><td>The extension either actively fetches these endpoints or intercepts the responses already made by the website</td></tr>
+    <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code> (browser local storage)</td></tr>
+    <tr><td><strong>Retention</strong></td><td>Until overwritten by newer data or cleared by the user</td></tr>
+    <tr><td><strong>Shared</strong></td><td><strong>Never</strong>. This data never leaves your browser.</td></tr>
+  </table>
+
+  <h3>2. IP Risk Detection Data (Optional, Disabled by Default)</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td><strong>What</strong></td><td>Your public IP address and a risk score/signals from proxycheck.io</td></tr>
+    <tr><td><strong>Source</strong></td><td><code>api64.ipify.org</code> (to obtain your public IP) &rarr; <code>proxycheck.io</code> (to check IP risk)</td></tr>
+    <tr><td><strong>When</strong></td><td>Only when you <strong>manually enable</strong> IP Risk Detection and provide your own proxycheck.io API key</td></tr>
+    <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code></td></tr>
+    <tr><td><strong>Shared</strong></td><td>Sent to <code>proxycheck.io</code> <strong>only</strong> with your explicit API key. RateBucket does not have access to this data.</td></tr>
+    <tr><td><strong>Retention</strong></td><td>Cached for up to 24 hours to avoid repeated queries</td></tr>
+  </table>
+
+  <h3>3. User Preferences</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td><strong>What</strong></td><td>Language preference (<code>"en"</code> or <code>"zh-CN"</code>) and IP risk settings (enabled/disabled, API key presence)</td></tr>
+    <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code></td></tr>
+    <tr><td><strong>Shared</strong></td><td><strong>Never</strong></td></tr>
+  </table>
+
+  <h3>4. Local Estimation Counters</h3>
+  <table>
+    <tr><th>Aspect</th><th>Detail</th></tr>
+    <tr><td><strong>What</strong></td><td>Locally computed usage estimates when authoritative data is temporarily unavailable</td></tr>
+    <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code></td></tr>
+    <tr><td><strong>Shared</strong></td><td><strong>Never</strong></td></tr>
+  </table>
+
+  <h2>Data We Do NOT Collect</h2>
+  <ul>
+    <li><strong>Cookies, session tokens, or Authorization headers</strong></li>
+    <li><strong>Chat content, prompts, or conversations</strong></li>
+    <li><strong>Browsing history outside the supported platforms</strong></li>
+    <li><strong>Personal identifiers</strong> (name, email, phone, address)</li>
+    <li><strong>Analytics or telemetry</strong> of any kind</li>
+  </ul>
+
+  <h2>Third-Party Services</h2>
+  <table>
+    <tr><th>Service</th><th>Purpose</th><th>Data Sent</th><th>User Control</th></tr>
+    <tr><td><code>proxycheck.io</code></td><td>Optional IP risk analysis</td><td>Public IP address</td><td><strong>Disabled by default</strong>. Only enabled if user provides their own API key.</td></tr>
+    <tr><td><code>api64.ipify.org</code></td><td>Obtain public IP address for proxycheck query</td><td>None (GET request)</td><td>Only called when IP risk detection is enabled.</td></tr>
+  </table>
+
+  <h2>Chrome Web Store Dashboard Privacy Declarations</h2>
+  <table>
+    <tr><th>Data Category</th><th>Collected</th><th>Reason</th></tr>
+    <tr><td>Personally identifiable information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Financial and payment information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Authentication information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Personal communications</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Location</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Web history</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>User activity</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Website content</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td><strong>Non-personal usage data</strong> (quota numbers)</td><td><strong>Yes</strong></td><td>Core functionality — display usage widget</td></tr>
+    <tr><td><strong>IP address</strong> (optional feature)</td><td><strong>Yes</strong></td><td>Only for optional IP risk detection, disabled by default</td></tr>
+  </table>
+
+  <p><strong>Remote code:</strong> No<br>
+  <strong>Sell data to third parties:</strong> No<br>
+  <strong>Use data for personalized advertising:</strong> No</p>
+
+  <h2>Contact</h2>
+  <p>For privacy questions or data deletion requests, please open an issue on the <a href="https://github.com">project's GitHub repository</a>.</p>
+
+  <div class="footer">
+    <p>&copy; 2026 RateBucket. This privacy policy may be updated from time to time.</p>
+  </div>
+
+</body>
+</html>

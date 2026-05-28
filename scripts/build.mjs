@@ -1,4 +1,4 @@
-import { mkdir, rm, copyFile } from "node:fs/promises";
+import { mkdir, rm, copyFile, cp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { build } from "vite";
@@ -75,3 +75,6 @@ for (const fileName of chihiroAssetFiles) {
     path.join(chihiroAssetDist, fileName)
   );
 }
+
+await cp(path.join(root, "icon"), path.join(dist, "icon"), { recursive: true, force: true });
+await cp(path.join(root, "_locales"), path.join(dist, "_locales"), { recursive: true, force: true });

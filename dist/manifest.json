@@ -1,8 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "AI 用量浮窗",
+  "name": "__MSG_name__",
   "version": "0.1.0",
-  "description": "用于 Grok、Claude、ChatGPT、Gemini 和 Kimi 的浮动用量监控器。",
+  "description": "__MSG_description__",
+  "default_locale": "zh_CN",
+  "icons": {
+    "16": "icon/16x16.png",
+    "32": "icon/32x32.png",
+    "48": "icon/48x48.png",
+    "128": "icon/128x128.png"
+  },
   "permissions": ["storage", "scripting"],
   "host_permissions": [
     "https://grok.com/*",

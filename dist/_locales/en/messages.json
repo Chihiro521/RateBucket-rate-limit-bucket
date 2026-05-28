@@ -1,0 +1,10 @@
+{
+  "name": {
+    "message": "RateBucket - AI Usage Monitor",
+    "description": "Extension name"
+  },
+  "description": {
+    "message": "Floating usage widget for Grok, Claude, ChatGPT, Gemini and Kimi.",
+    "description": "Extension description"
+  }
+}
