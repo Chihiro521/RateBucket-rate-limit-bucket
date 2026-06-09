@@ -44,7 +44,8 @@ const PLATFORM_LABEL: Record<PlatformId, string> = {
   claude: "Claude",
   chatgpt: "GPT",
   kimi: "Kimi",
-  gemini: "Gemini"
+  gemini: "Gemini",
+  perplexity: "Perplexity"
 };
 
 const GPT_SECTION_ORDER = [
@@ -94,6 +95,7 @@ export class UsageWidget {
   private languageMode: LanguageMode = DEFAULT_LANGUAGE_MODE;
   private resolvedLanguage: ResolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
   private readonly timerId: number;
+  private readonly mountWatchId: number;
 
   constructor(
     private readonly platform: PlatformId,
@@ -102,20 +104,23 @@ export class UsageWidget {
   ) {
     this.expanded = false;
     this.hidden = platform === "chatgpt";
+    this.host.id = "ai-usage-floating-monitor";
     this.host.dataset.platform = platform;
     const style = document.createElement("style");
     style.textContent = WIDGET_CSS;
     this.shadow.append(style, this.root);
     this.timerId = window.setInterval(() => this.render(), 15_000);
+    this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2_000);
   }
 
   mount(): void {
-    document.documentElement.append(this.host);
+    this.ensureMounted();
     this.render();
   }
 
   destroy(): void {
     window.clearInterval(this.timerId);
+    window.clearInterval(this.mountWatchId);
     this.host.remove();
   }
 
@@ -180,6 +185,7 @@ export class UsageWidget {
   }
 
   private render(): void {
+    this.ensureMounted();
     if (this.hidden) {
       this.ipRiskSettingsOpen = false;
       this.ipRiskSettingsDraft = null;
@@ -201,6 +207,12 @@ export class UsageWidget {
       this.resetPanelPosition();
     }
     this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
+  }
+
+  private ensureMounted(): void {
+    if (!this.host.isConnected) {
+      document.documentElement.append(this.host);
+    }
   }
 
   private replaceRootWith(main: HTMLElement): void {
@@ -1367,6 +1379,9 @@ function platformTitleAsset(platform: PlatformId): ChihiroAssetName {
     return "leaf-emblem.png";
   }
   if (platform === "gemini") {
+    return "gem-square.png";
+  }
+  if (platform === "perplexity") {
     return "gem-square.png";
   }
   return "leaf-small.png";

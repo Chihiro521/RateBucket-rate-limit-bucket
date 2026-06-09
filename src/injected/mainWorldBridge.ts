@@ -161,6 +161,11 @@ function resolveEndpoint(
       method: "POST",
       url: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription",
       body: {}
+    },
+    "perplexity:rateLimitAll": {
+      platform: "perplexity",
+      method: "GET",
+      url: "https://www.perplexity.ai/rest/rate-limit/all"
     }
   };
 
@@ -838,6 +843,12 @@ function usageUrlInfo(
     url.pathname === "/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription"
   ) {
     return { platform: "kimi", endpointKey: "kimi:subscription" };
+  }
+  if (
+    url.origin === "https://www.perplexity.ai" &&
+    url.pathname === "/rest/rate-limit/all"
+  ) {
+    return { platform: "perplexity", endpointKey: "perplexity:rateLimitAll" };
   }
   if (
     isGeminiBatchExecuteUrl(url) &&

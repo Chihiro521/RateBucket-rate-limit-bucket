@@ -4,7 +4,7 @@
     "description": "Extension name"
   },
   "description": {
-    "message": "Floating usage widget for Grok, Claude, ChatGPT, Gemini and Kimi.",
+    "message": "Floating usage widget for ChatGPT, Claude, Grok, Gemini, Kimi and Perplexity.",
     "description": "Extension description"
   }
 }

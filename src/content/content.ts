@@ -55,10 +55,31 @@ import {
 import type { LanguageMode } from "../utils/i18n";
 import { debugLog } from "../utils/logger";
 
+declare global {
+  interface Window {
+    __AI_USAGE_FLOATING_MONITOR_CONTENT__?: boolean;
+  }
+}
+
 const platform = detectPlatform(window.location);
 
-if (platform) {
+if (
+  platform &&
+  shouldStartOnThisFrame(platform) &&
+  !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__
+) {
+  window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
   void start(platform);
+}
+
+function shouldStartOnThisFrame(platformId: PlatformId): boolean {
+  if (window.top === window) {
+    return true;
+  }
+  if (platformId !== "perplexity") {
+    return false;
+  }
+  return window.innerWidth >= 640 && window.innerHeight >= 480;
 }
 
 async function start(platformId: PlatformId): Promise<void> {
@@ -153,6 +174,7 @@ async function start(platformId: PlatformId): Promise<void> {
       }
     }
   );
+  widget.mount();
   widget.setLanguageMode(await getLanguageMode());
 
   const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
@@ -235,8 +257,6 @@ async function start(platformId: PlatformId): Promise<void> {
       widget.setLoading(false);
     }
   };
-
-  widget.mount();
 
   const cached = await getCachedSnapshot(platformId);
   if (cached) {

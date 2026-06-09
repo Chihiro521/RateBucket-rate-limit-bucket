@@ -17,5 +17,8 @@ export function detectPlatform(location: Location): PlatformId | null {
   if (hostname === "www.kimi.com" || hostname === "kimi.com") {
     return "kimi";
   }
+  if (hostname === "www.perplexity.ai" || hostname === "perplexity.ai") {
+    return "perplexity";
+  }
   return null;
 }

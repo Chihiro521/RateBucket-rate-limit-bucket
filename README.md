@@ -2,21 +2,21 @@
 
 [中文文档](README.zh-CN.md)
 
-RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, and Kimi. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
+RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
-This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, or proxycheck.io.
+This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, Moonshot AI, Perplexity AI, or proxycheck.io.
 
 ## Project Status
 
-RateBucket is currently a source-installable extension. It is not published in the Chrome Web Store yet.
+RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-Before a public Chrome Web Store release, the project still needs store-ready icons, screenshots, a hosted privacy policy, final listing copy, and a review of bundled visual assets for clear reuse rights.
+Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
 ## What It Does
 
 - Shows a floating usage widget on supported AI web apps.
 - Supports compact collapsed chips and expanded detail panels.
-- Tracks Grok, Claude, ChatGPT, Gemini, and Kimi usage signals through platform-specific normalizers.
+- Tracks Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity usage signals through platform-specific normalizers.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
@@ -32,6 +32,7 @@ Before a public Chrome Web Store release, the project still needs store-ready ic
 | ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage` |
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
+| Perplexity | `https://perplexity.ai/*`, `https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
 
@@ -122,7 +123,9 @@ RateBucket is designed to stay local where possible:
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
 - It stores only normalized usage data, local counters, retry metadata, language preference, and optional IP risk settings in `chrome.storage.local`.
 
-The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, and the optional IP reputation services.
+Same-site requests may use the browser's existing login session for that website, but RateBucket does not read or store cookie values.
+
+The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and the optional IP reputation services.
 
 ## Optional IP Reputation Check
 
@@ -153,9 +156,9 @@ Raw endpoint responses are not persisted, even when debug logging is enabled.
 
 ## Chrome Web Store Status
 
-RateBucket is currently distributed as a source-installable extension. A Chrome Web Store release is planned after the public listing materials and policy documents are ready.
+RateBucket can be distributed from source or packaged for Chrome Web Store updates. Store-facing materials live in `chrome-webstore-archive/`.
 
-Before submission, the project needs:
+Before submission or update, review:
 
 - extension icons, including a 128x128 PNG icon;
 - store screenshots and promotional images;
@@ -168,9 +171,10 @@ Until then, use the source installation flow above.
 
 ## Known Limits
 
-- Supported platforms use internal web APIs that may change without notice.
+- Supported platforms use internal or site-owned web APIs that may change without notice.
 - ChatGPT usage fields are expected to be the least stable.
 - Gemini uses a Google Web internal batchexecute RPC, so fields and token sources may change with the page implementation.
+- Perplexity's rate-limit endpoint does not currently provide authoritative weekly caps or reset timestamps.
 - Claude and Grok response shapes may also change.
 - Estimate mode only counts local actions in the current browser and is not authoritative quota data.
 - The extension is not designed for multiple accounts, team plans, enterprise plans, or cross-device sync.
@@ -183,12 +187,13 @@ The bundled visual assets are part of the current project package. Before publis
 
 ## Acknowledgements
 
-A small nod to my five informal teachers and collaborators:
+A small nod to my informal teachers and collaborators:
 
 - Claude, the resident philosopher.
 - GPT, the most pragmatic pair-programming partner.
 - Grok, the back-channel rumor desk.
 - Gemini, the occasional spark of inspiration, even when mostly cameoing.
 - Kimi, the diligent note-taker who keeps the quota in check.
+- Perplexity, the research scout now reporting its own bucket.
 
 This project was built by a human, with plenty of conversations along the way.

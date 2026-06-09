@@ -7,6 +7,7 @@ import {
 import { normalizeChatGptIntercepted } from "./chatgpt";
 import { normalizeGeminiUsageText } from "./gemini";
 import { normalizeKimiUsage } from "./kimi";
+import { normalizePerplexityRateLimit } from "./perplexity";
 import type {
   EndpointKey,
   PlatformId,
@@ -65,6 +66,9 @@ function normalizeInterceptedMeters(args: {
     return typeof args.text === "string"
       ? normalizeGeminiUsageText(args.text, "intercepted").meters
       : [];
+  }
+  if (args.platform === "perplexity") {
+    return normalizePerplexityRateLimit(args.json, "intercepted");
   }
   return normalizeChatGptIntercepted(args.url, args.json);
 }

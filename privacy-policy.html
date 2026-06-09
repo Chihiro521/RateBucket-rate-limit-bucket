@@ -97,7 +97,7 @@
   </div>
 
   <h2>Overview</h2>
-  <p>RateBucket is a browser extension that displays a floating usage widget on AI platform websites (Grok, Claude, ChatGPT, Gemini, Kimi). This privacy policy explains what data the extension collects, how it is used, and where it is stored.</p>
+  <p>RateBucket is a browser extension that displays a floating usage widget on AI platform websites (ChatGPT, Claude, Grok, Gemini, Kimi, Perplexity). This privacy policy explains what data the extension collects, how it is used, and where it is stored.</p>
 
   <h2>Data We Collect</h2>
 
@@ -105,8 +105,8 @@
   <table>
     <tr><th>Aspect</th><th>Detail</th></tr>
     <tr><td><strong>What</strong></td><td>Numerical usage counters: <code>remaining</code>, <code>total</code>, <code>used</code>, <code>resetAt</code>, <code>windowSeconds</code></td></tr>
-    <tr><td><strong>Source</strong></td><td>Public API endpoints on the AI platform websites you visit</td></tr>
-    <tr><td><strong>How</strong></td><td>The extension either actively fetches these endpoints or intercepts the responses already made by the website</td></tr>
+    <tr><td><strong>Source</strong></td><td>Platform-owned web endpoints on the AI platform websites you visit</td></tr>
+    <tr><td><strong>How</strong></td><td>The extension either actively fetches these endpoints with the current website session or intercepts the responses already made by the website</td></tr>
     <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code> (browser local storage)</td></tr>
     <tr><td><strong>Retention</strong></td><td>Until overwritten by newer data or cleared by the user</td></tr>
     <tr><td><strong>Shared</strong></td><td><strong>Never</strong>. This data never leaves your browser.</td></tr>
@@ -149,6 +149,7 @@
   </ul>
 
   <h2>Third-Party Services</h2>
+  <p>Same-site requests to supported AI platforms may use your existing browser login session for that website. RateBucket does not read, store, export, or display cookie values, session tokens, or Authorization headers.</p>
   <table>
     <tr><th>Service</th><th>Purpose</th><th>Data Sent</th><th>User Control</th></tr>
     <tr><td><code>proxycheck.io</code></td><td>Optional IP risk analysis</td><td>Public IP address</td><td><strong>Disabled by default</strong>. Only enabled if user provides their own API key.</td></tr>

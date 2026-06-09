@@ -225,7 +225,11 @@ const METER_LABELS_ZH: Record<string, string> = {
   Credits: "余额",
   "Credits (unlimited)": "余额（无限）",
   "Gemini 5h": "Gemini 5 小时",
-  "Gemini weekly": "Gemini 每周"
+  "Gemini weekly": "Gemini 每周",
+  Pro: "Pro",
+  Labs: "Labs",
+  "Agentic Research": "智能体研究",
+  "Free queries": "免费查询"
 };
 
 export function isLanguageMode(value: unknown): value is LanguageMode {

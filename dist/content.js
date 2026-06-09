@@ -573,7 +573,11 @@
     Credits: "余额",
     "Credits (unlimited)": "余额（无限）",
     "Gemini 5h": "Gemini 5 小时",
-    "Gemini weekly": "Gemini 每周"
+    "Gemini weekly": "Gemini 每周",
+    Pro: "Pro",
+    Labs: "Labs",
+    "Agentic Research": "智能体研究",
+    "Free queries": "免费查询"
   };
   function isLanguageMode(value) {
     return value === "auto" || value === "zh-CN" || value === "en";
@@ -2180,7 +2184,8 @@ button {
     claude: "Claude",
     chatgpt: "GPT",
     kimi: "Kimi",
-    gemini: "Gemini"
+    gemini: "Gemini",
+    perplexity: "Perplexity"
   };
   const GPT_SECTION_ORDER = [
     "input",
@@ -2196,11 +2201,13 @@ button {
       this.handlers = handlers;
       this.expanded = false;
       this.hidden = platform2 === "chatgpt";
+      this.host.id = "ai-usage-floating-monitor";
       this.host.dataset.platform = platform2;
       const style = document.createElement("style");
       style.textContent = WIDGET_CSS;
       this.shadow.append(style, this.root);
       this.timerId = window.setInterval(() => this.render(), 15e3);
+      this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2e3);
     }
     host = document.createElement("div");
     shadow = this.host.attachShadow({ mode: "open" });
@@ -2225,12 +2232,14 @@ button {
     languageMode = DEFAULT_LANGUAGE_MODE;
     resolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
     timerId;
+    mountWatchId;
     mount() {
-      document.documentElement.append(this.host);
+      this.ensureMounted();
       this.render();
     }
     destroy() {
       window.clearInterval(this.timerId);
+      window.clearInterval(this.mountWatchId);
       this.host.remove();
     }
     setSnapshot(snapshot) {
@@ -2283,6 +2292,7 @@ button {
       this.render();
     }
     render() {
+      this.ensureMounted();
       if (this.hidden) {
         this.ipRiskSettingsOpen = false;
         this.ipRiskSettingsDraft = null;
@@ -2304,6 +2314,11 @@ button {
         this.resetPanelPosition();
       }
       this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
+    }
+    ensureMounted() {
+      if (!this.host.isConnected) {
+        document.documentElement.append(this.host);
+      }
     }
     replaceRootWith(main) {
       if (this.ipRiskSettingsOpen) {
@@ -3269,6 +3284,9 @@ button {
     if (platform2 === "gemini") {
       return "gem-square.png";
     }
+    if (platform2 === "perplexity") {
+      return "gem-square.png";
+    }
     return "leaf-small.png";
   }
   function unique(values) {
@@ -3310,6 +3328,9 @@ button {
     }
     if (hostname === "www.kimi.com" || hostname === "kimi.com") {
       return "kimi";
+    }
+    if (hostname === "www.perplexity.ai" || hostname === "perplexity.ai") {
+      return "perplexity";
     }
     return null;
   }
@@ -3872,7 +3893,7 @@ button {
     }
     return null;
   }
-  function responseFailure$3(response) {
+  function responseFailure$4(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "chatgpt"
@@ -3891,25 +3912,25 @@ button {
       defaultModelSlug = normalized.defaultModelSlug;
       blockedFeatures = normalized.blockedFeatures;
     } else {
-      requiredFailures.push(responseFailure$3(conversation));
+      requiredFailures.push(responseFailure$4(conversation));
     }
     const wham = await fetcher("chatgpt:whamUsage");
     if (wham.ok) {
       meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$3(wham));
+      optionalFailures.push(responseFailure$4(wham));
     }
     const tasks = await fetcher("chatgpt:whamTasksRateLimit");
     if (tasks.ok) {
       meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$3(tasks));
+      optionalFailures.push(responseFailure$4(tasks));
     }
     const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
     if (codexUsage.ok) {
       meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
     } else {
-      optionalFailures.push(responseFailure$3(codexUsage));
+      optionalFailures.push(responseFailure$4(codexUsage));
     }
     const hasBlocking = blockedFeatures.length > 0;
     const hasOptionalFailures = optionalFailures.length > 0;
@@ -4026,7 +4047,7 @@ button {
     }
     return meters;
   }
-  function responseFailure$2(response) {
+  function responseFailure$3(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "claude"
@@ -4041,7 +4062,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$2(organizations),
+        errorMessage: responseFailure$3(organizations),
         debug: {
           endpoint: "claude:organizations",
           parser: "claude.organizations"
@@ -4071,7 +4092,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$2(usage),
+        errorMessage: responseFailure$3(usage),
         debug: {
           endpoint: "claude:usage",
           parser: "claude.usage"
@@ -4159,7 +4180,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: missingReplayParams ? "unknown" : "error",
-        errorMessage: missingReplayParams ? "等待 Gemini 页面用量参数" : responseFailure$1(response),
+        errorMessage: missingReplayParams ? "等待 Gemini 页面用量参数" : responseFailure$2(response),
         debug: {
           endpoint: GEMINI_ENDPOINT_KEY,
           parser: "gemini.batchexecute"
@@ -4289,7 +4310,7 @@ button {
     }
     return null;
   }
-  function responseFailure$1(response) {
+  function responseFailure$2(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "gemini"
@@ -4418,7 +4439,7 @@ button {
       requestKind: requestKind ?? void 0
     };
   }
-  function responseFailure(response) {
+  function responseFailure$1(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "grok"
@@ -4448,7 +4469,7 @@ button {
         requestKind: context.requestKind ?? DEFAULT_REQUEST_KIND
       });
       if (!response.ok) {
-        failures.push(responseFailure(response));
+        failures.push(responseFailure$1(response));
         continue;
       }
       meters.push(
@@ -4578,6 +4599,139 @@ button {
       status: "unknown"
     };
   }
+  const PERPLEXITY_ENDPOINT_KEY = "perplexity:rateLimitAll";
+  const FIELD_METERS = [
+    {
+      field: "remaining_pro",
+      key: "perplexity:pro",
+      label: "Pro"
+    },
+    {
+      field: "remaining_research",
+      key: "perplexity:research",
+      label: "Deep Research"
+    },
+    {
+      field: "remaining_labs",
+      key: "perplexity:labs",
+      label: "Labs"
+    },
+    {
+      field: "remaining_agentic_research",
+      key: "perplexity:agentic-research",
+      label: "Agentic Research"
+    },
+    {
+      field: "free_queries",
+      key: "perplexity:free-queries",
+      label: "Free queries"
+    }
+  ];
+  function normalizePerplexityRateLimit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = FIELD_METERS.flatMap((definition) => {
+      const remaining = getNumber(root, definition.field);
+      return remaining === null ? [] : [
+        makeRemainingMeter({
+          key: definition.key,
+          label: definition.label,
+          remaining,
+          source,
+          rawKind: definition.field
+        })
+      ];
+    });
+    meters.push(...normalizeModelSpecificLimits(root.model_specific_limits, source));
+    return meters;
+  }
+  async function fetchPerplexityUsage(fetcher) {
+    const response = await fetcher(PERPLEXITY_ENDPOINT_KEY);
+    if (!response.ok) {
+      return {
+        platform: "perplexity",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "error",
+        errorMessage: responseFailure(response),
+        debug: {
+          endpoint: PERPLEXITY_ENDPOINT_KEY,
+          parser: "perplexity.rateLimitAll"
+        }
+      };
+    }
+    const meters = normalizePerplexityRateLimit(response.json, "api");
+    return {
+      platform: "perplexity",
+      meters,
+      source: meters.length > 0 ? "api" : "unknown",
+      updatedAt: Date.now(),
+      status: meters.length > 0 ? "ok" : "error",
+      errorMessage: meters.length > 0 ? void 0 : "Perplexity rate-limit fields missing",
+      debug: {
+        endpoint: PERPLEXITY_ENDPOINT_KEY,
+        parser: "perplexity.rateLimitAll"
+      }
+    };
+  }
+  function normalizeModelSpecificLimits(value, source) {
+    const limits = asRecord(value);
+    if (!limits) {
+      return [];
+    }
+    const meters = [];
+    for (const [modelName, rawLimit] of Object.entries(limits)) {
+      const limit = asRecord(rawLimit);
+      if (!limit) {
+        continue;
+      }
+      const remaining = getNumber(limit, "remaining") ?? getNumber(limit, "remaining_queries") ?? getNumber(limit, "remainingQueries");
+      const total = getNumber(limit, "limit") ?? getNumber(limit, "total") ?? getNumber(limit, "total_queries") ?? getNumber(limit, "totalQueries");
+      if (remaining === null) {
+        continue;
+      }
+      meters.push(
+        makeRemainingMeter({
+          key: `perplexity:model:${modelName}`,
+          label: `${titleFromKey(modelName)} model limit`,
+          modelName,
+          remaining,
+          total,
+          source,
+          rawKind: `model_specific_limits.${modelName}`
+        })
+      );
+    }
+    return meters;
+  }
+  function makeRemainingMeter(args) {
+    const total = args.total ?? null;
+    const used = args.remaining !== null && total !== null ? Math.max(0, total - args.remaining) : null;
+    const usedPercent = used !== null && total !== null && total > 0 ? used / total * 100 : null;
+    const remainingPercent = args.remaining !== null && total !== null && total > 0 ? Math.max(0, Math.min(100, args.remaining / total * 100)) : null;
+    return {
+      key: args.key,
+      label: args.label,
+      modelName: args.modelName,
+      remaining: args.remaining,
+      total,
+      used,
+      usedPercent,
+      remainingPercent,
+      source: args.source,
+      confidence: total !== null ? "high" : "medium",
+      rawKind: args.rawKind
+    };
+  }
+  function responseFailure(response) {
+    return formatUsageError(
+      usageErrorFromBridge(response),
+      response.endpointKey ?? "perplexity"
+    );
+  }
   function fetchPlatformUsage(platform2, fetcher) {
     if (platform2 === "grok") {
       return fetchGrokUsage(fetcher);
@@ -4590,6 +4744,9 @@ button {
     }
     if (platform2 === "gemini") {
       return fetchGeminiUsage(fetcher);
+    }
+    if (platform2 === "perplexity") {
+      return fetchPerplexityUsage(fetcher);
     }
     return fetchChatGptUsage(fetcher);
   }
@@ -4625,6 +4782,9 @@ button {
     }
     if (args.platform === "gemini") {
       return typeof args.text === "string" ? normalizeGeminiUsageText(args.text, "intercepted").meters : [];
+    }
+    if (args.platform === "perplexity") {
+      return normalizePerplexityRateLimit(args.json, "intercepted");
     }
     return normalizeChatGptIntercepted(args.url, args.json);
   }
@@ -5080,8 +5240,18 @@ button {
     console.debug(`[ai-usage] ${message}`, details);
   }
   const platform = detectPlatform(window.location);
-  if (platform) {
+  if (platform && shouldStartOnThisFrame(platform) && !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__) {
+    window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
     void start(platform);
+  }
+  function shouldStartOnThisFrame(platformId) {
+    if (window.top === window) {
+      return true;
+    }
+    if (platformId !== "perplexity") {
+      return false;
+    }
+    return window.innerWidth >= 640 && window.innerHeight >= 480;
   }
   async function start(platformId) {
     let widget;
@@ -5162,6 +5332,7 @@ button {
         }
       }
     );
+    widget.mount();
     widget.setLanguageMode(await getLanguageMode());
     const maybeStartCodexProbe = (snapshot) => {
       if (platformId !== "chatgpt" || codexProbeStarted || hasCodexMeter(snapshot)) {
@@ -5231,7 +5402,6 @@ button {
         widget.setLoading(false);
       }
     };
-    widget.mount();
     const cached = await getCachedSnapshot(platformId);
     if (cached) {
       currentSnapshot = cached;
