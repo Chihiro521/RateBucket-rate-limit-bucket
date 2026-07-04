@@ -263,6 +263,18 @@
   }
   function resolveEndpoint(platform, endpointKey, payload) {
     const endpoints = {
+      "grok:credits-config": {
+        platform: "grok",
+        method: "POST",
+        url: "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig",
+        headers: {
+          accept: "application/grpc-web+proto",
+          "content-type": "application/grpc-web+proto",
+          "x-grpc-web": "1"
+        },
+        body: "\0\0\0\0\0",
+        responseType: "base64"
+      },
       "claude:organizations": {
         platform: "claude",
         method: "GET",
@@ -301,26 +313,6 @@
         url: "https://www.perplexity.ai/rest/rate-limit/all"
       }
     };
-    if (endpointKey === "grok:rate-limits") {
-      if (platform !== "grok") {
-        return null;
-      }
-      const payloadRecord = asRecord(payload);
-      const modelName = payloadRecord ? getString(payloadRecord, "modelName") : null;
-      const requestKind = (payloadRecord ? getString(payloadRecord, "requestKind") : null) ?? "DEFAULT";
-      if (!isSafeGrokModelName(modelName) || !isSafeGrokRequestKind(requestKind)) {
-        return null;
-      }
-      return {
-        platform: "grok",
-        method: "POST",
-        url: "https://grok.com/rest/rate-limits",
-        body: {
-          requestKind,
-          modelName
-        }
-      };
-    }
     if (endpointKey === "claude:usage") {
       const payloadRecord = asRecord(payload);
       const orgId = payloadRecord ? getString(payloadRecord, "orgId") : null;
@@ -462,6 +454,17 @@
           }
         };
       }
+      if (endpoint.responseType === "base64") {
+        return {
+          source: SOURCE,
+          direction: "main-to-content",
+          requestId,
+          ok: true,
+          platform: endpoint.platform,
+          endpointKey,
+          text: arrayBufferToBase64(await response.arrayBuffer())
+        };
+      }
       if (endpoint.responseType === "text") {
         return {
           source: SOURCE,
@@ -524,10 +527,25 @@
     function makePatchedFetch() {
       return async (input, init) => {
         rememberGeminiBatchExecuteRequest(input, init);
-        const usageRequest = getUsageRequest(input, init);
+        const usageRequest = getUsageRequest(input);
         const response = await originalFetch(input, init);
         try {
           if (usageRequest) {
+            if (usageRequest.responseType === "base64") {
+              const buffer = await response.arrayBuffer();
+              const newResponse2 = new Response(buffer.slice(0), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers
+              });
+              postInterceptedUsage({
+                platform: usageRequest.platform,
+                endpointKey: usageRequest.endpointKey,
+                url: usageRequest.url,
+                text: arrayBufferToBase64(buffer)
+              });
+              return newResponse2;
+            }
             const text = await response.text();
             const newResponse = new Response(text, {
               status: response.status,
@@ -539,12 +557,10 @@
               json = JSON.parse(text);
             } catch {
             }
-            const usageContext = await usageRequest.usageContext;
             postInterceptedUsage({
               platform: usageRequest.platform,
               endpointKey: usageRequest.endpointKey,
               url: usageRequest.url,
-              usageContext,
               json,
               text: usageRequest.responseType === "text" ? text : void 0
             });
@@ -563,12 +579,6 @@
         window.fetch = currentPatchedFetch;
       }
     }, 2e3);
-  }
-  function isSafeGrokModelName(value) {
-    return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
-  }
-  function isSafeGrokRequestKind(value) {
-    return value !== null && /^[A-Z_]{1,40}$/.test(value);
   }
   function rememberGeminiBatchExecuteRequest(input, init) {
     let rawUrl;
@@ -714,68 +724,7 @@
       platform: info.platform,
       endpointKey: info.endpointKey,
       url: sanitizeUrl(rawUrl),
-      responseType: info.responseType,
-      usageContext: info.platform === "grok" ? grokRequestContext(input, init) : void 0
-    };
-  }
-  function grokRequestContext(input, init) {
-    if (init?.body !== void 0) {
-      return usageContextFromBody(init.body);
-    }
-    if (input instanceof Request && !input.bodyUsed) {
-      return input.clone().text().then(usageContextFromText).catch(() => void 0);
-    }
-    return void 0;
-  }
-  function usageContextFromBody(body) {
-    if (typeof body === "string") {
-      return usageContextFromText(body);
-    }
-    if (body instanceof URLSearchParams) {
-      return usageContextFromText(body.toString());
-    }
-    if (body instanceof FormData) {
-      return usageContextFromRecord({
-        modelName: body.get("modelName"),
-        requestKind: body.get("requestKind")
-      });
-    }
-    if (body instanceof Blob) {
-      return body.text().then(usageContextFromText).catch(() => void 0);
-    }
-    return void 0;
-  }
-  function usageContextFromText(text) {
-    if (!text.trim()) {
-      return void 0;
-    }
-    try {
-      return usageContextFromRecord(JSON.parse(text));
-    } catch {
-      try {
-        const params = new URLSearchParams(text);
-        return usageContextFromRecord({
-          modelName: params.get("modelName"),
-          requestKind: params.get("requestKind")
-        });
-      } catch {
-        return void 0;
-      }
-    }
-  }
-  function usageContextFromRecord(value) {
-    const record = asRecord(value);
-    if (!record) {
-      return void 0;
-    }
-    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId");
-    const requestKind = getString(record, "requestKind") ?? getString(record, "kind") ?? getString(record, "mode");
-    if (!modelName && !requestKind) {
-      return void 0;
-    }
-    return {
-      modelName: modelName ?? void 0,
-      requestKind: requestKind ?? void 0
+      responseType: info.responseType
     };
   }
   function postInterceptedUsage(args) {
@@ -786,7 +735,6 @@
       platform: args.platform,
       endpointKey: args.endpointKey,
       url: args.url,
-      usageContext: args.usageContext,
       json: args.json,
       text: args.text,
       ts: Date.now()
@@ -812,8 +760,12 @@
     } catch {
       return null;
     }
-    if (url.origin === "https://grok.com" && url.pathname === "/rest/rate-limits") {
-      return { platform: "grok", endpointKey: "grok:rate-limits" };
+    if (url.origin === "https://grok.com" && url.pathname === "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig") {
+      return {
+        platform: "grok",
+        endpointKey: "grok:credits-config",
+        responseType: "base64"
+      };
     }
     if (url.origin === "https://claude.ai" && /^\/api\/organizations\/[^/]+\/usage$/.test(url.pathname)) {
       return { platform: "claude", endpointKey: "claude:usage" };
@@ -866,6 +818,16 @@
     } catch {
       return "";
     }
+  }
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 32768;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
   }
   function postResponse(response) {
     window.postMessage(response, window.location.origin);

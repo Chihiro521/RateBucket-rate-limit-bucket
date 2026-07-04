@@ -343,8 +343,7 @@ async function start(platformId: PlatformId): Promise<void> {
       json: message.json,
       text: message.text,
       ts: message.ts,
-      endpointKey: message.endpointKey,
-      usageContext: message.usageContext
+      endpointKey: message.endpointKey
     });
     if (snapshot.meters.length === 0) {
       return;

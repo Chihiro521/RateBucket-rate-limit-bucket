@@ -56,7 +56,7 @@ export type UsageError = {
 };
 
 export type EndpointKey =
-  | "grok:rate-limits"
+  | "grok:credits-config"
   | "claude:organizations"
   | "claude:usage"
   | "chatgpt:conversationInit"
@@ -101,15 +101,9 @@ export type InterceptedUsageMessage = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   url: string;
-  usageContext?: UsageRequestContext;
   json: unknown;
   text?: string;
   ts: number;
-};
-
-export type UsageRequestContext = {
-  modelName?: string;
-  requestKind?: string;
 };
 
 export type UsageEndpointFetcher = (

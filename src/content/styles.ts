@@ -365,6 +365,50 @@ button {
   background: #3f5874;
 }
 
+.grok-stack-bar {
+  overflow: visible;
+}
+
+.grok-stack-fill {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.grok-stack-segment {
+  display: block;
+  height: 100%;
+}
+
+.grok-contribution-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: color-mix(in srgb, CanvasText 70%, transparent);
+  font-size: 11px;
+}
+
+.grok-contribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.grok-contribution-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, Canvas 35%, transparent);
+}
+
+.grok-contribution-value {
+  color: color-mix(in srgb, CanvasText 82%, transparent);
+  font-weight: 700;
+}
+
 .sentinel-block {
   padding: 7px 0 4px;
 }

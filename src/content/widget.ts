@@ -916,10 +916,98 @@ export class UsageWidget {
     if (meters.length === 0) {
       return content;
     }
+    if (this.platform === "grok" && this.appendGrokCreditsContent(content, meters)) {
+      return content;
+    }
     for (const meter of meters) {
       content.append(this.renderMeter(meter));
     }
     return content;
+  }
+
+  private appendGrokCreditsContent(content: HTMLElement, meters: UsageMeter[]): boolean {
+    const total = meters.find((meter) => meter.rawKind === "grokCreditsConfig:total");
+    const products = meters
+      .filter(isGrokCreditsProductMeter)
+      .sort(grokCreditsProductCompare);
+    if (!total && products.length === 0) {
+      return false;
+    }
+    if (total) {
+      content.append(this.renderGrokCreditsMeter(total, products));
+    } else {
+      for (const product of products) {
+        content.append(this.renderMeter(product));
+      }
+    }
+    for (const meter of meters) {
+      if (meter !== total && !isGrokCreditsProductMeter(meter)) {
+        content.append(this.renderMeter(meter));
+      }
+    }
+    return true;
+  }
+
+  private renderGrokCreditsMeter(total: UsageMeter, products: UsageMeter[]): HTMLElement {
+    const row = el("div", "meter grok-credits-meter");
+    const top = el("div", "meter-top");
+    top.append(
+      textEl(
+        "div",
+        "meter-label",
+        formatMeterLabelLocalized(this.resolvedLanguage, total)
+      ),
+      textEl("div", "meter-value", this.formatUsedPercentValue(total))
+    );
+
+    const progress = usedMeterProgress(total);
+    const bar = el("div", "bar grok-stack-bar");
+    const stack = el("div", "grok-stack-fill");
+    const visibleProducts = products.filter((product) => usedMeterProgress(product) > 0);
+    if (visibleProducts.length > 0) {
+      visibleProducts.forEach((product, index) => {
+        const segment = el("span", "grok-stack-segment");
+        const value = usedMeterProgress(product);
+        segment.style.width = `${value}%`;
+        segment.style.background = grokContributionColor(index);
+        segment.title = `${formatMeterLabelLocalized(
+          this.resolvedLanguage,
+          product
+        )} ${this.formatUsedPercentValue(product)}`;
+        stack.append(segment);
+      });
+    } else {
+      const segment = el("span", "grok-stack-segment");
+      segment.style.width = `${progress}%`;
+      segment.style.background = grokContributionColor(0);
+      stack.append(segment);
+    }
+    bar.style.setProperty("--meter-progress", `${progress}%`);
+    bar.append(stack, decorativeAsset("leaf-small.png", "progress-leaf"));
+
+    const details = el("div", "grok-contribution-list");
+    products.forEach((product, index) => {
+      const item = el("span", "grok-contribution");
+      const dot = el("span", "grok-contribution-dot");
+      dot.style.background = grokContributionColor(index);
+      item.append(
+        dot,
+        textEl(
+          "span",
+          "grok-contribution-label",
+          formatMeterLabelLocalized(this.resolvedLanguage, product)
+        ),
+        textEl("span", "grok-contribution-value", this.formatUsedPercentValue(product))
+      );
+      details.append(item);
+    });
+
+    row.append(top, bar);
+    if (products.length > 0) {
+      row.append(details);
+    }
+    row.append(this.renderMeterBottom(total));
+    return row;
   }
 
   private renderMeter(meter: UsageMeter): HTMLElement {
@@ -948,6 +1036,11 @@ export class UsageWidget {
     bar.style.setProperty("--meter-progress", `${progress}%`);
     bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
 
+    row.append(top, bar, this.renderMeterBottom(meter));
+    return row;
+  }
+
+  private renderMeterBottom(meter: UsageMeter): HTMLElement {
     const bottom = el("div", "meter-bottom");
     const age = meter.observedAt
       ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}`
@@ -966,9 +1059,16 @@ export class UsageWidget {
       ),
       textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
     );
+    return bottom;
+  }
 
-    row.append(top, bar, bottom);
-    return row;
+  private formatUsedPercentValue(meter: UsageMeter): string {
+    if (typeof meter.usedPercent === "number") {
+      return this.text("meter.usedPercent", {
+        percent: Math.round(meter.usedPercent)
+      });
+    }
+    return formatMeterValueLocalized(this.resolvedLanguage, meter);
   }
 
   private primaryValue(): string {
@@ -1081,6 +1181,9 @@ export class UsageWidget {
     if (!meter) {
       return this.primaryValue();
     }
+    if (meter.rawKind?.startsWith("grokCreditsConfig:")) {
+      return this.formatUsedPercentValue(meter);
+    }
     return formatMeterValueLocalized(this.resolvedLanguage, meter);
   }
 
@@ -1111,6 +1214,13 @@ function meterProgress(meter: UsageMeter): number {
     return clampPercent(((meter.total - meter.remaining) / meter.total) * 100);
   }
   return 0;
+}
+
+function usedMeterProgress(meter: UsageMeter): number {
+  if (typeof meter.usedPercent === "number") {
+    return clampPercent(meter.usedPercent);
+  }
+  return meterProgress(meter);
 }
 
 function clampPercent(value: number): number {
@@ -1254,19 +1364,54 @@ function isInputOrAttachmentMeter(key: string, label: string): boolean {
 }
 
 function grokMeterPriority(meter: UsageMeter): number {
-  if (meter.rawKind === "queries") {
+  if (meter.rawKind === "grokCreditsConfig:total") {
     return 10;
   }
-  if (meter.rawKind === "highEffortRateLimits") {
+  if (meter.rawKind?.startsWith("grokCreditsConfig:product:")) {
     return 20;
   }
-  if (meter.rawKind === "lowEffortRateLimits") {
-    return 30;
-  }
-  if (meter.rawKind === "tokens") {
+  if (meter.rawKind === "queries") {
     return 40;
   }
+  if (meter.rawKind === "highEffortRateLimits") {
+    return 50;
+  }
+  if (meter.rawKind === "lowEffortRateLimits") {
+    return 60;
+  }
+  if (meter.rawKind === "tokens") {
+    return 70;
+  }
   return 80;
+}
+
+function isGrokCreditsProductMeter(meter: UsageMeter): boolean {
+  return Boolean(meter.rawKind?.startsWith("grokCreditsConfig:product:"));
+}
+
+function grokCreditsProductCompare(a: UsageMeter, b: UsageMeter): number {
+  return grokCreditsProductPriority(a) - grokCreditsProductPriority(b);
+}
+
+function grokCreditsProductPriority(meter: UsageMeter): number {
+  const productId = Number(meter.rawKind?.match(/product:(\d+)/)?.[1] ?? 0);
+  const priority: Record<number, number> = {
+    5: 10,
+    4: 20,
+    1: 30,
+    2: 40
+  };
+  return priority[productId] ?? 90;
+}
+
+function grokContributionColor(index: number): string {
+  return [
+    "var(--rb-blue)",
+    "var(--rb-blue-soft)",
+    "#9fb9e8",
+    "#c4d2ef",
+    "var(--rb-mustard)"
+  ][index % 5];
 }
 
 function shortLabel(label: string): string {
