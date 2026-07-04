@@ -4,7 +4,7 @@
     "description": "扩展名称"
   },
   "description": {
-    "message": "用于 ChatGPT、Claude、Grok、Gemini、Kimi 和 Perplexity 的浮动用量监控器。",
+    "message": "在支持的网站上显示用量额度与重置时间的浮动看板。",
     "description": "扩展描述"
   }
 }
