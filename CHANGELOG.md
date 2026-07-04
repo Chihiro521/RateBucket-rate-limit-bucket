@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.1.1-chatgpt-usage
+
+Released on GitHub as `v0.1.1-chatgpt-usage`.
+
+Release page:
+
+- https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage
+
+### Changed
+
+- Added ChatGPT subscription expiry parsing from observed accounts-check responses.
+- Improved ChatGPT reset-time formatting with two-unit previews such as `23h 59m` and `6d 23h`.
+- Added explicit ChatGPT feature labels for deep research, image generation, Odyssey, and computer-use style features.
+- Grouped GPT-5.3 Codex Spark additional rate-limit windows under the Codex section.
+- Removed the ChatGPT half-collapsed panel state and kept the full panel or hidden restore chip behavior.
+
+### Fixed
+
+- Treated `limits_progress.reset_after` as either an absolute timestamp or relative seconds based on its actual shape.
+- Normalized `blocked_features` object responses into zero-remaining feature meters.
+- Reused the canonical feature meter key for blocked ChatGPT features, so disabled features replace stale positive quota during snapshot merge.
+- Avoided actively polling the ChatGPT accounts-check endpoint during refresh because it can return `401` outside page-owned request flows.
+
+### Validation
+
+- `npm test`
+- `npm run build`
+
 ## v0.1.1-grok-4ac56a6
 
 Released on GitHub as `v0.1.1-grok-4ac56a6`.

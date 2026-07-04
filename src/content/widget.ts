@@ -15,7 +15,7 @@ import {
   formatResetLocalized,
   formatRiskLabelLocalized,
   formatSourceLabelLocalized,
-  formatStatusLabelLocalized,
+  formatSubscriptionExpiryLocalized,
   languageModeFromValue,
   resolveLanguage,
   t,
@@ -49,6 +49,7 @@ const PLATFORM_LABEL: Record<PlatformId, string> = {
 };
 
 const GPT_SECTION_ORDER = [
+  "subscription",
   "input",
   "features",
   "windows",
@@ -198,9 +199,7 @@ export class UsageWidget {
       if (!this.hidden) {
         this.resetPanelPosition();
       }
-      this.replaceRootWith(
-        this.expanded ? this.renderChatGptPanel() : this.renderChatGptCollapsed()
-      );
+      this.replaceRootWith(this.renderChatGptPanel());
       return;
     }
     if (this.expanded) {
@@ -378,33 +377,6 @@ export class UsageWidget {
     };
   }
 
-  private renderChatGptCollapsed(): HTMLElement {
-    const panel = el("section", "gpt-collapsed-panel");
-    const title = titleNode("gpt-title", this.text("gpt.title"), "clover-medallion.png");
-    const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
-    const actions = el("div", "gpt-actions");
-
-    const refresh = this.renderActionButton(
-      this.loading ? "..." : "↻",
-      this.text("action.refreshUsage"),
-      () => this.onRefresh()
-    );
-    refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-
-    const expand = this.renderActionButton("+", this.text("action.expandPanel"), () => {
-      this.expanded = true;
-      this.render();
-    });
-    const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
-      this.hidden = true;
-      this.render();
-    });
-
-    actions.append(this.renderSettingsButton(), refresh, expand, close);
-    panel.append(decorativeAsset("capsule-mascot.png", "capsule-mascot"), title, summary, actions);
-    return panel;
-  }
-
   private renderChatGptPanel(): HTMLElement {
     const panel = el("section", "gpt-panel");
     panel.append(
@@ -433,16 +405,12 @@ export class UsageWidget {
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
 
-    const collapse = this.renderActionButton("−", this.text("action.collapsePanel"), () => {
-      this.expanded = false;
-      this.render();
-    });
     const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
       this.hidden = true;
       this.render();
     });
 
-    actions.append(this.renderSettingsButton(), refresh, collapse, close);
+    actions.append(this.renderSettingsButton(), refresh, close);
     right.append(actions);
     header.append(title, right);
     return header;
@@ -1057,9 +1025,16 @@ export class UsageWidget {
           meter.confidence
         )}${age}`
       ),
-      textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
+      textEl("span", "", this.formatMeterTimePreview(meter))
     );
     return bottom;
+  }
+
+  private formatMeterTimePreview(meter: UsageMeter): string {
+    if (meter.rawKind === "chatgpt.subscription") {
+      return formatSubscriptionExpiryLocalized(this.resolvedLanguage, meter);
+    }
+    return formatResetLocalized(this.resolvedLanguage, meter);
   }
 
   private formatUsedPercentValue(meter: UsageMeter): string {
@@ -1106,42 +1081,6 @@ export class UsageWidget {
 
   private alertCount(): number {
     return this.chatGptMeters().filter(isAlertMeter).length;
-  }
-
-  private criticalSummary(): string {
-    const meters = this.chatGptMeters();
-    const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0)
-      ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5)
-      ?? meters
-        .filter((meter) => typeof meter.usedPercent === "number")
-        .sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0]
-      ?? meters
-        .filter((meter) => typeof meter.remaining === "number")
-        .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
-    if (!alert) {
-      return formatStatusLabelLocalized(
-        this.resolvedLanguage,
-        this.snapshot?.status ?? "unknown"
-      );
-    }
-    if (typeof alert.remainingPercent === "number") {
-      return `${shortLabel(
-        formatMeterLabelLocalized(this.resolvedLanguage, alert)
-      )} ${this.text("meter.remainingPercent", {
-        percent: Math.round(alert.remainingPercent)
-      })}`;
-    }
-    if (typeof alert.usedPercent === "number") {
-      return `${shortLabel(
-        formatMeterLabelLocalized(this.resolvedLanguage, alert)
-      )} ${Math.round(alert.usedPercent)}%`;
-    }
-    if (typeof alert.remaining === "number") {
-      return `${shortLabel(
-        formatMeterLabelLocalized(this.resolvedLanguage, alert)
-      )} ${this.text("meter.remaining", { remaining: alert.remaining })}`;
-    }
-    return shortLabel(formatMeterLabelLocalized(this.resolvedLanguage, alert));
   }
 
   private chatGptMeters(): UsageMeter[] {
@@ -1286,7 +1225,12 @@ function chatGptMeterPriority(meter: UsageMeter): number {
   if (key.startsWith("limits_progress:file_upload")) {
     return 10;
   }
-  if (key.startsWith("limits_progress:") || meter.rawKind === "limits_progress") {
+  if (
+    key.startsWith("limits_progress:") ||
+    key.startsWith("blocked_features:") ||
+    meter.rawKind === "limits_progress" ||
+    meter.rawKind === "blocked_features"
+  ) {
     return 20;
   }
   if (label.includes("primary window")) {
@@ -1309,6 +1253,7 @@ function groupChatGptMeters(
   language: ResolvedLanguage
 ): Array<{ label: string; meters: UsageMeter[] }> {
   const groups: Record<GptSectionKey, UsageMeter[]> = {
+    subscription: [],
     input: [],
     features: [],
     windows: [],
@@ -1329,9 +1274,13 @@ function chatGptMeterSection(meter: UsageMeter): GptSectionKey {
   const rawKind = meter.rawKind?.toLowerCase() ?? "";
   const label = meter.label.toLowerCase();
 
+  if (rawKind === "chatgpt.subscription") {
+    return "subscription";
+  }
   if (
     key.includes("codex") ||
     rawKind === "codex.settings.usage" ||
+    rawKind.includes("codex") ||
     rawKind === "credits" ||
     key === "wham:credits"
   ) {
@@ -1345,7 +1294,12 @@ function chatGptMeterSection(meter: UsageMeter): GptSectionKey {
   ) {
     return "windows";
   }
-  if (rawKind === "limits_progress" || key.startsWith("limits_progress:")) {
+  if (
+    rawKind === "limits_progress" ||
+    rawKind === "blocked_features" ||
+    key.startsWith("limits_progress:") ||
+    key.startsWith("blocked_features:")
+  ) {
     return isInputOrAttachmentMeter(key, label) ? "input" : "features";
   }
   return "other";
@@ -1412,14 +1366,6 @@ function grokContributionColor(index: number): string {
     "#c4d2ef",
     "var(--rb-mustard)"
   ][index % 5];
-}
-
-function shortLabel(label: string): string {
-  return label
-    .replace(/\bwindow\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 18);
 }
 
 function modelSummaryFromMeter(meter: UsageMeter): string | null {

@@ -85,6 +85,52 @@ describe("mergeUsageSnapshots", () => {
     });
   });
 
+  it("replaces stale feature quota when a feature becomes blocked", () => {
+    const existing: UsageSnapshot = {
+      ...snapshot({
+        updatedAt: 1_000,
+        key: "limits_progress:image_gen",
+        label: "Image Generation"
+      }),
+      meters: [
+        {
+          key: "limits_progress:image_gen",
+          label: "Image Generation",
+          remaining: 985,
+          source: "intercepted",
+          confidence: "high",
+          rawKind: "limits_progress"
+        }
+      ]
+    };
+    const incoming: UsageSnapshot = {
+      ...snapshot({
+        updatedAt: 2_000,
+        key: "limits_progress:image_gen",
+        label: "Image Generation"
+      }),
+      meters: [
+        {
+          key: "limits_progress:image_gen",
+          label: "Image Generation",
+          remaining: 0,
+          source: "api",
+          confidence: "high",
+          rawKind: "blocked_features"
+        }
+      ]
+    };
+
+    const merged = mergeUsageSnapshots(existing, incoming, 2_000);
+
+    expect(merged.meters).toHaveLength(1);
+    expect(merged.meters[0]).toMatchObject({
+      key: "limits_progress:image_gen",
+      remaining: 0,
+      rawKind: "blocked_features"
+    });
+  });
+
   it("drops stale retained meters after the merge ttl", () => {
     const existing = snapshot({
       updatedAt: 1_000,

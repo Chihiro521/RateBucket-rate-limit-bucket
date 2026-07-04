@@ -10,7 +10,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The latest GitHub package for the Grok credits update is available at [v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The latest GitHub package for the ChatGPT usage update is available at [v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage). See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -20,7 +20,8 @@ Before each public Chrome Web Store release or update, review the store listing 
 - Supports compact collapsed chips and expanded detail panels.
 - Tracks Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity usage signals through platform-specific normalizers.
 - Shows Grok credits as one combined weighted usage bucket, with Imagine, Chat, Grok Build, and API displayed as contribution segments.
-- Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together.
+- Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together without keeping stale feature quota when a feature becomes blocked.
+- Shows ChatGPT subscription expiry, input/attachment quotas, feature quotas, usage windows, and Codex-related windows when those signals are available.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
 - Offers an optional IP reputation panel for users who explicitly configure proxycheck.io.
@@ -32,7 +33,7 @@ Before each public Chrome Web Store release or update, review the store listing 
 | --- | --- | --- |
 | Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
-| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage` |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage`, observed `/backend-api/accounts/check/...` responses |
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`, `https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
@@ -54,9 +55,9 @@ No project-owned backend is used.
 
 ## Download A GitHub Release
 
-The current Grok update package is published as a GitHub Release asset:
+The current ChatGPT usage update package is published as a GitHub Release asset:
 
-- [RateBucket v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)
+- [RateBucket v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage)
 
 Download the zip asset from the release page, unzip it, and load the extracted extension directory through `chrome://extensions` with Developer mode enabled.
 
@@ -184,7 +185,8 @@ Until then, use the source installation flow above.
 ## Known Limits
 
 - Supported platforms use internal or site-owned web APIs that may change without notice.
-- ChatGPT usage fields are expected to be the least stable.
+- ChatGPT usage fields are expected to be the least stable. Some ChatGPT feature quota values can only be observed from page fetch responses and may remain marked as captured/cache data when active refresh endpoints return `401`.
+- ChatGPT blocked feature responses replace the matching feature quota meter so disabled features do not keep a stale positive remaining count.
 - Grok currently uses the new credits config gRPC-web endpoint. The old `/rest/rate-limits` path is no longer treated as authoritative.
 - Gemini uses a Google Web internal batchexecute RPC, so fields and token sources may change with the page implementation.
 - Perplexity's rate-limit endpoint does not currently provide authoritative weekly caps or reset timestamps.

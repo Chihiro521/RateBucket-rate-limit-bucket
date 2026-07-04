@@ -124,21 +124,6 @@ button {
   flex-direction: column;
 }
 
-.gpt-collapsed-panel {
-  width: min(400px, calc(100vw - 20px));
-  min-height: 48px;
-  border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
-  color: CanvasText;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
-  display: grid;
-  grid-template-columns: minmax(88px, 1fr) minmax(84px, auto) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
 .header {
   display: flex;
   align-items: center;
@@ -177,17 +162,6 @@ button {
   letter-spacing: 0;
   min-width: 0;
   white-space: nowrap;
-}
-
-.gpt-collapsed-summary {
-  min-width: 0;
-  color: color-mix(in srgb, CanvasText 76%, transparent);
-  font-size: 13px;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
 }
 
 .actions {
@@ -644,7 +618,6 @@ button {
 
 .panel,
 .gpt-panel,
-.gpt-collapsed-panel,
 .settings-popover {
   border: 1px solid var(--rb-line);
   background:
@@ -655,8 +628,7 @@ button {
 }
 
 .panel,
-.gpt-panel,
-.gpt-collapsed-panel {
+.gpt-panel {
   position: relative;
   overflow: hidden;
 }
@@ -811,7 +783,6 @@ button {
 }
 
 .gpt-alerts,
-.gpt-collapsed-summary,
 .meta,
 .model-meta,
 .sentinel-row,
@@ -1069,40 +1040,6 @@ button {
   pointer-events: none;
   transform: translateX(-50%);
   filter: drop-shadow(0 6px 9px rgba(24, 33, 44, 0.24));
-}
-
-.gpt-collapsed-panel {
-  width: min(392px, calc(100vw - 16px));
-  min-height: 64px;
-  grid-template-columns: minmax(118px, auto) minmax(68px, 1fr) auto;
-  gap: 9px;
-  align-items: center;
-  border-radius: 999px;
-  overflow: visible;
-  padding: 8px 12px 8px 118px;
-  background:
-    linear-gradient(90deg, var(--rb-blue) 0 96px, transparent 96px),
-    linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
-}
-
-.gpt-collapsed-panel .capsule-mascot {
-  left: 82px;
-  bottom: -7px;
-  width: 112px;
-}
-
-.gpt-collapsed-panel .gpt-title {
-  font-size: 15px;
-}
-
-.gpt-collapsed-panel .title-icon {
-  width: 20px;
-  height: 20px;
-  flex-basis: 20px;
-}
-
-.gpt-collapsed-summary {
-  font-size: 12px;
 }
 
 .meta,
@@ -1498,18 +1435,6 @@ button {
   .gpt-panel {
     width: min(370px, calc(100vw - 12px));
     height: min(536px, calc(100vh - 14px));
-  }
-
-  .gpt-collapsed-panel {
-    width: min(350px, calc(100vw - 12px));
-    min-height: 62px;
-    grid-template-columns: minmax(96px, auto) minmax(42px, 1fr) auto;
-    padding-left: 104px;
-  }
-
-  .gpt-collapsed-panel .capsule-mascot {
-    left: 76px;
-    width: 102px;
   }
 
   .gpt-alerts {

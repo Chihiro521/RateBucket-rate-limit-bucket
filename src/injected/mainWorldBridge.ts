@@ -166,6 +166,11 @@ function resolveEndpoint(
       method: "GET",
       url: "https://chatgpt.com/codex/settings/usage"
     },
+    "chatgpt:accountsCheck": {
+      platform: "chatgpt",
+      method: "GET",
+      url: `https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${new Date().getTimezoneOffset()}`
+    },
     "kimi:subscription": {
       platform: "kimi",
       method: "POST",
@@ -762,6 +767,12 @@ function usageUrlInfo(
       return {
         platform: "chatgpt",
         endpointKey: "chatgpt:codexSettingsUsage"
+      };
+    }
+    if (/^\/backend-api\/accounts\/check\//.test(url.pathname)) {
+      return {
+        platform: "chatgpt",
+        endpointKey: "chatgpt:accountsCheck"
       };
     }
   }

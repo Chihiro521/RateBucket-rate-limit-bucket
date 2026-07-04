@@ -10,7 +10,7 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
-本次 Grok credits 更新的 GitHub 包已发布到 [v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+本次 ChatGPT 用量更新的 GitHub 包已发布到 [v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
@@ -20,7 +20,8 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 - 支持紧凑折叠 chip 和展开详情面板。
 - 通过平台专用 normalizer 跟踪 Grok、Claude、ChatGPT、Gemini、Kimi 和 Perplexity 的用量信号。
 - Grok credits 会按一个加权总用量 bucket 展示，并把 Imagine、聊天、Grok Build 和 API 作为贡献分段显示。
-- 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示。
+- 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示，同时在功能被禁用时替换旧的正额度。
+- 在信号可用时展示 ChatGPT 订阅到期时间、输入/附件额度、功能额度、用量窗口和 Codex 相关窗口。
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
 - 在平台缺少可靠额度数据时提供本地估算计数。
 - 提供可选 IP 信誉检测面板，只有用户主动配置 proxycheck.io 时才启用。
@@ -32,7 +33,7 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 | --- | --- | --- |
 | Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`、`/api/organizations/{orgId}/usage` |
-| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/wham/usage`、`/backend-api/wham/tasks/rate_limit`、`/codex/settings/usage` |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/wham/usage`、`/backend-api/wham/tasks/rate_limit`、`/codex/settings/usage`、观察到的 `/backend-api/accounts/check/...` 响应 |
 | Gemini | `https://gemini.google.com/*` | `/_/BardChatUi/data/batchexecute` 中的 `jSf9Qc` RPC |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`、`https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
@@ -54,9 +55,9 @@ RateBucket 是一个 Manifest V3 扩展：
 
 ## 下载 GitHub Release
 
-当前 Grok 更新包已作为 GitHub Release 资产发布：
+当前 ChatGPT 用量更新包已作为 GitHub Release 资产发布：
 
-- [RateBucket v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)
+- [RateBucket v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage)
 
 从 Release 页面下载 zip 资产，解压后在 `chrome://extensions` 中启用“开发者模式”，再加载解压后的扩展目录。
 
@@ -184,7 +185,8 @@ RateBucket 可以从源码安装，也可以打包用于 Chrome Web Store 更新
 ## 已知限制
 
 - 支持的平台使用内部或站点自有网页 API，这些 API 可能随时变化。
-- ChatGPT 的用量字段预计最不稳定。
+- ChatGPT 的用量字段预计最不稳定。部分 ChatGPT 功能额度只能从页面自身 fetch 响应中观察到；当主动刷新端点返回 `401` 时，这些值会继续标记为捕获/缓存数据。
+- ChatGPT blocked feature 响应会替换对应功能额度 meter，避免已禁用功能继续显示旧的正剩余次数。
 - Grok 目前使用新的 credits config gRPC-web 端点，旧的 `/rest/rate-limits` 不再作为权威来源。
 - Gemini 使用 Google Web 内部 batchexecute RPC，字段和 token 来源可能随页面实现变化。
 - Perplexity 的 rate-limit 接口目前不提供权威周额度上限或重置时间。

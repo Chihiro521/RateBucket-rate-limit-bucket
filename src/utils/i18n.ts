@@ -9,9 +9,7 @@ export const DEFAULT_LANGUAGE_MODE: LanguageMode = "auto";
 
 const ZH_TEXT = {
   "action.closeSettings": "关闭设置",
-  "action.collapsePanel": "折叠用量面板",
   "action.collapseWidget": "收起用量组件",
-  "action.expandPanel": "展开用量面板",
   "action.hidePanel": "隐藏用量面板",
   "action.openUsage": "打开 {platform} 用量",
   "action.refreshUsage": "刷新用量",
@@ -70,9 +68,7 @@ export type TextKey = keyof typeof ZH_TEXT;
 
 const EN_TEXT: Record<TextKey, string> = {
   "action.closeSettings": "Close settings",
-  "action.collapsePanel": "Collapse usage panel",
   "action.collapseWidget": "Collapse usage widget",
-  "action.expandPanel": "Expand usage panel",
   "action.hidePanel": "Hide usage panel",
   "action.openUsage": "Open {platform} usage",
   "action.refreshUsage": "Refresh usage",
@@ -134,9 +130,10 @@ const TEXT: Record<ResolvedLanguage, Record<TextKey, string>> = {
 
 const GPT_SECTION_LABELS: Record<
   ResolvedLanguage,
-  Record<"input" | "features" | "windows" | "codex" | "other", string>
+  Record<"subscription" | "input" | "features" | "windows" | "codex" | "other", string>
 > = {
   "zh-CN": {
+    subscription: "订阅",
     input: "输入与附件",
     features: "GPT 功能额度",
     windows: "用量窗口",
@@ -144,6 +141,7 @@ const GPT_SECTION_LABELS: Record<
     other: "其他"
   },
   en: {
+    subscription: "Subscription",
     input: "Input and attachments",
     features: "GPT feature limits",
     windows: "Usage windows",
@@ -218,8 +216,11 @@ const METER_LABELS_ZH: Record<string, string> = {
   Dictation: "听写",
   "Deep Research": "深度研究",
   "Image Generation": "图像生成",
+  "Computer Control": "电脑操控",
+  "Computer Use": "电脑操控",
   "Primary window": "主窗口",
   "Weekly window": "每周窗口",
+  "ChatGPT subscription": "ChatGPT 订阅",
   "Current Grok limit": "当前 Grok 限额",
   "Weekly Grok limit": "每周 Grok 限额",
   "Monthly Grok limit": "每月 Grok 限额",
@@ -319,17 +320,59 @@ export function formatResetLocalized(
     return language === "zh-CN" ? `${minutes}分钟` : `${minutes}m`;
   }
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) {
+  if (hours < 24) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes > 0) {
+      return language === "zh-CN"
+        ? `${hours}小时 ${remainingMinutes}分钟`
+        : `${hours}h ${remainingMinutes}m`;
+    }
     return language === "zh-CN" ? `${hours}小时` : `${hours}h`;
   }
   const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  if (remainingHours > 0) {
+    return language === "zh-CN"
+      ? `${days}天 ${remainingHours}小时`
+      : `${days}d ${remainingHours}h`;
+  }
   return language === "zh-CN" ? `${days}天` : `${days}d`;
+}
+
+export function formatSubscriptionExpiryLocalized(
+  language: ResolvedLanguage,
+  meter: UsageMeter
+): string {
+  const resetMs = resolveResetMs(meter);
+  if (resetMs === null) {
+    return "";
+  }
+  const date = new Date(resetMs);
+  const exact = [
+    date.getFullYear(),
+    pad2(date.getMonth() + 1),
+    pad2(date.getDate())
+  ].join("-") + ` ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(
+    date.getSeconds()
+  )}`;
+  const verb =
+    meter.requestKind === "renews"
+      ? language === "zh-CN"
+        ? "续订"
+        : "Renews"
+      : language === "zh-CN"
+        ? "到期"
+        : "Expires";
+  return `${verb} ${exact}`;
 }
 
 export function formatMeterValueLocalized(
   language: ResolvedLanguage,
   meter: UsageMeter
 ): string {
+  if (meter.rawKind === "chatgpt.subscription") {
+    return formatSubscriptionRemainingLocalized(language, meter);
+  }
   if (typeof meter.remainingPercent === "number") {
     return t(language, "meter.remainingPercent", {
       percent: Math.round(meter.remainingPercent)
@@ -353,6 +396,41 @@ export function formatMeterValueLocalized(
     });
   }
   return t(language, "meter.unknown");
+}
+
+function formatSubscriptionRemainingLocalized(
+  language: ResolvedLanguage,
+  meter: UsageMeter,
+  now = Date.now()
+): string {
+  const resetMs = resolveResetMs(meter, now);
+  if (resetMs === null) {
+    return t(language, "meter.unknown");
+  }
+  const seconds = Math.max(0, Math.floor((resetMs - now) / 1000));
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (language === "zh-CN") {
+    if (days > 0) {
+      return `剩余 ${days}天 ${hours}小时 ${minutes}分钟`;
+    }
+    if (hours > 0) {
+      return `剩余 ${hours}小时 ${minutes}分钟`;
+    }
+    return `剩余 ${minutes}分钟`;
+  }
+  if (days > 0) {
+    return `${days}d ${hours}h ${minutes}m left`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m left`;
+  }
+  return `${minutes}m left`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 export function formatMeterLabelLocalized(
@@ -382,7 +460,7 @@ export function formatMeterLabelLocalized(
 
 export function formatGptSectionLabelLocalized(
   language: ResolvedLanguage,
-  section: "input" | "features" | "windows" | "codex" | "other"
+  section: "subscription" | "input" | "features" | "windows" | "codex" | "other"
 ): string {
   return GPT_SECTION_LABELS[language][section];
 }

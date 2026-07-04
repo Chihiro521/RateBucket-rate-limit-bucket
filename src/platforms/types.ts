@@ -63,6 +63,7 @@ export type EndpointKey =
   | "chatgpt:whamUsage"
   | "chatgpt:whamTasksRateLimit"
   | "chatgpt:codexSettingsUsage"
+  | "chatgpt:accountsCheck"
   | "gemini:usageBatchExecute"
   | "kimi:subscription"
   | "perplexity:rateLimitAll";

@@ -362,17 +362,31 @@
       }
     }
     if (typeof meter.resetAt === "string") {
+      const numeric = Number(meter.resetAt.trim());
+      if (Number.isFinite(numeric)) {
+        return resolveNumericResetMs(numeric, now);
+      }
       const parsed = Date.parse(meter.resetAt);
       return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+  function resolveNumericResetMs(value, now) {
+    if (value > 1e10) {
+      return value;
+    }
+    if (value > 1e9) {
+      return value * 1e3;
+    }
+    if (value > 0) {
+      return now + value * 1e3;
     }
     return null;
   }
   const DEFAULT_LANGUAGE_MODE = "auto";
   const ZH_TEXT = {
     "action.closeSettings": "关闭设置",
-    "action.collapsePanel": "折叠用量面板",
     "action.collapseWidget": "收起用量组件",
-    "action.expandPanel": "展开用量面板",
     "action.hidePanel": "隐藏用量面板",
     "action.openUsage": "打开 {platform} 用量",
     "action.refreshUsage": "刷新用量",
@@ -428,9 +442,7 @@
   };
   const EN_TEXT = {
     "action.closeSettings": "Close settings",
-    "action.collapsePanel": "Collapse usage panel",
     "action.collapseWidget": "Collapse usage widget",
-    "action.expandPanel": "Expand usage panel",
     "action.hidePanel": "Hide usage panel",
     "action.openUsage": "Open {platform} usage",
     "action.refreshUsage": "Refresh usage",
@@ -490,6 +502,7 @@
   };
   const GPT_SECTION_LABELS = {
     "zh-CN": {
+      subscription: "订阅",
       input: "输入与附件",
       features: "GPT 功能额度",
       windows: "用量窗口",
@@ -497,6 +510,7 @@
       other: "其他"
     },
     en: {
+      subscription: "Subscription",
       input: "Input and attachments",
       features: "GPT feature limits",
       windows: "Usage windows",
@@ -530,20 +544,6 @@
       low: "Low"
     }
   };
-  const STATUS_LABELS = {
-    "zh-CN": {
-      ok: "正常",
-      partial: "部分可用",
-      unknown: "未知",
-      error: "错误"
-    },
-    en: {
-      ok: "OK",
-      partial: "Partial",
-      unknown: "Unknown",
-      error: "Error"
-    }
-  };
   const RISK_LABELS = {
     "zh-CN": {
       正常: "正常",
@@ -566,8 +566,11 @@
     Dictation: "听写",
     "Deep Research": "深度研究",
     "Image Generation": "图像生成",
+    "Computer Control": "电脑操控",
+    "Computer Use": "电脑操控",
     "Primary window": "主窗口",
     "Weekly window": "每周窗口",
+    "ChatGPT subscription": "ChatGPT 订阅",
     "Current Grok limit": "当前 Grok 限额",
     "Weekly Grok limit": "每周 Grok 限额",
     "Monthly Grok limit": "每月 Grok 限额",
@@ -647,13 +650,40 @@
       return language === "zh-CN" ? `${minutes}分钟` : `${minutes}m`;
     }
     const hours = Math.floor(minutes / 60);
-    if (hours < 48) {
+    if (hours < 24) {
+      const remainingMinutes = minutes % 60;
+      if (remainingMinutes > 0) {
+        return language === "zh-CN" ? `${hours}小时 ${remainingMinutes}分钟` : `${hours}h ${remainingMinutes}m`;
+      }
       return language === "zh-CN" ? `${hours}小时` : `${hours}h`;
     }
     const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    if (remainingHours > 0) {
+      return language === "zh-CN" ? `${days}天 ${remainingHours}小时` : `${days}d ${remainingHours}h`;
+    }
     return language === "zh-CN" ? `${days}天` : `${days}d`;
   }
+  function formatSubscriptionExpiryLocalized(language, meter) {
+    const resetMs = resolveResetMs(meter);
+    if (resetMs === null) {
+      return "";
+    }
+    const date = new Date(resetMs);
+    const exact = [
+      date.getFullYear(),
+      pad2(date.getMonth() + 1),
+      pad2(date.getDate())
+    ].join("-") + ` ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(
+      date.getSeconds()
+    )}`;
+    const verb = meter.requestKind === "renews" ? language === "zh-CN" ? "续订" : "Renews" : language === "zh-CN" ? "到期" : "Expires";
+    return `${verb} ${exact}`;
+  }
   function formatMeterValueLocalized(language, meter) {
+    if (meter.rawKind === "chatgpt.subscription") {
+      return formatSubscriptionRemainingLocalized(language, meter);
+    }
     if (typeof meter.remainingPercent === "number") {
       return t(language, "meter.remainingPercent", {
         percent: Math.round(meter.remainingPercent)
@@ -678,6 +708,35 @@
     }
     return t(language, "meter.unknown");
   }
+  function formatSubscriptionRemainingLocalized(language, meter, now = Date.now()) {
+    const resetMs = resolveResetMs(meter, now);
+    if (resetMs === null) {
+      return t(language, "meter.unknown");
+    }
+    const seconds = Math.max(0, Math.floor((resetMs - now) / 1e3));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor(seconds % 86400 / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    if (language === "zh-CN") {
+      if (days > 0) {
+        return `剩余 ${days}天 ${hours}小时 ${minutes}分钟`;
+      }
+      if (hours > 0) {
+        return `剩余 ${hours}小时 ${minutes}分钟`;
+      }
+      return `剩余 ${minutes}分钟`;
+    }
+    if (days > 0) {
+      return `${days}d ${hours}h ${minutes}m left`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m left`;
+    }
+    return `${minutes}m left`;
+  }
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
   function formatMeterLabelLocalized(language, meter) {
     if (language === "en") {
       return meter.label;
@@ -696,9 +755,6 @@
   }
   function formatConfidenceLabelLocalized(language, confidence) {
     return CONFIDENCE_LABELS[language][confidence] ?? confidence;
-  }
-  function formatStatusLabelLocalized(language, status) {
-    return STATUS_LABELS[language][status] ?? status;
   }
   function formatRiskLabelLocalized(language, label) {
     return RISK_LABELS[language][label] ?? label;
@@ -838,21 +894,6 @@ button {
   flex-direction: column;
 }
 
-.gpt-collapsed-panel {
-  width: min(400px, calc(100vw - 20px));
-  min-height: 48px;
-  border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
-  color: CanvasText;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
-  display: grid;
-  grid-template-columns: minmax(88px, 1fr) minmax(84px, auto) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
 .header {
   display: flex;
   align-items: center;
@@ -891,17 +932,6 @@ button {
   letter-spacing: 0;
   min-width: 0;
   white-space: nowrap;
-}
-
-.gpt-collapsed-summary {
-  min-width: 0;
-  color: color-mix(in srgb, CanvasText 76%, transparent);
-  font-size: 13px;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
 }
 
 .actions {
@@ -1358,7 +1388,6 @@ button {
 
 .panel,
 .gpt-panel,
-.gpt-collapsed-panel,
 .settings-popover {
   border: 1px solid var(--rb-line);
   background:
@@ -1369,8 +1398,7 @@ button {
 }
 
 .panel,
-.gpt-panel,
-.gpt-collapsed-panel {
+.gpt-panel {
   position: relative;
   overflow: hidden;
 }
@@ -1525,7 +1553,6 @@ button {
 }
 
 .gpt-alerts,
-.gpt-collapsed-summary,
 .meta,
 .model-meta,
 .sentinel-row,
@@ -1783,40 +1810,6 @@ button {
   pointer-events: none;
   transform: translateX(-50%);
   filter: drop-shadow(0 6px 9px rgba(24, 33, 44, 0.24));
-}
-
-.gpt-collapsed-panel {
-  width: min(392px, calc(100vw - 16px));
-  min-height: 64px;
-  grid-template-columns: minmax(118px, auto) minmax(68px, 1fr) auto;
-  gap: 9px;
-  align-items: center;
-  border-radius: 999px;
-  overflow: visible;
-  padding: 8px 12px 8px 118px;
-  background:
-    linear-gradient(90deg, var(--rb-blue) 0 96px, transparent 96px),
-    linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
-}
-
-.gpt-collapsed-panel .capsule-mascot {
-  left: 82px;
-  bottom: -7px;
-  width: 112px;
-}
-
-.gpt-collapsed-panel .gpt-title {
-  font-size: 15px;
-}
-
-.gpt-collapsed-panel .title-icon {
-  width: 20px;
-  height: 20px;
-  flex-basis: 20px;
-}
-
-.gpt-collapsed-summary {
-  font-size: 12px;
 }
 
 .meta,
@@ -2214,18 +2207,6 @@ button {
     height: min(536px, calc(100vh - 14px));
   }
 
-  .gpt-collapsed-panel {
-    width: min(350px, calc(100vw - 12px));
-    min-height: 62px;
-    grid-template-columns: minmax(96px, auto) minmax(42px, 1fr) auto;
-    padding-left: 104px;
-  }
-
-  .gpt-collapsed-panel .capsule-mascot {
-    left: 76px;
-    width: 102px;
-  }
-
   .gpt-alerts {
     display: none;
   }
@@ -2240,6 +2221,7 @@ button {
     perplexity: "Perplexity"
   };
   const GPT_SECTION_ORDER = [
+    "subscription",
     "input",
     "features",
     "windows",
@@ -2357,9 +2339,7 @@ button {
         if (!this.hidden) {
           this.resetPanelPosition();
         }
-        this.replaceRootWith(
-          this.expanded ? this.renderChatGptPanel() : this.renderChatGptCollapsed()
-        );
+        this.replaceRootWith(this.renderChatGptPanel());
         return;
       }
       if (this.expanded) {
@@ -2521,29 +2501,6 @@ button {
         offset: clamp$1(clientX - 44, margin, viewportWidth - 96)
       };
     }
-    renderChatGptCollapsed() {
-      const panel = el("section", "gpt-collapsed-panel");
-      const title = titleNode("gpt-title", this.text("gpt.title"), "clover-medallion.png");
-      const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
-      const actions = el("div", "gpt-actions");
-      const refresh = this.renderActionButton(
-        this.loading ? "..." : "↻",
-        this.text("action.refreshUsage"),
-        () => this.onRefresh()
-      );
-      refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const expand = this.renderActionButton("+", this.text("action.expandPanel"), () => {
-        this.expanded = true;
-        this.render();
-      });
-      const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
-        this.hidden = true;
-        this.render();
-      });
-      actions.append(this.renderSettingsButton(), refresh, expand, close);
-      panel.append(decorativeAsset("capsule-mascot.png", "capsule-mascot"), title, summary, actions);
-      return panel;
-    }
     renderChatGptPanel() {
       const panel = el("section", "gpt-panel");
       panel.append(
@@ -2569,15 +2526,11 @@ button {
         () => this.onRefresh()
       );
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const collapse = this.renderActionButton("−", this.text("action.collapsePanel"), () => {
-        this.expanded = false;
-        this.render();
-      });
       const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
         this.hidden = true;
         this.render();
       });
-      actions.append(this.renderSettingsButton(), refresh, collapse, close);
+      actions.append(this.renderSettingsButton(), refresh, close);
       right.append(actions);
       header.append(title, right);
       return header;
@@ -3107,9 +3060,15 @@ button {
             meter.confidence
           )}${age}`
         ),
-        textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
+        textEl("span", "", this.formatMeterTimePreview(meter))
       );
       return bottom;
+    }
+    formatMeterTimePreview(meter) {
+      if (meter.rawKind === "chatgpt.subscription") {
+        return formatSubscriptionExpiryLocalized(this.resolvedLanguage, meter);
+      }
+      return formatResetLocalized(this.resolvedLanguage, meter);
     }
     formatUsedPercentValue(meter) {
       if (typeof meter.usedPercent === "number") {
@@ -3145,34 +3104,6 @@ button {
     }
     alertCount() {
       return this.chatGptMeters().filter(isAlertMeter).length;
-    }
-    criticalSummary() {
-      const meters = this.chatGptMeters();
-      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.usedPercent === "number").sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
-      if (!alert) {
-        return formatStatusLabelLocalized(
-          this.resolvedLanguage,
-          this.snapshot?.status ?? "unknown"
-        );
-      }
-      if (typeof alert.remainingPercent === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${this.text("meter.remainingPercent", {
-          percent: Math.round(alert.remainingPercent)
-        })}`;
-      }
-      if (typeof alert.usedPercent === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${Math.round(alert.usedPercent)}%`;
-      }
-      if (typeof alert.remaining === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${this.text("meter.remaining", { remaining: alert.remaining })}`;
-      }
-      return shortLabel(formatMeterLabelLocalized(this.resolvedLanguage, alert));
     }
     chatGptMeters() {
       const meters = [...this.snapshot?.meters ?? []];
@@ -3282,7 +3213,7 @@ button {
     if (key.startsWith("limits_progress:file_upload")) {
       return 10;
     }
-    if (key.startsWith("limits_progress:") || meter.rawKind === "limits_progress") {
+    if (key.startsWith("limits_progress:") || key.startsWith("blocked_features:") || meter.rawKind === "limits_progress" || meter.rawKind === "blocked_features") {
       return 20;
     }
     if (label.includes("primary window")) {
@@ -3301,6 +3232,7 @@ button {
   }
   function groupChatGptMeters(meters, language) {
     const groups = {
+      subscription: [],
       input: [],
       features: [],
       windows: [],
@@ -3319,13 +3251,16 @@ button {
     const key = meter.key.toLowerCase();
     const rawKind = meter.rawKind?.toLowerCase() ?? "";
     const label = meter.label.toLowerCase();
-    if (key.includes("codex") || rawKind === "codex.settings.usage" || rawKind === "credits" || key === "wham:credits") {
+    if (rawKind === "chatgpt.subscription") {
+      return "subscription";
+    }
+    if (key.includes("codex") || rawKind === "codex.settings.usage" || rawKind.includes("codex") || rawKind === "credits" || key === "wham:credits") {
       return "codex";
     }
     if (key.startsWith("wham:") || key.startsWith("tasks:") || rawKind.includes("rate_limit") || rawKind.includes("window")) {
       return "windows";
     }
-    if (rawKind === "limits_progress" || key.startsWith("limits_progress:")) {
+    if (rawKind === "limits_progress" || rawKind === "blocked_features" || key.startsWith("limits_progress:") || key.startsWith("blocked_features:")) {
       return isInputOrAttachmentMeter(key, label) ? "input" : "features";
     }
     return "other";
@@ -3378,9 +3313,6 @@ button {
       "#c4d2ef",
       "var(--rb-mustard)"
     ][index % 5];
-  }
-  function shortLabel(label) {
-    return label.replace(/\bwindow\b/gi, "").replace(/\s+/g, " ").trim().slice(0, 18);
   }
   function modelSummaryFromMeter(meter) {
     if (!meter.modelName) {
@@ -3555,6 +3487,9 @@ button {
   const FEATURE_LABELS$1 = {
     deep_research: "Deep Research",
     image_gen: "Image Generation",
+    computer_control: "Computer Control",
+    computer_use: "Computer Use",
+    computer_use_preview: "Computer Use",
     file_upload: "File Upload",
     odyssey: "Odyssey"
   };
@@ -3564,28 +3499,69 @@ button {
       return { meters: [], blockedFeatures: [] };
     }
     const meters = [];
+    const progressFeatureNames = /* @__PURE__ */ new Set();
     for (const item of getArray(root, "limits_progress")) {
       const record = asRecord(item);
       if (!record) {
         continue;
       }
       const featureName = getString(record, "feature_name") ?? "unknown_feature";
+      progressFeatureNames.add(featureName);
       const remaining = getNumber(record, "remaining");
-      const resetAfter = record.reset_after;
-      const resetAt = typeof resetAfter === "string" || typeof resetAfter === "number" ? resetAfter : null;
+      const resetAfter = resetAfterValue(record.reset_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
       meters.push({
         key: `limits_progress:${featureName}`,
         label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
         remaining,
         resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
         source,
-        confidence: remaining !== null && resetAt !== null ? "high" : "medium",
+        confidence: remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
         rawKind: "limits_progress"
       });
     }
     const defaultModelSlug = getString(root, "default_model_slug") ?? void 0;
-    const blockedFeatures = asArray(root.blocked_features).map((item) => typeof item === "string" ? item : null).filter((item) => item !== null);
-    return { meters, defaultModelSlug, blockedFeatures };
+    const blocked = normalizeBlockedFeatures(root, source, progressFeatureNames);
+    meters.push(...blocked.meters);
+    return { meters, defaultModelSlug, blockedFeatures: blocked.names };
+  }
+  function normalizeBlockedFeatures(root, source, progressFeatureNames) {
+    const meters = [];
+    const names = [];
+    for (const item of asArray(root.blocked_features)) {
+      if (typeof item === "string") {
+        names.push(item);
+        continue;
+      }
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const featureName = getString(record, "name") ?? getString(record, "feature_name") ?? getString(record, "feature");
+      if (!featureName) {
+        continue;
+      }
+      names.push(featureName);
+      if (progressFeatureNames.has(featureName)) {
+        continue;
+      }
+      const resetAfter = resetAfterValue(record.reset_after ?? record.resets_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+      const rawTotal = getNumber(record, "limit");
+      meters.push({
+        key: `limits_progress:${featureName}`,
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
+        remaining: getNumber(record, "remaining") ?? 0,
+        total: rawTotal !== null && rawTotal > 0 ? rawTotal : null,
+        resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
+        source,
+        confidence: resetAt !== null || resetAfter.resetAfterSeconds !== null ? "high" : "medium",
+        rawKind: "blocked_features"
+      });
+    }
+    return { meters, names };
   }
   function normalizeWindowMeter(args) {
     const explicitRemainingPercent = percentFromRatioOrPercent(
@@ -3718,13 +3694,15 @@ button {
     return collectUsageCandidates(root, "root", {
       maxDepth: 7,
       includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
-    }).map(
-      (candidate) => normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: "wham",
-        rawKind: "chatgpt.usage.window",
-        displayAsRemaining: true
-      })
-    ).filter((meter) => meter !== null);
+    }).map((candidate) => {
+      const codexSparkLabel = codexSparkAdditionalRateLimitLabel(candidate.path);
+      return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
+        keyPrefix: codexSparkLabel ? "codex" : "wham",
+        rawKind: codexSparkLabel ? "codex.spark.rate_limit" : "chatgpt.usage.window",
+        displayAsRemaining: true,
+        label: codexSparkLabel ?? void 0
+      });
+    }).filter((meter) => meter !== null);
   }
   function normalizeWhamCodexNamedUsage(root, source) {
     const codexRoots = collectCodexNamedSubtrees(root);
@@ -3808,6 +3786,51 @@ button {
       return [];
     }
     return normalizeCodexUsageRecordTree(root, "codex", source);
+  }
+  function normalizeChatGptAccountsCheck(json, source = "api") {
+    const root = asRecord(json);
+    const accounts = root ? getRecord(root, "accounts") : null;
+    if (!accounts) {
+      return [];
+    }
+    const account = accountCheckRecord(accounts);
+    const entitlement = account ? getRecord(account, "entitlement") : null;
+    if (!entitlement) {
+      return [];
+    }
+    const expiresAt = getString(entitlement, "expires_at");
+    const renewsAt = getString(entitlement, "renews_at");
+    const hasActiveSubscription = asBoolean(entitlement.has_active_subscription);
+    const subscriptionPlan = getString(entitlement, "subscription_plan");
+    const resetAt = expiresAt ?? renewsAt;
+    if (!resetAt && hasActiveSubscription === null && !subscriptionPlan) {
+      return [];
+    }
+    return [
+      {
+        key: "chatgpt:subscription",
+        label: "ChatGPT subscription",
+        requestKind: expiresAt ? "expires" : renewsAt ? "renews" : void 0,
+        modelName: subscriptionPlan ?? void 0,
+        resetAt,
+        source,
+        confidence: resetAt ? "high" : "medium",
+        rawKind: "chatgpt.subscription"
+      }
+    ];
+  }
+  function accountCheckRecord(accounts) {
+    const defaultAccount = getRecord(accounts, "default");
+    if (defaultAccount) {
+      return defaultAccount;
+    }
+    for (const value of Object.values(accounts)) {
+      const record = asRecord(value);
+      if (record) {
+        return record;
+      }
+    }
+    return null;
   }
   function normalizeCodexUsageRecordTree(root, rootPath, source) {
     const candidates = collectCodexUsageCandidates(root, rootPath);
@@ -3945,7 +3968,7 @@ button {
       "window_size_seconds",
       "windowSizeSeconds"
     ]);
-    const label = usageLabel(record, path);
+    const label = options.label ?? usageLabel(record, path);
     if (remaining === null && total === null && used === null && usedPercent === null && remainingPercent === null && resetAt === null && resetAfterSeconds === null && windowSeconds === null) {
       return null;
     }
@@ -3964,6 +3987,19 @@ button {
       confidence: remaining !== null || total !== null || usedPercent !== null || remainingPercent !== null ? "medium" : "low",
       rawKind: options.rawKind
     };
+  }
+  function codexSparkAdditionalRateLimitLabel(path) {
+    const normalized = path.toLowerCase();
+    if (!normalized.includes("additional_rate_limits")) {
+      return null;
+    }
+    if (normalized.endsWith(".primary_window")) {
+      return "GPT-5.3-Codex-Spark Primary window";
+    }
+    if (normalized.endsWith(".secondary_window")) {
+      return "GPT-5.3-Codex-Spark Weekly window";
+    }
+    return "GPT-5.3-Codex-Spark usage limit";
   }
   function collectUsageCandidates(root, rootPath, options) {
     const queue = [
@@ -4046,6 +4082,23 @@ button {
       "resetTime",
       "resets"
     ]);
+  }
+  function resetAfterValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { resetAt: null, resetAfterSeconds: value };
+    }
+    if (typeof value !== "string") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return { resetAt: null, resetAfterSeconds: numeric };
+    }
+    return { resetAt: trimmed, resetAfterSeconds: null };
   }
   function dedupeMeters(meters) {
     const seen = /* @__PURE__ */ new Set();
@@ -4145,6 +4198,9 @@ button {
     }
     if (path === "/codex/settings/usage") {
       return normalizeChatGptCodexSettingsUsage(json, "intercepted");
+    }
+    if (/^\/backend-api\/accounts\/check\//.test(path)) {
+      return normalizeChatGptAccountsCheck(json, "intercepted");
     }
     return [];
   }

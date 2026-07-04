@@ -6,6 +6,7 @@ import {
   formatMeterLabelLocalized,
   formatMeterValueLocalized,
   formatResetLocalized,
+  formatSubscriptionExpiryLocalized,
   resolveLanguage
 } from "../src/utils/i18n";
 
@@ -59,6 +60,12 @@ describe("i18n", () => {
         label: "Gemini weekly"
       })
     ).toBe("Gemini 每周");
+    expect(
+      formatMeterLabelLocalized("zh-CN", {
+        ...baseMeter,
+        label: "Computer Use"
+      })
+    ).toBe("电脑操控");
   });
 
   it("localizes meter values", () => {
@@ -81,6 +88,22 @@ describe("i18n", () => {
         total: 5
       })
     ).toBe("Used 2/5");
+    expect(
+      formatMeterValueLocalized("zh-CN", {
+        ...baseMeter,
+        label: "ChatGPT subscription",
+        rawKind: "chatgpt.subscription",
+        resetAfterSeconds: 90_000
+      })
+    ).toBe("剩余 1天 1小时 0分钟");
+    expect(
+      formatMeterValueLocalized("en", {
+        ...baseMeter,
+        label: "ChatGPT subscription",
+        rawKind: "chatgpt.subscription",
+        resetAfterSeconds: 90_000
+      })
+    ).toBe("1d 1h 0m left");
   });
 
   it("localizes relative ages and reset durations", () => {
@@ -95,5 +118,35 @@ describe("i18n", () => {
     };
     expect(formatResetLocalized("zh-CN", meter, 0)).toBe("1分钟");
     expect(formatResetLocalized("en", meter, 0)).toBe("1m");
+    expect(
+      formatResetLocalized("zh-CN", { ...baseMeter, resetAfterSeconds: 3661 }, 0)
+    ).toBe("1小时 1分钟");
+    expect(
+      formatResetLocalized("en", { ...baseMeter, resetAfterSeconds: 3661 }, 0)
+    ).toBe("1h 1m");
+    expect(
+      formatResetLocalized("zh-CN", { ...baseMeter, resetAfterSeconds: 90_000 }, 0)
+    ).toBe("1天 1小时");
+    expect(
+      formatResetLocalized("en", { ...baseMeter, resetAfterSeconds: 90_000 }, 0)
+    ).toBe("1d 1h");
+    expect(
+      formatResetLocalized("zh-CN", { ...baseMeter, resetAt: "86399" }, 0)
+    ).toBe("23小时 59分钟");
+  });
+
+  it("formats subscription expiry with seconds", () => {
+    const meter: UsageMeter = {
+      ...baseMeter,
+      label: "ChatGPT subscription",
+      rawKind: "chatgpt.subscription",
+      resetAt: "2026-08-04T11:38:16+00:00"
+    };
+    expect(formatSubscriptionExpiryLocalized("zh-CN", meter)).toMatch(
+      /^到期 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:16$/
+    );
+    expect(formatSubscriptionExpiryLocalized("en", meter)).toMatch(
+      /^Expires \d{4}-\d{2}-\d{2} \d{2}:\d{2}:16$/
+    );
   });
 });

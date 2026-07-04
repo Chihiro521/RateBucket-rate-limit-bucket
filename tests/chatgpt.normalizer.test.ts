@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  normalizeChatGptAccountsCheck,
   fetchChatGptUsage,
   normalizeChatGptCodexSettingsUsage,
   normalizeChatGptConversationInit,
@@ -21,6 +22,11 @@ describe("chatgpt normalizer", () => {
           feature_name: "image_gen",
           remaining: 10,
           reset_after: 3600
+        },
+        {
+          feature_name: "computer_use",
+          remaining: 2,
+          reset_after: "2026-05-02T00:00:00Z"
         }
       ]
     });
@@ -28,9 +34,85 @@ describe("chatgpt normalizer", () => {
     expect(normalized.defaultModelSlug).toBe("gpt-5");
     expect(normalized.meters.map((meter) => meter.label)).toEqual([
       "Deep Research",
-      "Image Generation"
+      "Image Generation",
+      "Computer Use"
     ]);
     expect(normalized.meters[0].remaining).toBe(4);
+    expect(normalized.meters[0].resetAt).toBe("2026-05-01T00:00:00Z");
+    expect(normalized.meters[1].resetAt).toBeNull();
+    expect(normalized.meters[1].resetAfterSeconds).toBe(3600);
+    expect(normalized.meters[2].resetAt).toBe("2026-05-02T00:00:00Z");
+  });
+
+  it("treats numeric limits_progress reset_after strings as relative seconds", () => {
+    const normalized = normalizeChatGptConversationInit({
+      limits_progress: [
+        {
+          feature_name: "file_upload",
+          remaining: 3,
+          reset_after: "86399"
+        }
+      ]
+    });
+
+    expect(normalized.meters[0]).toMatchObject({
+      key: "limits_progress:file_upload",
+      remaining: 3,
+      resetAt: null,
+      resetAfterSeconds: 86399
+    });
+  });
+
+  it("normalizes object blocked_features as zero remaining feature meters", () => {
+    const normalized = normalizeChatGptConversationInit({
+      blocked_features: [
+        {
+          name: "deep_research",
+          limit: 0,
+          resets_after: "2026-08-02T09:08:12.525030+00:00"
+        },
+        {
+          name: "image_gen",
+          limit: 0,
+          resets_after: "2026-08-03T09:08:12.525030+00:00"
+        },
+        {
+          name: "computer_control",
+          limit: 0,
+          resets_after: "2026-08-04T09:08:12.525030+00:00"
+        }
+      ]
+    });
+
+    expect(normalized.blockedFeatures).toEqual([
+      "deep_research",
+      "image_gen",
+      "computer_control"
+    ]);
+    expect(normalized.meters[0]).toMatchObject({
+      key: "limits_progress:deep_research",
+      label: "Deep Research",
+      remaining: 0,
+      total: null,
+      resetAt: "2026-08-02T09:08:12.525030+00:00",
+      rawKind: "blocked_features"
+    });
+    expect(normalized.meters[1]).toMatchObject({
+      key: "limits_progress:image_gen",
+      label: "Image Generation",
+      remaining: 0,
+      total: null,
+      resetAt: "2026-08-03T09:08:12.525030+00:00",
+      rawKind: "blocked_features"
+    });
+    expect(normalized.meters[2]).toMatchObject({
+      key: "limits_progress:computer_control",
+      label: "Computer Control",
+      remaining: 0,
+      total: null,
+      resetAt: "2026-08-04T09:08:12.525030+00:00",
+      rawKind: "blocked_features"
+    });
   });
 
   it("normalizes wham primary, secondary, and code review windows", () => {
@@ -105,6 +187,39 @@ describe("chatgpt normalizer", () => {
     ).toBe(98);
   });
 
+  it("labels additional wham rate limits as GPT-5.3 Codex Spark windows", () => {
+    const meters = normalizeChatGptWhamUsage({
+      additional_rate_limits: {
+        primary_window: {
+          used_percent: 0.28,
+          reset_at: 1_775_001_000,
+          limit_window_seconds: 7200
+        },
+        secondary_window: {
+          used_percent: 1,
+          reset_at: 1_775_604_800,
+          limit_window_seconds: 604800
+        }
+      }
+    });
+
+    expect(meters).toHaveLength(2);
+    expect(meters[0]).toMatchObject({
+      key: "codex:root.additional_rate_limits.primary_window",
+      label: "GPT-5.3-Codex-Spark Primary window",
+      rawKind: "codex.spark.rate_limit",
+      usedPercent: 28,
+      remainingPercent: 72
+    });
+    expect(meters[1]).toMatchObject({
+      key: "codex:root.additional_rate_limits.secondary_window",
+      label: "GPT-5.3-Codex-Spark Weekly window",
+      rawKind: "codex.spark.rate_limit",
+      usedPercent: 100,
+      remainingPercent: 0
+    });
+  });
+
   it("normalizes codex-named usage data from wham usage", () => {
     const meters = normalizeChatGptWhamUsage({
       codex_usage: {
@@ -138,6 +253,31 @@ describe("chatgpt normalizer", () => {
     expect(meters.some((meter) => meter.key.includes("code_review.codex"))).toBe(
       false
     );
+  });
+
+  it("normalizes ChatGPT subscription expiry from accounts check", () => {
+    const meters = normalizeChatGptAccountsCheck({
+      accounts: {
+        default: {
+          entitlement: {
+            has_active_subscription: true,
+            subscription_plan: "chatgptprolite",
+            expires_at: "2026-08-04T11:38:16+00:00",
+            renews_at: "2026-08-04T05:38:16+00:00"
+          }
+        }
+      }
+    });
+
+    expect(meters).toHaveLength(1);
+    expect(meters[0]).toMatchObject({
+      key: "chatgpt:subscription",
+      label: "ChatGPT subscription",
+      modelName: "chatgptprolite",
+      requestKind: "expires",
+      resetAt: "2026-08-04T11:38:16+00:00",
+      rawKind: "chatgpt.subscription"
+    });
   });
 
   it("normalizes credits", () => {
@@ -291,6 +431,29 @@ describe("chatgpt normalizer", () => {
     expect(snapshot.meters.some((meter) => meter.rawKind === "codex.settings.usage")).toBe(
       true
     );
+  });
+
+  it("does not actively poll accounts check during refresh", async () => {
+    const requested: string[] = [];
+    const fetcher: UsageEndpointFetcher = async (endpointKey) => {
+      requested.push(endpointKey);
+      return {
+        source: "ai-usage-floating-monitor",
+        direction: "main-to-content",
+        requestId: endpointKey,
+        ok: endpointKey !== "chatgpt:whamTasksRateLimit",
+        platform: "chatgpt",
+        endpointKey,
+        json:
+          endpointKey === "chatgpt:conversationInit"
+            ? { limits_progress: [{ feature_name: "file_upload", remaining: 1 }] }
+            : {}
+      };
+    };
+
+    await fetchChatGptUsage(fetcher);
+
+    expect(requested).not.toContain("chatgpt:accountsCheck");
   });
 
   it("does not surface optional wham failures as red errors when other meters exist", async () => {

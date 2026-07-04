@@ -35,6 +35,10 @@ export function resolveResetMs(meter: UsageMeter, now = Date.now()): number | nu
     }
   }
   if (typeof meter.resetAt === "string") {
+    const numeric = Number(meter.resetAt.trim());
+    if (Number.isFinite(numeric)) {
+      return resolveNumericResetMs(numeric, now);
+    }
     const parsed = Date.parse(meter.resetAt);
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -55,8 +59,24 @@ export function formatReset(meter: UsageMeter, now = Date.now()): string {
     return `${minutes}分钟`;
   }
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) {
-    return `${hours}小时`;
+  if (hours < 24) {
+    const remainingMinutes = minutes % 60;
+    return remainingMinutes > 0 ? `${hours}小时 ${remainingMinutes}分钟` : `${hours}小时`;
   }
-  return `${Math.floor(hours / 24)}天`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  return remainingHours > 0 ? `${days}天 ${remainingHours}小时` : `${days}天`;
+}
+
+function resolveNumericResetMs(value: number, now: number): number | null {
+  if (value > 10_000_000_000) {
+    return value;
+  }
+  if (value > 1_000_000_000) {
+    return value * 1000;
+  }
+  if (value > 0) {
+    return now + value * 1000;
+  }
+  return null;
 }
