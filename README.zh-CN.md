@@ -10,6 +10,8 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
+本次 Grok credits 更新的 GitHub 包已发布到 [v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
 ## 它能做什么
@@ -17,6 +19,7 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 - 在支持的 AI 网页应用上显示浮动用量组件。
 - 支持紧凑折叠 chip 和展开详情面板。
 - 通过平台专用 normalizer 跟踪 Grok、Claude、ChatGPT、Gemini、Kimi 和 Perplexity 的用量信号。
+- Grok credits 会按一个加权总用量 bucket 展示，并把 Imagine、聊天、Grok Build 和 API 作为贡献分段显示。
 - 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示。
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
 - 在平台缺少可靠额度数据时提供本地估算计数。
@@ -27,7 +30,7 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 
 | 平台 | 支持的 URL | 主要数据来源 |
 | --- | --- | --- |
-| Grok | `https://grok.com/*` | `/rest/rate-limits` |
+| Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`、`/api/organizations/{orgId}/usage` |
 | ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/wham/usage`、`/backend-api/wham/tasks/rate_limit`、`/codex/settings/usage` |
 | Gemini | `https://gemini.google.com/*` | `/_/BardChatUi/data/batchexecute` 中的 `jSf9Qc` RPC |
@@ -44,9 +47,18 @@ RateBucket 是一个 Manifest V3 扩展：
 - `mainWorldBridge.js` 在页面主世界中运行，用于在必要时观察平台 fetch 行为。
 - `serviceWorker.js` 处理后台任务，例如可选 IP 信誉检测刷新。
 - 平台解析器会把原始端点结构标准化为共享的 usage snapshot。
+- Grok credits 会从 gRPC-web protobuf 响应中解码，并在本地标准化为加权用量 meter。
 - `chrome.storage.local` 保存标准化快照、本地估算计数、重试状态、语言偏好和可选 IP 风险设置。
 
 项目本身不使用自有外部后端。
+
+## 下载 GitHub Release
+
+当前 Grok 更新包已作为 GitHub Release 资产发布：
+
+- [RateBucket v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)
+
+从 Release 页面下载 zip 资产，解压后在 `chrome://extensions` 中启用“开发者模式”，再加载解压后的扩展目录。
 
 ## 视觉设计
 
@@ -173,6 +185,7 @@ RateBucket 可以从源码安装，也可以打包用于 Chrome Web Store 更新
 
 - 支持的平台使用内部或站点自有网页 API，这些 API 可能随时变化。
 - ChatGPT 的用量字段预计最不稳定。
+- Grok 目前使用新的 credits config gRPC-web 端点，旧的 `/rest/rate-limits` 不再作为权威来源。
 - Gemini 使用 Google Web 内部 batchexecute RPC，字段和 token 来源可能随页面实现变化。
 - Perplexity 的 rate-limit 接口目前不提供权威周额度上限或重置时间。
 - Claude 和 Grok 的响应结构也可能变化。

@@ -10,6 +10,8 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
+The latest GitHub package for the Grok credits update is available at [v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
 ## What It Does
@@ -17,6 +19,7 @@ Before each public Chrome Web Store release or update, review the store listing 
 - Shows a floating usage widget on supported AI web apps.
 - Supports compact collapsed chips and expanded detail panels.
 - Tracks Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity usage signals through platform-specific normalizers.
+- Shows Grok credits as one combined weighted usage bucket, with Imagine, Chat, Grok Build, and API displayed as contribution segments.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
@@ -27,7 +30,7 @@ Before each public Chrome Web Store release or update, review the store listing 
 
 | Platform | Supported URLs | Main Data Sources |
 | --- | --- | --- |
-| Grok | `https://grok.com/*` | `/rest/rate-limits` |
+| Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
 | ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage` |
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
@@ -44,9 +47,18 @@ RateBucket is built as a Manifest V3 extension:
 - `mainWorldBridge.js` runs in the page's main world so platform fetch behavior can be observed when needed.
 - `serviceWorker.js` handles background-only tasks such as the optional IP reputation refresh.
 - Platform parsers normalize raw endpoint shapes into shared usage snapshots.
+- Grok credits are decoded from a gRPC-web protobuf response and normalized locally into weighted usage meters.
 - `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, language preference, and optional IP risk settings.
 
 No project-owned backend is used.
+
+## Download A GitHub Release
+
+The current Grok update package is published as a GitHub Release asset:
+
+- [RateBucket v0.1.1-grok-4ac56a6](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-grok-4ac56a6)
+
+Download the zip asset from the release page, unzip it, and load the extracted extension directory through `chrome://extensions` with Developer mode enabled.
 
 ## Visual Design
 
@@ -173,6 +185,7 @@ Until then, use the source installation flow above.
 
 - Supported platforms use internal or site-owned web APIs that may change without notice.
 - ChatGPT usage fields are expected to be the least stable.
+- Grok currently uses the new credits config gRPC-web endpoint. The old `/rest/rate-limits` path is no longer treated as authoritative.
 - Gemini uses a Google Web internal batchexecute RPC, so fields and token sources may change with the page implementation.
 - Perplexity's rate-limit endpoint does not currently provide authoritative weekly caps or reset timestamps.
 - Claude and Grok response shapes may also change.
