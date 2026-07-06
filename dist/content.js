@@ -568,6 +568,7 @@
     "Image Generation": "图像生成",
     "Computer Control": "电脑操控",
     "Computer Use": "电脑操控",
+    "Reasoning Quota": "思考额度",
     "Primary window": "主窗口",
     "Weekly window": "每周窗口",
     "ChatGPT subscription": "ChatGPT 订阅",
@@ -3491,7 +3492,8 @@ button {
     computer_use: "Computer Use",
     computer_use_preview: "Computer Use",
     file_upload: "File Upload",
-    odyssey: "Odyssey"
+    odyssey: "Odyssey",
+    reason: "Reasoning Quota"
   };
   function normalizeChatGptConversationInit(json, source = "api") {
     const root = asRecord(json);
@@ -5094,8 +5096,14 @@ button {
     }
     const normalizedExisting = withObservedAt(existing, existing.updatedAt);
     const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
+    const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
+      (meter) => meter.source !== "estimate"
+    );
     const retainedExisting = normalizedExisting.meters.filter((meter) => {
       if (incomingKeys.has(meter.key)) {
+        return false;
+      }
+      if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
         return false;
       }
       const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
@@ -5122,6 +5130,9 @@ button {
         )
       }
     };
+  }
+  function isLocalEstimateMeter(meter) {
+    return meter.rawKind === "localEstimate" || meter.key === "local:sent-count";
   }
   function withObservedAt(snapshot, fallbackObservedAt) {
     return {

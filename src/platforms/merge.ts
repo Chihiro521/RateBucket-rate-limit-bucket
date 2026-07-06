@@ -17,8 +17,14 @@ export function mergeUsageSnapshots(
 
   const normalizedExisting = withObservedAt(existing, existing.updatedAt);
   const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
+  const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
+    (meter) => meter.source !== "estimate"
+  );
   const retainedExisting = normalizedExisting.meters.filter((meter) => {
     if (incomingKeys.has(meter.key)) {
+      return false;
+    }
+    if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
       return false;
     }
     const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
@@ -47,6 +53,10 @@ export function mergeUsageSnapshots(
       )
     }
   };
+}
+
+function isLocalEstimateMeter(meter: UsageMeter): boolean {
+  return meter.rawKind === "localEstimate" || meter.key === "local:sent-count";
 }
 
 function withObservedAt(

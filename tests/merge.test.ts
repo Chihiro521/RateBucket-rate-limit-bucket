@@ -151,4 +151,38 @@ describe("mergeUsageSnapshots", () => {
 
     expect(merged.meters.map((meter) => meter.key)).toEqual(["wham:primary_window"]);
   });
+
+  it("drops local send estimates once authoritative meters arrive", () => {
+    const existing: UsageSnapshot = {
+      ...snapshot({
+        updatedAt: 1_000,
+        key: "local:sent-count",
+        label: "Sent locally",
+        status: "unknown"
+      }),
+      source: "estimate",
+      meters: [
+        {
+          key: "local:sent-count",
+          label: "Sent locally",
+          used: 2,
+          source: "estimate",
+          confidence: "low",
+          rawKind: "localEstimate"
+        }
+      ]
+    };
+    const incoming = snapshot({
+      updatedAt: 2_000,
+      key: "limits_progress:file_upload",
+      label: "File Upload",
+      source: "intercepted"
+    });
+
+    const merged = mergeUsageSnapshots(existing, incoming, 2_000);
+
+    expect(merged.meters.map((meter) => meter.key)).toEqual([
+      "limits_progress:file_upload"
+    ]);
+  });
 });

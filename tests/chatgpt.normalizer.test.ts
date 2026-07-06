@@ -80,6 +80,11 @@ describe("chatgpt normalizer", () => {
           name: "computer_control",
           limit: 0,
           resets_after: "2026-08-04T09:08:12.525030+00:00"
+        },
+        {
+          name: "reason",
+          limit: 50,
+          resets_after: "2026-07-11T06:26:52.334331+00:00"
         }
       ]
     });
@@ -87,7 +92,8 @@ describe("chatgpt normalizer", () => {
     expect(normalized.blockedFeatures).toEqual([
       "deep_research",
       "image_gen",
-      "computer_control"
+      "computer_control",
+      "reason"
     ]);
     expect(normalized.meters[0]).toMatchObject({
       key: "limits_progress:deep_research",
@@ -111,6 +117,14 @@ describe("chatgpt normalizer", () => {
       remaining: 0,
       total: null,
       resetAt: "2026-08-04T09:08:12.525030+00:00",
+      rawKind: "blocked_features"
+    });
+    expect(normalized.meters[3]).toMatchObject({
+      key: "limits_progress:reason",
+      label: "Reasoning Quota",
+      remaining: 0,
+      total: 50,
+      resetAt: "2026-07-11T06:26:52.334331+00:00",
       rawKind: "blocked_features"
     });
   });

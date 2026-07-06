@@ -218,6 +218,7 @@ const METER_LABELS_ZH: Record<string, string> = {
   "Image Generation": "图像生成",
   "Computer Control": "电脑操控",
   "Computer Use": "电脑操控",
+  "Reasoning Quota": "思考额度",
   "Primary window": "主窗口",
   "Weekly window": "每周窗口",
   "ChatGPT subscription": "ChatGPT 订阅",

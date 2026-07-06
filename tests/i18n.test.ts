@@ -66,6 +66,12 @@ describe("i18n", () => {
         label: "Computer Use"
       })
     ).toBe("电脑操控");
+    expect(
+      formatMeterLabelLocalized("zh-CN", {
+        ...baseMeter,
+        label: "Reasoning Quota"
+      })
+    ).toBe("思考额度");
   });
 
   it("localizes meter values", () => {

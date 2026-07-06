@@ -25,7 +25,8 @@ const FEATURE_LABELS: Record<string, string> = {
   computer_use: "Computer Use",
   computer_use_preview: "Computer Use",
   file_upload: "File Upload",
-  odyssey: "Odyssey"
+  odyssey: "Odyssey",
+  reason: "Reasoning Quota"
 };
 
 export function normalizeChatGptConversationInit(
