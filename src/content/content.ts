@@ -1,5 +1,9 @@
 import { BridgeClient } from "./bridgeClient";
-import { probeCodexAnalyticsUsage } from "./codexProbe";
+import {
+  sameUsageValues,
+  startVisibleUsagePolling,
+  withoutOlderMeters
+} from "./usagePolling";
 import { getEstimateSnapshot, installSendEstimator } from "./estimator";
 import { UsageWidget } from "./widget";
 import { detectPlatform } from "../platforms/detect";
@@ -18,7 +22,7 @@ import {
   type IpRiskSettingsUpdate,
   type IpRiskState
 } from "../platforms/ipRisk";
-import type { PlatformId, UsageSnapshot } from "../platforms/types";
+import type { EndpointKey, PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
   FAILED_BACKOFF_STEPS_MS,
@@ -62,6 +66,7 @@ declare global {
 }
 
 const platform = detectPlatform(window.location);
+const CHATGPT_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 
 if (
   platform &&
@@ -89,8 +94,7 @@ async function start(platformId: PlatformId): Promise<void> {
   let refreshing = false;
   let ipRiskRefreshing = false;
   let pendingEstimatorRefresh = 0;
-  let codexProbeStarted = false;
-  let stopCodexProbe: (() => void) | null = null;
+  const unavailableChatGptEndpoints = new Map<EndpointKey, number>();
 
   const refreshIpRisk = async (options: { force: boolean }): Promise<void> => {
     if (ipRiskRefreshing) {
@@ -177,25 +181,25 @@ async function start(platformId: PlatformId): Promise<void> {
   widget.mount();
   widget.setLanguageMode(await getLanguageMode());
 
-  const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
-    if (
-      platformId !== "chatgpt" ||
-      codexProbeStarted ||
-      hasCodexMeter(snapshot)
-    ) {
-      return;
-    }
-    codexProbeStarted = true;
-    stopCodexProbe = probeCodexAnalyticsUsage();
-  };
-
   const applySnapshot = async (snapshot: UsageSnapshot): Promise<void> => {
     const shouldReplace =
       platformId === "grok" && snapshot.source === "intercepted";
-    currentSnapshot = mergeUsageSnapshots(
-      shouldReplace ? null : currentSnapshot,
-      snapshot
-    );
+    const previous = shouldReplace ? null : currentSnapshot;
+    const acceptedSnapshot = platformId === "chatgpt"
+      ? withoutOlderMeters(previous, snapshot)
+      : snapshot;
+    const merged = mergeUsageSnapshots(previous, acceptedSnapshot);
+    if (platformId === "chatgpt" && snapshot.meters.length > 0) {
+      if (snapshot.source === "api") {
+        merged.status = snapshot.status;
+      }
+      merged.checkedAt = Date.now();
+      if (sameUsageValues(previous, merged)) {
+        merged.updatedAt = previous!.updatedAt;
+      }
+      merged.cacheAgeMs = 0;
+    }
+    currentSnapshot = merged;
     widget.setSnapshot(currentSnapshot);
     await setCachedSnapshot(currentSnapshot);
   };
@@ -213,7 +217,11 @@ async function start(platformId: PlatformId): Promise<void> {
     }
 
     const cached = await getCachedSnapshot(platformId);
-    if (!options.force && cached && now - cached.updatedAt < CACHE_TTL_MS) {
+    if (
+      !options.force &&
+      cached &&
+      now - (cached.checkedAt ?? cached.updatedAt) < CACHE_TTL_MS
+    ) {
       currentSnapshot = cached;
       widget.setSnapshot(cached);
       return;
@@ -233,13 +241,63 @@ async function start(platformId: PlatformId): Promise<void> {
     await setLastRefreshAt(platformId, now);
 
     try {
-      let snapshot = await fetchPlatformUsage(platformId, (endpointKey, payload) =>
-        bridge.fetchUsage(platformId, endpointKey, payload)
-      );
+      let retryableEndpointFailure = false;
+      let snapshot = await fetchPlatformUsage(platformId, async (endpointKey, payload) => {
+        if (
+          platformId === "chatgpt" &&
+          !options.force &&
+          (unavailableChatGptEndpoints.get(endpointKey) ?? 0) > Date.now()
+        ) {
+          return {
+            source: "ai-usage-floating-monitor",
+            direction: "main-to-content",
+            requestId: "unavailable-endpoint",
+            ok: false,
+            platform: platformId,
+            endpointKey,
+            error: { status: 401, message: "Endpoint unavailable in this session" }
+          };
+        }
+        const response = await bridge.fetchUsage(platformId, endpointKey, payload);
+        if (platformId === "chatgpt") {
+          if (response.ok) {
+            unavailableChatGptEndpoints.delete(endpointKey);
+          } else if (
+            response.error?.status === 401 ||
+            response.error?.status === 403 ||
+            response.error?.status === 404
+          ) {
+            unavailableChatGptEndpoints.set(
+              endpointKey,
+              Date.now() + CHATGPT_UNAVAILABLE_RETRY_MS
+            );
+          }
+          if (
+            !response.ok &&
+            (response.error?.status === undefined ||
+              response.error.status === 429 ||
+              response.error.status >= 500)
+          ) {
+            retryableEndpointFailure = true;
+          }
+        }
+        return response;
+      });
       snapshot = await withEstimateFallback(platformId, snapshot);
+      if (platformId === "chatgpt") {
+        snapshot = {
+          ...snapshot,
+          updatedAt: now,
+          meters: snapshot.meters.map((meter) => ({ ...meter, observedAt: now }))
+        };
+      }
       await applySnapshot(snapshot);
-      maybeStartCodexProbe(snapshot);
-      await updateFailureState(platformId, snapshot, widget);
+      await updateFailureState(
+        platformId,
+        snapshot,
+        widget,
+        retryableEndpointFailure
+      );
     } catch (error) {
       const snapshot = await withEstimateFallback(platformId, {
         platform: platformId,
@@ -348,10 +406,6 @@ async function start(platformId: PlatformId): Promise<void> {
     if (snapshot.meters.length === 0) {
       return;
     }
-    if (hasCodexMeter(snapshot)) {
-      stopCodexProbe?.();
-      stopCodexProbe = null;
-    }
     void applySnapshot(snapshot).catch((error: unknown) => {
       debugLog("failed to cache intercepted usage", error);
     });
@@ -377,8 +431,26 @@ async function start(platformId: PlatformId): Promise<void> {
 
   await refreshUsage({ force: false });
 
+  const stopUsagePolling = platformId === "chatgpt"
+    ? startVisibleUsagePolling({
+        isVisible: () => document.visibilityState === "visible",
+        onVisibilityChange: (callback) => {
+          document.addEventListener("visibilitychange", callback);
+          return () => document.removeEventListener("visibilitychange", callback);
+        },
+        setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+        clearInterval: (id) => window.clearInterval(id),
+        refresh: () => {
+          const lastCheck = currentSnapshot?.checkedAt ?? currentSnapshot?.updatedAt ?? 0;
+          if (Date.now() - lastCheck >= CACHE_TTL_MS) {
+            void refreshUsage({ force: false });
+          }
+        }
+      })
+    : null;
+
   window.addEventListener("pagehide", () => {
-    stopCodexProbe?.();
+    stopUsagePolling?.();
     window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
     chrome.storage.onChanged.removeListener(onStorageChanged);
   });
@@ -459,9 +531,10 @@ async function withEstimateFallback(
 async function updateFailureState(
   platform: PlatformId,
   snapshot: UsageSnapshot,
-  widget: UsageWidget
+  widget: UsageWidget,
+  retryableEndpointFailure = false
 ): Promise<void> {
-  if (snapshot.status !== "error") {
+  if (snapshot.status !== "error" && !retryableEndpointFailure) {
     await setFailureCount(platform, 0);
     await setBackoffUntil(platform, 0);
     widget.setBackoffUntil(0);
@@ -478,12 +551,4 @@ async function updateFailureState(
   await setFailureCount(platform, nextFailures);
   await setBackoffUntil(platform, backoffUntil);
   widget.setBackoffUntil(backoffUntil);
-}
-
-function hasCodexMeter(snapshot: UsageSnapshot): boolean {
-  return snapshot.meters.some(
-    (meter) =>
-      meter.rawKind === "codex.settings.usage" ||
-      meter.key.toLowerCase().includes("codex")
-  );
 }

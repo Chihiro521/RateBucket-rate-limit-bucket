@@ -10,7 +10,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The latest GitHub package for the ChatGPT usage update is available at [v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The latest GitHub package is available at [v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2). See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -22,6 +22,7 @@ Before each public Chrome Web Store release or update, review the store listing 
 - Shows Grok credits as one combined weighted usage bucket, with Imagine, Chat, Grok Build, and API displayed as contribution segments.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together without keeping stale feature quota when a feature becomes blocked.
 - Shows ChatGPT subscription expiry, input/attachment quotas, feature quotas, usage windows, and Codex-related windows when those signals are available.
+- Rechecks ChatGPT quotas about once a minute while its tab is visible, and updates changed values without reloading the page.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
 - Provides local estimate counters when a platform does not expose reliable quota data.
 - Offers an optional IP reputation panel for users who explicitly configure proxycheck.io.
@@ -33,12 +34,13 @@ Before each public Chrome Web Store release or update, review the store listing 
 | --- | --- | --- |
 | Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
-| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/wham/tasks/rate_limit`, `/codex/settings/usage`, observed `/backend-api/accounts/check/...` responses |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/codex/usage` (with `/backend-api/wham/usage` fallback), `/backend-api/wham/tasks/rate_limit`, observed `/backend-api/accounts/check/...` responses |
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`, `https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
+Active ChatGPT requests use the current web session's access token only for that request; RateBucket does not persist the token or an Authorization header. The old hidden Codex analytics iframe is no longer used.
 
 ## How It Works
 
@@ -55,9 +57,9 @@ No project-owned backend is used.
 
 ## Download A GitHub Release
 
-The current ChatGPT usage update package is published as a GitHub Release asset:
+The current extension package is published as a GitHub Release asset:
 
-- [RateBucket v0.1.1-chatgpt-usage](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.1-chatgpt-usage)
+- [RateBucket v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2)
 
 Download the zip asset from the release page, unzip it, and load the extracted extension directory through `chrome://extensions` with Developer mode enabled.
 

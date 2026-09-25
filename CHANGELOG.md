@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.2
+
+Released on GitHub as `v0.1.2`.
+
+Release page:
+
+- https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2
+
+### Changed
+
+- Recheck ChatGPT feature and Codex quotas about once a minute while a ChatGPT tab is visible, without reloading the page.
+- Read Codex limits from the verified `/backend-api/codex/usage` endpoint, with `/backend-api/wham/usage` as a fallback.
+- Show the last successful quota check separately from the last value change.
+
+### Fixed
+
+- Removed the hidden Codex analytics iframe probe and obsolete `/codex/settings/usage` JSON parsing.
+- Use the current ChatGPT web session only for the active request; no access token or Authorization header is persisted.
+- Avoid stale responses overwriting newer quota readings and back off after failed requests.
+
+### Validation
+
+- `npm test` (70 tests passed)
+- `npm run build`
+- Verified in Comet that a timed Codex request returned HTTP 200 and the displayed five-hour and weekly remaining percentages matched the response.
+
 ## v0.1.1-chatgpt-usage
 
 Released on GitHub as `v0.1.1-chatgpt-usage`.

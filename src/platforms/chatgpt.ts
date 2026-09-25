@@ -215,7 +215,7 @@ export function normalizeChatGptWhamUsage(
     if (primary) {
       const meter = normalizeWindowMeter({
         key: "wham:primary_window",
-        label: "Primary window",
+        label: codexWindowLabel(primary, "Primary window"),
         record: primary,
         source,
         rawKind: "rate_limit.primary_window",
@@ -229,7 +229,7 @@ export function normalizeChatGptWhamUsage(
     if (secondary) {
       const meter = normalizeWindowMeter({
         key: "wham:secondary_window",
-        label: "Weekly window",
+        label: codexWindowLabel(secondary, "Secondary window"),
         record: secondary,
         source,
         rawKind: "rate_limit.secondary_window",
@@ -297,12 +297,15 @@ function normalizeAdditionalWhamUsageWindows(
       !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
   })
     .map((candidate) => {
-      const codexSparkLabel = codexSparkAdditionalRateLimitLabel(candidate.path);
+      const additionalLabel = codexAdditionalRateLimitLabel(
+        candidate.path,
+        candidate.record
+      );
       return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: codexSparkLabel ? "codex" : "wham",
-        rawKind: codexSparkLabel ? "codex.spark.rate_limit" : "chatgpt.usage.window",
+        keyPrefix: additionalLabel ? "codex" : "wham",
+        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
         displayAsRemaining: true,
-        label: codexSparkLabel ?? undefined
+        label: additionalLabel ?? undefined
       });
     })
     .filter((meter): meter is UsageMeter => meter !== null);
@@ -399,18 +402,6 @@ function normalizeTasksRateLimit(
     meters.push(direct);
   }
   return meters;
-}
-
-export function normalizeChatGptCodexSettingsUsage(
-  json: unknown,
-  source: UsageSource = "api"
-): UsageMeter[] {
-  const root = asRecord(json);
-  if (!root) {
-    return [];
-  }
-
-  return normalizeCodexUsageRecordTree(root, "codex", source);
 }
 
 export function normalizeChatGptAccountsCheck(
@@ -716,18 +707,43 @@ function normalizeGenericUsageObject(
   };
 }
 
-function codexSparkAdditionalRateLimitLabel(path: string): string | null {
+function codexWindowLabel(
+  record: Record<string, unknown>,
+  fallback: string
+): string {
+  const duration = numberFromKeys(record, [
+    "limit_window_seconds",
+    "limitWindowSeconds",
+    "window_seconds",
+    "windowSeconds"
+  ]);
+  if (duration === 18_000) {
+    return "5-hour window";
+  }
+  if (duration === 604_800) {
+    return "Weekly window";
+  }
+  return fallback;
+}
+
+function codexAdditionalRateLimitLabel(
+  path: string,
+  record: Record<string, unknown>
+): string | null {
   const normalized = path.toLowerCase();
   if (!normalized.includes("additional_rate_limits")) {
     return null;
   }
+  const name = getString(record, "model_name") ??
+    getString(record, "model_slug") ??
+    "Additional";
   if (normalized.endsWith(".primary_window")) {
-    return "GPT-5.3-Codex-Spark Primary window";
+    return `${name} Primary window`;
   }
   if (normalized.endsWith(".secondary_window")) {
-    return "GPT-5.3-Codex-Spark Weekly window";
+    return `${name} Weekly window`;
   }
-  return "GPT-5.3-Codex-Spark usage limit";
+  return `${name} usage limit`;
 }
 
 function collectUsageCandidates(
@@ -947,11 +963,24 @@ export async function fetchChatGptUsage(
     requiredFailures.push(responseFailure(conversation));
   }
 
-  const wham = await fetcher("chatgpt:whamUsage");
-  if (wham.ok) {
-    meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
-  } else {
-    optionalFailures.push(responseFailure(wham));
+  const codex = await fetcher("chatgpt:codexUsage");
+  const codexMeters = codex.ok
+    ? normalizeChatGptWhamUsage(codex.json, "api")
+    : [];
+  meters.push(...codexMeters);
+  const hasCodexWindow = codexMeters.some(
+    (meter) =>
+      meter.key === "wham:primary_window" ||
+      meter.key === "wham:secondary_window" ||
+      meter.key.startsWith("codex:")
+  );
+  if (!hasCodexWindow) {
+    const wham = await fetcher("chatgpt:whamUsage");
+    if (wham.ok) {
+      meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
+    } else {
+      optionalFailures.push(responseFailure(wham));
+    }
   }
 
   const tasks = await fetcher("chatgpt:whamTasksRateLimit");
@@ -961,19 +990,12 @@ export async function fetchChatGptUsage(
     optionalFailures.push(responseFailure(tasks));
   }
 
-  const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
-  if (codexUsage.ok) {
-    meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
-  } else {
-    optionalFailures.push(responseFailure(codexUsage));
-  }
-
   const hasBlocking = blockedFeatures.length > 0;
   const hasOptionalFailures = optionalFailures.length > 0;
   const firstFailure = requiredFailures[0] ?? optionalFailures[0];
   return {
     platform: "chatgpt",
-    meters,
+    meters: dedupeMeters(meters),
     source: meters.length > 0 ? "api" : "unknown",
     updatedAt: Date.now(),
     status:
@@ -990,7 +1012,7 @@ export async function fetchChatGptUsage(
         ? firstFailure
         : undefined,
     debug: {
-      endpoint: "chatgpt:conversationInit,chatgpt:whamUsage,chatgpt:codexSettingsUsage",
+      endpoint: "chatgpt:conversationInit,chatgpt:codexUsage,chatgpt:whamTasksRateLimit",
       parser: defaultModelSlug
         ? `chatgpt.default_model=${defaultModelSlug}`
         : "chatgpt"
@@ -1009,11 +1031,11 @@ export function normalizeChatGptIntercepted(
   if (path === "/backend-api/wham/usage") {
     return normalizeChatGptWhamUsage(json, "intercepted");
   }
+  if (path === "/backend-api/codex/usage") {
+    return normalizeChatGptWhamUsage(json, "intercepted");
+  }
   if (path === "/backend-api/wham/tasks/rate_limit") {
     return normalizeTasksRateLimit(json, "intercepted");
-  }
-  if (path === "/codex/settings/usage") {
-    return normalizeChatGptCodexSettingsUsage(json, "intercepted");
   }
   if (/^\/backend-api\/accounts\/check\//.test(path)) {
     return normalizeChatGptAccountsCheck(json, "intercepted");

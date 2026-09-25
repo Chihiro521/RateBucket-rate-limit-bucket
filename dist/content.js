@@ -146,28 +146,62 @@
     }
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
-  const CODEX_ANALYTICS_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
-  function probeCodexAnalyticsUsage() {
-    const iframe = document.createElement("iframe");
-    iframe.src = CODEX_ANALYTICS_URL;
-    iframe.title = "Codex usage probe";
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.style.position = "fixed";
-    iframe.style.width = "1px";
-    iframe.style.height = "1px";
-    iframe.style.opacity = "0";
-    iframe.style.pointerEvents = "none";
-    iframe.style.border = "0";
-    iframe.style.left = "-9999px";
-    iframe.style.top = "-9999px";
-    document.documentElement.append(iframe);
-    const timeoutId = window.setTimeout(() => {
-      iframe.remove();
-    }, 15e3);
-    return () => {
-      window.clearTimeout(timeoutId);
-      iframe.remove();
+  const CHATGPT_POLL_CHECK_MS = 15e3;
+  function startVisibleUsagePolling(options) {
+    const refreshIfVisible = () => {
+      if (options.isVisible()) {
+        options.refresh();
+      }
     };
+    const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
+    const intervalId = options.setInterval(refreshIfVisible, CHATGPT_POLL_CHECK_MS);
+    return () => {
+      options.clearInterval(intervalId);
+      stopVisibilityListener();
+    };
+  }
+  function sameUsageValues(previous, next) {
+    if (!previous || previous.platform !== next.platform) {
+      return false;
+    }
+    if (previous.status !== next.status || previous.errorMessage !== next.errorMessage || previous.meters.length !== next.meters.length) {
+      return false;
+    }
+    const previousValues = new Map(
+      previous.meters.map((meter) => [meter.key, meterValue(meter)])
+    );
+    return next.meters.every(
+      (meter) => previousValues.get(meter.key) === meterValue(meter)
+    );
+  }
+  function withoutOlderMeters(previous, incoming) {
+    const newestByKey = new Map(
+      previous?.meters.map((meter) => [meter.key, meter.observedAt ?? previous.updatedAt]) ?? []
+    );
+    return {
+      ...incoming,
+      meters: incoming.meters.filter(
+        (meter) => (meter.observedAt ?? incoming.updatedAt) >= (newestByKey.get(meter.key) ?? 0)
+      )
+    };
+  }
+  function meterValue(meter) {
+    return JSON.stringify({
+      label: meter.label,
+      modelName: meter.modelName,
+      requestKind: meter.requestKind,
+      remaining: meter.remaining,
+      total: meter.total,
+      used: meter.used,
+      usedPercent: meter.usedPercent,
+      remainingPercent: meter.remainingPercent,
+      resetAt: meter.resetAt,
+      resetAfterSeconds: meter.resetAfterSeconds,
+      windowSeconds: meter.windowSeconds,
+      source: meter.source,
+      confidence: meter.confidence,
+      rawKind: meter.rawKind
+    });
   }
   const CACHE_TTL_MS = 6e4;
   const MIN_REFRESH_INTERVAL_MS = 3e4;
@@ -220,7 +254,7 @@
     }
     return {
       ...value,
-      cacheAgeMs: Math.max(0, Date.now() - value.updatedAt)
+      cacheAgeMs: Math.max(0, Date.now() - (value.checkedAt ?? value.updatedAt))
     };
   }
   function setCachedSnapshot(snapshot) {
@@ -420,6 +454,7 @@
     "language.label": "语言",
     "language.zhCN": "简体中文",
     "meta.cacheSeconds": "缓存 {seconds}秒",
+    "meta.checkedAt": "最近校验 {age}",
     "meta.loading": "加载中",
     "meta.neverUpdated": "尚未更新",
     "meta.updatedAt": "更新于 {age}",
@@ -476,6 +511,7 @@
     "language.label": "Language",
     "language.zhCN": "Simplified Chinese",
     "meta.cacheSeconds": "Cached {seconds}s",
+    "meta.checkedAt": "Checked {age}",
     "meta.loading": "Loading",
     "meta.neverUpdated": "Not updated yet",
     "meta.updatedAt": "Updated {age}",
@@ -570,7 +606,11 @@
     "Computer Use": "电脑操控",
     "Reasoning Quota": "思考额度",
     "Primary window": "主窗口",
+    "Secondary window": "次窗口",
+    "5-hour window": "5 小时窗口",
     "Weekly window": "每周窗口",
+    "Additional Primary window": "额外主窗口",
+    "Additional Weekly window": "额外每周窗口",
     "ChatGPT subscription": "ChatGPT 订阅",
     "Current Grok limit": "当前 Grok 限额",
     "Weekly Grok limit": "每周 Grok 限额",
@@ -2903,6 +2943,8 @@ button {
       }) : this.text("meta.neverUpdated");
       const right = this.backoffRemainingMs() > 0 ? this.text("meta.waitSeconds", {
         seconds: Math.ceil(this.backoffRemainingMs() / 1e3)
+      }) : this.platform === "chatgpt" && this.snapshot?.checkedAt ? this.text("meta.checkedAt", {
+        age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt)
       }) : this.snapshot?.cacheAgeMs !== void 0 ? this.text("meta.cacheSeconds", {
         seconds: Math.floor(this.snapshot.cacheAgeMs / 1e3)
       }) : this.loading ? this.text("meta.loading") : "";
@@ -3217,7 +3259,7 @@ button {
     if (key.startsWith("limits_progress:") || key.startsWith("blocked_features:") || meter.rawKind === "limits_progress" || meter.rawKind === "blocked_features") {
       return 20;
     }
-    if (label.includes("primary window")) {
+    if (label.includes("primary window") || label.includes("5-hour window")) {
       return 40;
     }
     if (label.includes("weekly window")) {
@@ -3627,7 +3669,7 @@ button {
       if (primary) {
         const meter = normalizeWindowMeter({
           key: "wham:primary_window",
-          label: "Primary window",
+          label: codexWindowLabel(primary, "Primary window"),
           record: primary,
           source,
           rawKind: "rate_limit.primary_window",
@@ -3641,7 +3683,7 @@ button {
       if (secondary) {
         const meter = normalizeWindowMeter({
           key: "wham:secondary_window",
-          label: "Weekly window",
+          label: codexWindowLabel(secondary, "Secondary window"),
           record: secondary,
           source,
           rawKind: "rate_limit.secondary_window",
@@ -3697,12 +3739,15 @@ button {
       maxDepth: 7,
       includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
     }).map((candidate) => {
-      const codexSparkLabel = codexSparkAdditionalRateLimitLabel(candidate.path);
+      const additionalLabel = codexAdditionalRateLimitLabel(
+        candidate.path,
+        candidate.record
+      );
       return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: codexSparkLabel ? "codex" : "wham",
-        rawKind: codexSparkLabel ? "codex.spark.rate_limit" : "chatgpt.usage.window",
+        keyPrefix: additionalLabel ? "codex" : "wham",
+        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
         displayAsRemaining: true,
-        label: codexSparkLabel ?? void 0
+        label: additionalLabel ?? void 0
       });
     }).filter((meter) => meter !== null);
   }
@@ -3781,13 +3826,6 @@ button {
       meters.push(direct);
     }
     return meters;
-  }
-  function normalizeChatGptCodexSettingsUsage(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    return normalizeCodexUsageRecordTree(root, "codex", source);
   }
   function normalizeChatGptAccountsCheck(json, source = "api") {
     const root = asRecord(json);
@@ -3990,18 +4028,34 @@ button {
       rawKind: options.rawKind
     };
   }
-  function codexSparkAdditionalRateLimitLabel(path) {
+  function codexWindowLabel(record, fallback) {
+    const duration = numberFromKeys(record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds"
+    ]);
+    if (duration === 18e3) {
+      return "5-hour window";
+    }
+    if (duration === 604800) {
+      return "Weekly window";
+    }
+    return fallback;
+  }
+  function codexAdditionalRateLimitLabel(path, record) {
     const normalized = path.toLowerCase();
     if (!normalized.includes("additional_rate_limits")) {
       return null;
     }
+    const name = getString(record, "model_name") ?? getString(record, "model_slug") ?? "Additional";
     if (normalized.endsWith(".primary_window")) {
-      return "GPT-5.3-Codex-Spark Primary window";
+      return `${name} Primary window`;
     }
     if (normalized.endsWith(".secondary_window")) {
-      return "GPT-5.3-Codex-Spark Weekly window";
+      return `${name} Weekly window`;
     }
-    return "GPT-5.3-Codex-Spark usage limit";
+    return `${name} usage limit`;
   }
   function collectUsageCandidates(root, rootPath, options) {
     const queue = [
@@ -4153,11 +4207,19 @@ button {
     } else {
       requiredFailures.push(responseFailure$4(conversation));
     }
-    const wham = await fetcher("chatgpt:whamUsage");
-    if (wham.ok) {
-      meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$4(wham));
+    const codex = await fetcher("chatgpt:codexUsage");
+    const codexMeters = codex.ok ? normalizeChatGptWhamUsage(codex.json, "api") : [];
+    meters.push(...codexMeters);
+    const hasCodexWindow = codexMeters.some(
+      (meter) => meter.key === "wham:primary_window" || meter.key === "wham:secondary_window" || meter.key.startsWith("codex:")
+    );
+    if (!hasCodexWindow) {
+      const wham = await fetcher("chatgpt:whamUsage");
+      if (wham.ok) {
+        meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
+      } else {
+        optionalFailures.push(responseFailure$4(wham));
+      }
     }
     const tasks = await fetcher("chatgpt:whamTasksRateLimit");
     if (tasks.ok) {
@@ -4165,24 +4227,18 @@ button {
     } else {
       optionalFailures.push(responseFailure$4(tasks));
     }
-    const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
-    if (codexUsage.ok) {
-      meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$4(codexUsage));
-    }
     const hasBlocking = blockedFeatures.length > 0;
     const hasOptionalFailures = optionalFailures.length > 0;
     const firstFailure = requiredFailures[0] ?? optionalFailures[0];
     return {
       platform: "chatgpt",
-      meters,
+      meters: dedupeMeters(meters),
       source: meters.length > 0 ? "api" : "unknown",
       updatedAt: Date.now(),
       status: meters.length > 0 ? hasOptionalFailures || hasBlocking ? "partial" : "ok" : firstFailure ? "error" : "unknown",
       errorMessage: hasBlocking ? "部分功能被限制" : meters.length === 0 && firstFailure ? firstFailure : void 0,
       debug: {
-        endpoint: "chatgpt:conversationInit,chatgpt:whamUsage,chatgpt:codexSettingsUsage",
+        endpoint: "chatgpt:conversationInit,chatgpt:codexUsage,chatgpt:whamTasksRateLimit",
         parser: defaultModelSlug ? `chatgpt.default_model=${defaultModelSlug}` : "chatgpt"
       }
     };
@@ -4195,11 +4251,11 @@ button {
     if (path === "/backend-api/wham/usage") {
       return normalizeChatGptWhamUsage(json, "intercepted");
     }
+    if (path === "/backend-api/codex/usage") {
+      return normalizeChatGptWhamUsage(json, "intercepted");
+    }
     if (path === "/backend-api/wham/tasks/rate_limit") {
       return normalizeTasksRateLimit(json, "intercepted");
-    }
-    if (path === "/codex/settings/usage") {
-      return normalizeChatGptCodexSettingsUsage(json, "intercepted");
     }
     if (/^\/backend-api\/accounts\/check\//.test(path)) {
       return normalizeChatGptAccountsCheck(json, "intercepted");
@@ -5546,6 +5602,7 @@ button {
     console.debug(`[ai-usage] ${message}`, details);
   }
   const platform = detectPlatform(window.location);
+  const CHATGPT_UNAVAILABLE_RETRY_MS = 5 * 6e4;
   if (platform && shouldStartOnThisFrame(platform) && !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__) {
     window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
     void start(platform);
@@ -5566,8 +5623,7 @@ button {
     let refreshing = false;
     let ipRiskRefreshing = false;
     let pendingEstimatorRefresh = 0;
-    let codexProbeStarted = false;
-    let stopCodexProbe = null;
+    const unavailableChatGptEndpoints = /* @__PURE__ */ new Map();
     const refreshIpRisk = async (options) => {
       if (ipRiskRefreshing) {
         return;
@@ -5640,19 +5696,22 @@ button {
     );
     widget.mount();
     widget.setLanguageMode(await getLanguageMode());
-    const maybeStartCodexProbe = (snapshot) => {
-      if (platformId !== "chatgpt" || codexProbeStarted || hasCodexMeter(snapshot)) {
-        return;
-      }
-      codexProbeStarted = true;
-      stopCodexProbe = probeCodexAnalyticsUsage();
-    };
     const applySnapshot = async (snapshot) => {
       const shouldReplace = platformId === "grok" && snapshot.source === "intercepted";
-      currentSnapshot = mergeUsageSnapshots(
-        shouldReplace ? null : currentSnapshot,
-        snapshot
-      );
+      const previous = shouldReplace ? null : currentSnapshot;
+      const acceptedSnapshot = platformId === "chatgpt" ? withoutOlderMeters(previous, snapshot) : snapshot;
+      const merged = mergeUsageSnapshots(previous, acceptedSnapshot);
+      if (platformId === "chatgpt" && snapshot.meters.length > 0) {
+        if (snapshot.source === "api") {
+          merged.status = snapshot.status;
+        }
+        merged.checkedAt = Date.now();
+        if (sameUsageValues(previous, merged)) {
+          merged.updatedAt = previous.updatedAt;
+        }
+        merged.cacheAgeMs = 0;
+      }
+      currentSnapshot = merged;
       widget.setSnapshot(currentSnapshot);
       await setCachedSnapshot(currentSnapshot);
     };
@@ -5667,7 +5726,7 @@ button {
         return;
       }
       const cached2 = await getCachedSnapshot(platformId);
-      if (!options.force && cached2 && now - cached2.updatedAt < CACHE_TTL_MS) {
+      if (!options.force && cached2 && now - (cached2.checkedAt ?? cached2.updatedAt) < CACHE_TTL_MS) {
         currentSnapshot = cached2;
         widget.setSnapshot(cached2);
         return;
@@ -5684,14 +5743,50 @@ button {
       widget.setLoading(true);
       await setLastRefreshAt(platformId, now);
       try {
-        let snapshot = await fetchPlatformUsage(
-          platformId,
-          (endpointKey, payload) => bridge.fetchUsage(platformId, endpointKey, payload)
-        );
+        let retryableEndpointFailure = false;
+        let snapshot = await fetchPlatformUsage(platformId, async (endpointKey, payload) => {
+          if (platformId === "chatgpt" && !options.force && (unavailableChatGptEndpoints.get(endpointKey) ?? 0) > Date.now()) {
+            return {
+              source: "ai-usage-floating-monitor",
+              direction: "main-to-content",
+              requestId: "unavailable-endpoint",
+              ok: false,
+              platform: platformId,
+              endpointKey,
+              error: { status: 401, message: "Endpoint unavailable in this session" }
+            };
+          }
+          const response = await bridge.fetchUsage(platformId, endpointKey, payload);
+          if (platformId === "chatgpt") {
+            if (response.ok) {
+              unavailableChatGptEndpoints.delete(endpointKey);
+            } else if (response.error?.status === 401 || response.error?.status === 403 || response.error?.status === 404) {
+              unavailableChatGptEndpoints.set(
+                endpointKey,
+                Date.now() + CHATGPT_UNAVAILABLE_RETRY_MS
+              );
+            }
+            if (!response.ok && (response.error?.status === void 0 || response.error.status === 429 || response.error.status >= 500)) {
+              retryableEndpointFailure = true;
+            }
+          }
+          return response;
+        });
         snapshot = await withEstimateFallback(platformId, snapshot);
+        if (platformId === "chatgpt") {
+          snapshot = {
+            ...snapshot,
+            updatedAt: now,
+            meters: snapshot.meters.map((meter) => ({ ...meter, observedAt: now }))
+          };
+        }
         await applySnapshot(snapshot);
-        maybeStartCodexProbe(snapshot);
-        await updateFailureState(platformId, snapshot, widget);
+        await updateFailureState(
+          platformId,
+          snapshot,
+          widget,
+          retryableEndpointFailure
+        );
       } catch (error) {
         const snapshot = await withEstimateFallback(platformId, {
           platform: platformId,
@@ -5790,10 +5885,6 @@ button {
       if (snapshot.meters.length === 0) {
         return;
       }
-      if (hasCodexMeter(snapshot)) {
-        stopCodexProbe?.();
-        stopCodexProbe = null;
-      }
       void applySnapshot(snapshot).catch((error) => {
         debugLog("failed to cache intercepted usage", error);
       });
@@ -5815,8 +5906,23 @@ button {
       debugLog("main world bridge injection failed", error);
     }
     await refreshUsage({ force: false });
+    const stopUsagePolling = platformId === "chatgpt" ? startVisibleUsagePolling({
+      isVisible: () => document.visibilityState === "visible",
+      onVisibilityChange: (callback) => {
+        document.addEventListener("visibilitychange", callback);
+        return () => document.removeEventListener("visibilitychange", callback);
+      },
+      setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+      clearInterval: (id) => window.clearInterval(id),
+      refresh: () => {
+        const lastCheck = currentSnapshot?.checkedAt ?? currentSnapshot?.updatedAt ?? 0;
+        if (Date.now() - lastCheck >= CACHE_TTL_MS) {
+          void refreshUsage({ force: false });
+        }
+      }
+    }) : null;
     window.addEventListener("pagehide", () => {
-      stopCodexProbe?.();
+      stopUsagePolling?.();
       window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
       chrome.storage.onChanged.removeListener(onStorageChanged);
     });
@@ -5875,8 +5981,8 @@ button {
       updatedAt: Math.max(snapshot.updatedAt, estimate.updatedAt)
     };
   }
-  async function updateFailureState(platform2, snapshot, widget) {
-    if (snapshot.status !== "error") {
+  async function updateFailureState(platform2, snapshot, widget, retryableEndpointFailure = false) {
+    if (snapshot.status !== "error" && !retryableEndpointFailure) {
       await setFailureCount(platform2, 0);
       await setBackoffUntil(platform2, 0);
       widget.setBackoffUntil(0);
@@ -5889,10 +5995,5 @@ button {
     await setFailureCount(platform2, nextFailures);
     await setBackoffUntil(platform2, backoffUntil);
     widget.setBackoffUntil(backoffUntil);
-  }
-  function hasCodexMeter(snapshot) {
-    return snapshot.meters.some(
-      (meter) => meter.rawKind === "codex.settings.usage" || meter.key.toLowerCase().includes("codex")
-    );
   }
 })();

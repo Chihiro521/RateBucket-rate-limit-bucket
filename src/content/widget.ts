@@ -848,6 +848,10 @@ export class UsageWidget {
         ? this.text("meta.waitSeconds", {
             seconds: Math.ceil(this.backoffRemainingMs() / 1000)
           })
+        : this.platform === "chatgpt" && this.snapshot?.checkedAt
+          ? this.text("meta.checkedAt", {
+              age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt)
+            })
         : this.snapshot?.cacheAgeMs !== undefined
           ? this.text("meta.cacheSeconds", {
               seconds: Math.floor(this.snapshot.cacheAgeMs / 1000)
@@ -1233,7 +1237,7 @@ function chatGptMeterPriority(meter: UsageMeter): number {
   ) {
     return 20;
   }
-  if (label.includes("primary window")) {
+  if (label.includes("primary window") || label.includes("5-hour window")) {
     return 40;
   }
   if (label.includes("weekly window")) {

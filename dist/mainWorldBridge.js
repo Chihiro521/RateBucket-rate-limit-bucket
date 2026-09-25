@@ -291,15 +291,15 @@
         method: "GET",
         url: "https://chatgpt.com/backend-api/wham/usage"
       },
+      "chatgpt:codexUsage": {
+        platform: "chatgpt",
+        method: "GET",
+        url: "https://chatgpt.com/backend-api/codex/usage"
+      },
       "chatgpt:whamTasksRateLimit": {
         platform: "chatgpt",
         method: "GET",
         url: "https://chatgpt.com/backend-api/wham/tasks/rate_limit"
-      },
-      "chatgpt:codexSettingsUsage": {
-        platform: "chatgpt",
-        method: "GET",
-        url: "https://chatgpt.com/codex/settings/usage"
       },
       "chatgpt:accountsCheck": {
         platform: "chatgpt",
@@ -438,10 +438,33 @@
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
+      const headers = endpointHeaders(endpoint) ?? {};
+      if (endpoint.platform === "chatgpt") {
+        const sessionResponse = await fetch("https://chatgpt.com/api/auth/session", {
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal
+        });
+        const session = sessionResponse.ok ? asRecord(await sessionResponse.json()) : null;
+        const accessToken = session ? getString(session, "accessToken") ?? getString(session, "access_token") : null;
+        if (!accessToken) {
+          return {
+            source: SOURCE,
+            direction: "main-to-content",
+            requestId,
+            ok: false,
+            platform: endpoint.platform,
+            endpointKey,
+            error: { status: 401, message: "ChatGPT session unavailable" }
+          };
+        }
+        headers.Authorization = `Bearer ${accessToken}`;
+      }
       const response = await fetch(endpoint.url, {
         method: endpoint.method,
         credentials: "include",
-        headers: endpointHeaders(endpoint),
+        cache: "no-store",
+        headers,
         body: endpointBody(endpoint),
         signal: controller.signal
       });
@@ -782,16 +805,13 @@
       if (url.pathname === "/backend-api/wham/usage") {
         return { platform: "chatgpt", endpointKey: "chatgpt:whamUsage" };
       }
+      if (url.pathname === "/backend-api/codex/usage") {
+        return { platform: "chatgpt", endpointKey: "chatgpt:codexUsage" };
+      }
       if (url.pathname === "/backend-api/wham/tasks/rate_limit") {
         return {
           platform: "chatgpt",
           endpointKey: "chatgpt:whamTasksRateLimit"
-        };
-      }
-      if (url.pathname === "/codex/settings/usage") {
-        return {
-          platform: "chatgpt",
-          endpointKey: "chatgpt:codexSettingsUsage"
         };
       }
       if (/^\/backend-api\/accounts\/check\//.test(url.pathname)) {

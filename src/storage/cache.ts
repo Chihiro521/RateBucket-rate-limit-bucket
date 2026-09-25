@@ -67,7 +67,7 @@ export async function getCachedSnapshot(
   }
   return {
     ...value,
-    cacheAgeMs: Math.max(0, Date.now() - value.updatedAt)
+    cacheAgeMs: Math.max(0, Date.now() - (value.checkedAt ?? value.updatedAt))
   };
 }
 

@@ -34,6 +34,7 @@ export type UsageSnapshot = {
   meters: UsageMeter[];
   source: UsageSource;
   updatedAt: number;
+  checkedAt?: number;
   cacheAgeMs?: number;
   status: "ok" | "partial" | "unknown" | "error";
   errorMessage?: string;
@@ -61,8 +62,8 @@ export type EndpointKey =
   | "claude:usage"
   | "chatgpt:conversationInit"
   | "chatgpt:whamUsage"
+  | "chatgpt:codexUsage"
   | "chatgpt:whamTasksRateLimit"
-  | "chatgpt:codexSettingsUsage"
   | "chatgpt:accountsCheck"
   | "gemini:usageBatchExecute"
   | "kimi:subscription"
