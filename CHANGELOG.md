@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.3
+
+### Release
+
+- Publish the live ChatGPT/Codex quota refresh already released on GitHub as `v0.1.2` to the Chrome Web Store under version `0.1.3`.
+- Runtime behavior is unchanged from GitHub `v0.1.2`; the manifest/package version is incremented so the Chrome Web Store accepts the update.
+- Use the same root-manifest ZIP for the Chrome Web Store package and the GitHub Release asset after the store update is published.
+
 ## v0.1.2
 
 Released on GitHub as `v0.1.2`.
