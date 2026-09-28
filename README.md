@@ -10,7 +10,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The latest GitHub package is available at [v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The latest GitHub package is available at [v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3). See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -59,7 +59,7 @@ No project-owned backend is used.
 
 The current extension package is published as a GitHub Release asset:
 
-- [RateBucket v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2)
+- [RateBucket v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)
 
 Download the zip asset from the release page, unzip it, and load the extracted extension directory through `chrome://extensions` with Developer mode enabled.
 

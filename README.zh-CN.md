@@ -10,7 +10,7 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
-最新 GitHub 扩展包见 [v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+最新 GitHub 扩展包见 [v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
@@ -59,7 +59,7 @@ RateBucket 是一个 Manifest V3 扩展：
 
 当前扩展包已作为 GitHub Release 资产发布：
 
-- [RateBucket v0.1.2](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.2)
+- [RateBucket v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)
 
 从 Release 页面下载 zip 资产，解压后在 `chrome://extensions` 中启用“开发者模式”，再加载解压后的扩展目录。
 

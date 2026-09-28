@@ -8,3 +8,6 @@ assets/nahida/ChatGPT Image *.png
 .claude/
 eee.md
 chrome-webstore-archive/
+submission/
+/.secrets/
+/.release/
