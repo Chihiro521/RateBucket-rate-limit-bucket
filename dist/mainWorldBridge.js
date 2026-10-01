@@ -9,206 +9,104 @@
   function asString(value) {
     return typeof value === "string" ? value : null;
   }
-  function asNumber(value) {
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return value;
-    }
-    if (typeof value === "string" && value.trim() !== "") {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  }
-  function asBoolean(value) {
-    return typeof value === "boolean" ? value : null;
-  }
-  function getNumber(record, key) {
-    return asNumber(record[key]);
+  function getRecord(record, key) {
+    return asRecord(record[key]);
   }
   function getString(record, key) {
     return asString(record[key]);
   }
-  const CHATGPT_SENTINEL_EVENT = "__AIQM_SENTINEL_EVENT__";
-  const CHAT_REQUIREMENTS_RE = /(?:^|\/)(?:backend-api|backend-anon|api)\/sentinel\/chat-requirements(?:\/prepare)?(?:\/?$|[?#])/i;
-  function chatRequirementsUrlKind(rawUrl) {
-    const normalized = safeUrlPathWithSearch(rawUrl);
-    if (!CHAT_REQUIREMENTS_RE.test(normalized)) {
-      return null;
+  class ChatGptSession {
+    constructor(fetcher, changed, now = Date.now) {
+      this.fetcher = fetcher;
+      this.changed = changed;
+      this.now = now;
     }
-    return /\/prepare(?:\/?$|[?#])/i.test(normalized) ? "prepare" : "chat-requirements";
-  }
-  function sanitizeSentinelResponse(data, rawUrl, now = Date.now()) {
-    const urlKind = chatRequirementsUrlKind(rawUrl);
-    if (!urlKind) {
-      return null;
+    cached;
+    flight;
+    account;
+    accountKnown = false;
+    user;
+    epoch = 0;
+    observeAccount(value) {
+      if (value === null) return;
+      const account = value.trim() || void 0;
+      if (this.accountKnown && account === this.account) return;
+      this.account = account;
+      this.accountKnown = true;
+      this.invalidate();
+      this.changed();
     }
-    const dataRecord = asRecord(data);
-    if (!dataRecord) {
-      return null;
+    invalidate() {
+      this.epoch++;
+      this.cached = void 0;
+      this.flight = void 0;
     }
-    const root = asRecord(dataRecord.chat_requirements) ?? asRecord(dataRecord.requirements) ?? dataRecord;
-    const pow = asRecord(root.proofofwork) ?? asRecord(root.proof_of_work) ?? asRecord(root.pow);
-    return sanitizeSentinelObservation({
-      source: "chatgpt-sentinel",
-      ts: now,
-      urlKind,
-      powRequired: pow ? asBoolean(pow.required) === true : false,
-      powDifficulty: pow ? getString(pow, "difficulty") : null
-    });
-  }
-  function sanitizeSentinelObservation(value) {
-    const record = asRecord(value);
-    if (!record || record.source !== "chatgpt-sentinel") {
-      return null;
-    }
-    const urlKind = record.urlKind;
-    if (urlKind !== "chat-requirements" && urlKind !== "prepare") {
-      return null;
-    }
-    const ts = getNumber(record, "ts");
-    if (ts === null) {
-      return null;
-    }
-    const powDifficulty = getString(record, "powDifficulty");
-    return {
-      source: "chatgpt-sentinel",
-      ts,
-      urlKind,
-      powRequired: asBoolean(record.powRequired) === true,
-      powDifficulty
-    };
-  }
-  function safeUrlPathWithSearch(rawUrl) {
-    try {
-      const url = new URL(rawUrl, "https://chatgpt.com");
-      return `${url.pathname}${url.search}${url.hash}`;
-    } catch {
-      return rawUrl;
-    }
-  }
-  function installChatGptSentinelHook() {
-    if (window.__AI_USAGE_FLOATING_MONITOR_SENTINEL_PATCHED__) {
-      return;
-    }
-    if (!isChatGptHost(window.location.hostname)) {
-      return;
-    }
-    window.__AI_USAGE_FLOATING_MONITOR_SENTINEL_PATCHED__ = true;
-    installFetchHook();
-    installXhrHook();
-  }
-  function installFetchHook() {
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const rawUrl = requestUrl$1(input);
-      const shouldObserve = rawUrl ? chatRequirementsUrlKind(rawUrl) !== null : false;
-      const response = await originalFetch(input, init);
-      if (shouldObserve && rawUrl) {
-        observeFetchResponse(rawUrl, response);
+    async observeSession(json) {
+      const root = asRecord(json);
+      const user = root ? getRecord(root, "user") : null;
+      const id = user ? getString(user, "id") ?? void 0 : void 0;
+      if (id && this.user && id !== this.user) {
+        this.user = id;
+        this.account = void 0;
+        this.accountKnown = false;
+        this.invalidate();
+        this.changed();
       }
-      return response;
-    };
-  }
-  function observeFetchResponse(rawUrl, response) {
-    response.clone().json().then((json) => {
-      dispatchSanitizedObservation(rawUrl, json);
-    }).catch(() => void 0);
-  }
-  function installXhrHook() {
-    const originalOpen = XMLHttpRequest.prototype.open;
-    const originalSend = XMLHttpRequest.prototype.send;
-    const callOriginalOpen = originalOpen;
-    const observedUrls = /* @__PURE__ */ new WeakMap();
-    function patchedOpen(method, url, async, username, password) {
-      const rawUrl = xhrOpenUrl(url);
-      if (rawUrl && chatRequirementsUrlKind(rawUrl)) {
-        observedUrls.set(this, rawUrl);
-      } else {
-        observedUrls.delete(this);
-      }
-      if (async === void 0) {
-        return callOriginalOpen.call(this, method, url);
-      }
-      return callOriginalOpen.call(this, method, url, async, username, password);
     }
-    XMLHttpRequest.prototype.open = patchedOpen;
-    XMLHttpRequest.prototype.send = function(...args) {
-      const rawUrl = observedUrls.get(this);
-      if (rawUrl) {
-        this.addEventListener(
-          "loadend",
-          () => {
-            observeXhrResponse(rawUrl, this);
-          },
-          { once: true }
-        );
-      }
-      return originalSend.apply(this, args);
-    };
-  }
-  function observeXhrResponse(rawUrl, xhr) {
-    try {
-      if (xhr.responseType === "json") {
-        dispatchSanitizedObservation(rawUrl, xhr.response);
-        return;
-      }
-      if (xhr.responseType !== "" && xhr.responseType !== "text") {
-        return;
-      }
-      const text = xhr.responseText;
-      if (!text) {
-        return;
-      }
-      dispatchSanitizedObservation(rawUrl, JSON.parse(text));
-    } catch {
+    scope() {
+      return this.cached?.scopeKey;
     }
-  }
-  function dispatchSanitizedObservation(rawUrl, json) {
-    const observation = sanitizeSentinelResponse(json, rawUrl);
-    if (!observation) {
-      return;
+    read() {
+      if (this.cached && this.cached.expires > this.now()) return Promise.resolve(this.cached);
+      if (this.flight) return this.flight;
+      const epoch = this.epoch;
+      const account = this.account;
+      const accountKnown = this.accountKnown;
+      const flight = (async () => {
+        const response = await this.fetcher("https://chatgpt.com/api/auth/session", { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(1e4) });
+        const root = response.ok ? asRecord(await response.json()) : null;
+        const token = root ? getString(root, "accessToken") ?? getString(root, "access_token") : null;
+        if (!token) throw new Error("ChatGPT session unavailable");
+        const userRecord = root ? getRecord(root, "user") : null;
+        const user = userRecord ? getString(userRecord, "id") ?? void 0 : void 0;
+        if (epoch !== this.epoch) throw new Error("Account context changed");
+        if (user && this.user && user !== this.user) {
+          this.user = user;
+          this.account = void 0;
+          this.accountKnown = false;
+          this.invalidate();
+          this.changed();
+          throw new Error("Account context changed");
+        }
+        this.user = user;
+        const scopeKey = user && accountKnown ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${user}|${account ?? "personal"}`)))).map((byte) => byte.toString(16).padStart(2, "0")).join("") : void 0;
+        if (epoch !== this.epoch) throw new Error("Account context changed");
+        const result = { token, user, account, scopeKey, expires: this.now() + 6e4 };
+        this.cached = result;
+        return result;
+      })();
+      this.flight = flight;
+      void flight.finally(() => {
+        if (this.flight === flight) this.flight = void 0;
+      }).catch(() => void 0);
+      return flight;
     }
-    window.dispatchEvent(
-      new CustomEvent(CHATGPT_SENTINEL_EVENT, {
-        detail: observation
-      })
-    );
-  }
-  function requestUrl$1(input) {
-    try {
-      if (typeof input === "string") {
-        return input;
-      }
-      if (input instanceof URL) {
-        return input.href;
-      }
-      return input.url;
-    } catch {
-      return null;
-    }
-  }
-  function xhrOpenUrl(url) {
-    if (typeof url === "string") {
-      return url;
-    }
-    if (url instanceof URL) {
-      return url.href;
-    }
-    return null;
-  }
-  function isChatGptHost(hostname) {
-    return hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com");
   }
   const SOURCE = "ai-usage-floating-monitor";
   function isBridgeRequest(value) {
     return isRecord(value) && value.source === SOURCE && value.direction === "content-to-main" && typeof value.requestId === "string" && typeof value.action === "string" && typeof value.platform === "string";
   }
   const FETCH_TIMEOUT_MS = 1e4;
+  const ownedFetch = window.fetch.bind(window);
+  const chatGptControllers = /* @__PURE__ */ new Set();
+  const chatGptSession = new ChatGptSession(ownedFetch, () => {
+    for (const controller of chatGptControllers) controller.abort();
+    window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
+  });
   const GEMINI_USAGE_RPC_ID = "jSf9Qc";
   const geminiBatchExecuteState = {};
   if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
     window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
-    installChatGptSentinelHook();
     installFetchIntercept();
     window.addEventListener("message", (event) => {
       if (event.source !== window || event.origin !== window.location.origin) {
@@ -280,6 +178,11 @@
         method: "GET",
         url: "https://claude.ai/api/organizations"
       },
+      "chatgpt:libraryStorage": {
+        platform: "chatgpt",
+        method: "GET",
+        url: "https://chatgpt.com/backend-api/files/library/storage/usage"
+      },
       "chatgpt:conversationInit": {
         platform: "chatgpt",
         method: "POST",
@@ -290,16 +193,6 @@
         platform: "chatgpt",
         method: "GET",
         url: "https://chatgpt.com/backend-api/wham/usage"
-      },
-      "chatgpt:codexUsage": {
-        platform: "chatgpt",
-        method: "GET",
-        url: "https://chatgpt.com/backend-api/codex/usage"
-      },
-      "chatgpt:whamTasksRateLimit": {
-        platform: "chatgpt",
-        method: "GET",
-        url: "https://chatgpt.com/backend-api/wham/tasks/rate_limit"
       },
       "chatgpt:accountsCheck": {
         platform: "chatgpt",
@@ -435,32 +328,19 @@
     return JSON.stringify(endpoint.body);
   }
   async function fetchEndpoint(endpoint, requestId, endpointKey) {
+    let scopeKey;
     const controller = new AbortController();
+    if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
       const headers = endpointHeaders(endpoint) ?? {};
       if (endpoint.platform === "chatgpt") {
-        const sessionResponse = await fetch("https://chatgpt.com/api/auth/session", {
-          credentials: "include",
-          cache: "no-store",
-          signal: controller.signal
-        });
-        const session = sessionResponse.ok ? asRecord(await sessionResponse.json()) : null;
-        const accessToken = session ? getString(session, "accessToken") ?? getString(session, "access_token") : null;
-        if (!accessToken) {
-          return {
-            source: SOURCE,
-            direction: "main-to-content",
-            requestId,
-            ok: false,
-            platform: endpoint.platform,
-            endpointKey,
-            error: { status: 401, message: "ChatGPT session unavailable" }
-          };
-        }
-        headers.Authorization = `Bearer ${accessToken}`;
+        const session = await chatGptSession.read();
+        headers.Authorization = `Bearer ${session.token}`;
+        if (session.account) headers["ChatGPT-Account-ID"] = session.account;
+        scopeKey = session.scopeKey;
       }
-      const response = await fetch(endpoint.url, {
+      const response = await ownedFetch(endpoint.url, {
         method: endpoint.method,
         credentials: "include",
         cache: "no-store",
@@ -469,6 +349,7 @@
         signal: controller.signal
       });
       if (!response.ok) {
+        if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
         return {
           source: SOURCE,
           direction: "main-to-content",
@@ -555,8 +436,22 @@
     function makePatchedFetch() {
       return async (input, init) => {
         rememberGeminiBatchExecuteRequest(input, init);
+        const rawUrl = requestUrl(input);
+        if (rawUrl.startsWith("https://chatgpt.com/backend-api/") || rawUrl.startsWith("/backend-api/")) {
+          chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
+        }
+        chatGptSession.scope();
         const usageRequest = getUsageRequest(input);
         const response = await originalFetch(input, init);
+        if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
+          void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => void 0);
+        }
+        if (usageRequest?.platform === "chatgpt") {
+          if (response.ok) {
+            void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json })).catch(() => void 0);
+          }
+          return response;
+        }
         try {
           if (usageRequest) {
             if (usageRequest.responseType === "base64") {
@@ -799,6 +694,9 @@
       return { platform: "claude", endpointKey: "claude:usage" };
     }
     if (url.origin === "https://chatgpt.com") {
+      if (url.pathname === "/backend-api/files/library/storage/usage") {
+        return { platform: "chatgpt", endpointKey: "chatgpt:libraryStorage" };
+      }
       if (url.pathname === "/backend-api/conversation/init") {
         return { platform: "chatgpt", endpointKey: "chatgpt:conversationInit" };
       }

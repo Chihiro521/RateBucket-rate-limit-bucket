@@ -4,7 +4,7 @@
 
 RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
-This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, Moonshot AI, Perplexity AI, or proxycheck.io.
+This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, Moonshot AI, Perplexity AI.
 
 ## Project Status
 
@@ -22,10 +22,9 @@ Before each public Chrome Web Store release or update, review the store listing 
 - Shows Grok credits as one combined weighted usage bucket, with Imagine, Chat, Grok Build, and API displayed as contribution segments.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together without keeping stale feature quota when a feature becomes blocked.
 - Shows ChatGPT subscription expiry, input/attachment quotas, feature quotas, usage windows, and Codex-related windows when those signals are available.
-- Rechecks ChatGPT quotas about once a minute while its tab is visible, and updates changed values without reloading the page.
+- Rechecks ChatGPT quotas every 30 seconds while its tab is visible, and updates changed values without reloading the page.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
-- Provides local estimate counters when a platform does not expose reliable quota data.
-- Offers an optional IP reputation panel for users who explicitly configure proxycheck.io.
+- Provides local estimate counters on other platforms; ChatGPT no longer treats sent-message counters as quota.
 - Supports English and Simplified Chinese UI, with browser-language auto detection and manual language selection.
 
 ## Supported Platforms
@@ -34,13 +33,13 @@ Before each public Chrome Web Store release or update, review the store listing 
 | --- | --- | --- |
 | Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`, `/api/organizations/{orgId}/usage` |
-| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/codex/usage` (with `/backend-api/wham/usage` fallback), `/backend-api/wham/tasks/rate_limit`, observed `/backend-api/accounts/check/...` responses |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`, `/backend-api/wham/usage`, `/backend-api/files/library/storage/usage`, observed `/backend-api/accounts/check/...` responses |
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`, `https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
-Active ChatGPT requests use the current web session's access token only for that request; RateBucket does not persist the token or an Authorization header. The old hidden Codex analytics iframe is no longer used.
+Active ChatGPT requests share the current web session lookup in page memory for up to 60 seconds; RateBucket does not persist the token or an Authorization header. The old hidden Codex analytics iframe is no longer used.
 
 ## How It Works
 
@@ -48,10 +47,10 @@ RateBucket is built as a Manifest V3 extension:
 
 - `content.js` runs on supported sites and owns the floating UI.
 - `mainWorldBridge.js` runs in the page's main world so platform fetch behavior can be observed when needed.
-- `serviceWorker.js` handles background-only tasks such as the optional IP reputation refresh.
+- `serviceWorker.js` handles injection support and one-time retired-feature cache cleanup.
 - Platform parsers normalize raw endpoint shapes into shared usage snapshots.
 - Grok credits are decoded from a gRPC-web protobuf response and normalized locally into weighted usage meters.
-- `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, language preference, and optional IP risk settings.
+- `chrome.storage.local` stores normalized snapshots, local estimate counters, retry state, language preference.
 
 No project-owned backend is used.
 
@@ -136,22 +135,17 @@ RateBucket is designed to stay local where possible:
 - It does not read or save chat content.
 - It does not include analytics or telemetry.
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
-- It stores only normalized usage data, local counters, retry metadata, language preference, and optional IP risk settings in `chrome.storage.local`.
+- It stores only normalized usage data, local counters, retry metadata, language preference in `chrome.storage.local`.
 
 Same-site requests may use the browser's existing login session for that website, but RateBucket does not read or store cookie values.
 
-The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and the optional IP reputation services.
+The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity.
 
-## Optional IP Reputation Check
+## ChatGPT quota updates
 
-The IP reputation panel is disabled by default. If a user enables it and provides a proxycheck.io API key, the extension:
+ChatGPT uses conversation/init, wham/usage, and library storage usage. The visible page checks every 30 seconds and also accepts observed quota responses. Requests run independently; failures do not reset the age of successful readings. File capacity uses GiB; optional Credits and reset opportunities are not ordinary plan quotas. Image quota remains visible as an uncalibrated reading, not a verified live image balance. No seven-day image statistics are collected.
 
-- stores the API key in `chrome.storage.local`;
-- fetches the current public IP from `https://api64.ipify.org/?format=json`;
-- queries `https://proxycheck.io/v2/{ip}` with `vpn=1` and `risk=1`;
-- stores only the normalized risk result locally.
-
-Historical IP addresses are not stored by the extension.
+Normalized ChatGPT readings are cached under a hashed user/account scope. Authentication remains in page memory for up to 60 seconds. Old IP-check settings and unscoped ChatGPT caches are removed once on upgrade. The original theme and mascot remain; UI updates preserve scrolling, focus and dragging.
 
 ## Debug Logging
 

@@ -383,52 +383,6 @@ button {
   font-weight: 700;
 }
 
-.sentinel-block {
-  padding: 7px 0 4px;
-}
-
-.sentinel-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-  color: color-mix(in srgb, CanvasText 78%, transparent);
-  font-size: 12px;
-  padding: 2px 0;
-}
-
-.sentinel-label {
-  color: color-mix(in srgb, CanvasText 60%, transparent);
-  font-weight: 650;
-}
-
-.sentinel-bar {
-  margin: 6px 0 7px;
-}
-
-.sentinel-risk-normal {
-  background: #315d86;
-}
-
-.sentinel-risk-elevated {
-  background: #f59e0b;
-}
-
-.sentinel-risk-high {
-  background: #f97316;
-}
-
-.sentinel-risk-severe {
-  background: #ef4444;
-}
-
-.sentinel-explanation {
-  margin-top: 5px;
-  color: color-mix(in srgb, CanvasText 64%, transparent);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
 .error-text {
   color: #ef4444;
 }
@@ -680,7 +634,6 @@ button {
   pointer-events: none;
   z-index: 0;
 }
-
 .header,
 .meta,
 .model-meta,
@@ -693,7 +646,6 @@ button {
 .settings-input-wrap,
 .settings-help,
 .settings-actions,
-.sentinel-block,
 .meter,
 .meter-section {
   position: relative;
@@ -781,11 +733,9 @@ button {
   height: 20px;
   flex-basis: 20px;
 }
-
 .gpt-alerts,
 .meta,
 .model-meta,
-.sentinel-row,
 .meter-bottom,
 .settings-help {
   color: var(--rb-brown);
@@ -1295,30 +1245,6 @@ button {
   pointer-events: none;
 }
 
-.sentinel-risk-normal {
-  background: linear-gradient(90deg, var(--rb-blue), var(--rb-blue-soft));
-}
-
-.sentinel-risk-elevated {
-  background: linear-gradient(90deg, var(--rb-mustard-deep), var(--rb-mustard));
-}
-
-.sentinel-risk-high {
-  background: linear-gradient(90deg, #b56a33, #e0a24d);
-}
-
-.sentinel-risk-severe {
-  background: linear-gradient(90deg, #9f463e, var(--rb-red));
-}
-
-.sentinel-label {
-  color: var(--rb-ink-soft);
-}
-
-.sentinel-explanation {
-  color: var(--rb-brown);
-}
-
 .badge {
   border-color: rgba(112, 103, 93, 0.28);
   background: linear-gradient(180deg, rgba(255, 250, 241, 0.96), rgba(239, 230, 215, 0.86));
@@ -1440,5 +1366,30 @@ button {
   .gpt-alerts {
     display: none;
   }
+}
+
+/* Existing theme, with stable controls and viewport-safe content. */
+:host { max-width: calc(100% - 16px); transform: none; }
+.panel { display: flex; flex-direction: column; max-height: calc(100dvh - 16px); }
+.panel { transform: translateY(-50%); }
+.panel, .gpt-panel { max-width: 100%; }
+.gpt-panel { min-height: 0; height: min(552px, calc(100dvh - 16px)); width: min(390px, calc(100vw - 16px)); }
+.header, .meta, .model-meta { flex-shrink: 0; }
+.content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.icon-button { width: 32px; height: 32px; min-width: 32px; min-height: 32px; flex-shrink: 0; }
+.icon-button:disabled { opacity: .55; cursor: wait; transform: none; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); outline-offset: 2px; }
+.meter-top { align-items: start; gap: 8px; }
+.meter-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
+.meter-value { text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.meter-bottom { flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
+.badge, .meta, .settings-label, .settings-help, .model-meta { font-size: 12px; }
+.settings-popover { max-height: calc(100dvh - 16px); max-width: calc(100% - 16px); overflow-y: auto; width: min(360px, calc(100vw - 16px)); }
+.panel { width: min(314px, calc(100vw - 16px)); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 520px), (max-height: 600px) {
+  :host([data-platform="chatgpt"]) { top: 8px; right: 8px; }
+  :host:not([data-platform="chatgpt"]) { right: 8px; }
+  .settings-popover { top: 8px; right: 8px; }
 }
 `;

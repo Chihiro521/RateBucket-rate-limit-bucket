@@ -1,8 +1,7 @@
+import { ChatGptUsageController } from "./chatgptUsageController";
 import { BridgeClient } from "./bridgeClient";
 import {
-  sameUsageValues,
-  startVisibleUsagePolling,
-  withoutOlderMeters
+  startVisibleUsagePolling
 } from "./usagePolling";
 import { getEstimateSnapshot, installSendEstimator } from "./estimator";
 import { UsageWidget } from "./widget";
@@ -10,19 +9,7 @@ import { detectPlatform } from "../platforms/detect";
 import { fetchPlatformUsage } from "../platforms";
 import { normalizeInterceptedUsage } from "../platforms/intercepted";
 import { mergeUsageSnapshots } from "../platforms/merge";
-import {
-  CHATGPT_SENTINEL_EVENT,
-  sanitizeSentinelObservation,
-  toChatGPTSentinelState
-} from "../platforms/chatgptSentinel";
-import {
-  IP_RISK_AUTO_REFRESH_MS,
-  disabledIpRiskState,
-  missingKeyIpRiskState,
-  type IpRiskSettingsUpdate,
-  type IpRiskState
-} from "../platforms/ipRisk";
-import type { EndpointKey, PlatformId, UsageSnapshot } from "../platforms/types";
+import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
   FAILED_BACKOFF_STEPS_MS,
@@ -36,20 +23,6 @@ import {
   setFailureCount,
   setLastRefreshAt
 } from "../storage/cache";
-import {
-  getChatGptSentinelState,
-  rememberChatGptSentinelObservation
-} from "../storage/chatgptSentinel";
-import {
-  IP_RISK_SETTINGS_KEY,
-  IP_RISK_STATE_KEY,
-  getIpRiskPublicSettings,
-  getIpRiskState,
-  ipRiskStateFromStorageValue,
-  publicSettingsFromStorageValue,
-  saveIpRiskSettings,
-  setIpRiskState
-} from "../storage/ipRisk";
 import {
   LANGUAGE_SETTINGS_KEY,
   getLanguageMode,
@@ -66,7 +39,6 @@ declare global {
 }
 
 const platform = detectPlatform(window.location);
-const CHATGPT_UNAVAILABLE_RETRY_MS = 5 * 60_000;
 
 if (
   platform &&
@@ -92,66 +64,8 @@ async function start(platformId: PlatformId): Promise<void> {
   const bridge = new BridgeClient();
   let currentSnapshot: UsageSnapshot | null = null;
   let refreshing = false;
-  let ipRiskRefreshing = false;
+  let chatGptController: ChatGptUsageController | undefined;
   let pendingEstimatorRefresh = 0;
-  const unavailableChatGptEndpoints = new Map<EndpointKey, number>();
-
-  const refreshIpRisk = async (options: { force: boolean }): Promise<void> => {
-    if (ipRiskRefreshing) {
-      return;
-    }
-
-    const settings = await getIpRiskPublicSettings();
-    widget.setIpRiskSettings(settings);
-
-    if (!settings.enabled) {
-      const state = disabledIpRiskState();
-      widget.setIpRiskState(state);
-      if (options.force) {
-        await setIpRiskState(state);
-      }
-      return;
-    }
-    if (!settings.hasApiKey) {
-      const state = missingKeyIpRiskState();
-      widget.setIpRiskState(state);
-      if (options.force) {
-        await setIpRiskState(state);
-      }
-      return;
-    }
-
-    const cached = await getIpRiskState();
-    if (cached) {
-      widget.setIpRiskState(cached);
-    }
-    if (
-      !options.force &&
-      cached &&
-      cached.status === "ok" &&
-      Date.now() - cached.updatedAt < IP_RISK_AUTO_REFRESH_MS
-    ) {
-      return;
-    }
-
-    ipRiskRefreshing = true;
-    widget.setIpRiskRefreshing(true);
-    try {
-      const state = await requestIpRiskRefresh();
-      widget.setIpRiskState(state);
-    } catch (error) {
-      debugLog("proxycheck refresh failed", error);
-    } finally {
-      ipRiskRefreshing = false;
-      widget.setIpRiskRefreshing(false);
-    }
-  };
-
-  const saveIpRisk = async (update: IpRiskSettingsUpdate): Promise<void> => {
-    const settings = await saveIpRiskSettings(update);
-    widget.setIpRiskSettings(settings);
-    await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
-  };
 
   const saveLanguage = async (mode: LanguageMode): Promise<void> => {
     widget.setLanguageMode(await saveLanguageMode(mode));
@@ -163,14 +77,6 @@ async function start(platformId: PlatformId): Promise<void> {
       void refreshUsage({ force: true });
     },
     {
-      onIpRiskRefresh: () => {
-        void refreshIpRisk({ force: true });
-      },
-      onIpRiskSettingsSave: (update) => {
-        void saveIpRisk(update).catch((error: unknown) => {
-          debugLog("failed to save IP risk settings", error);
-        });
-      },
       onLanguageModeSave: (mode) => {
         void saveLanguage(mode).catch((error: unknown) => {
           debugLog("failed to save language settings", error);
@@ -185,26 +91,14 @@ async function start(platformId: PlatformId): Promise<void> {
     const shouldReplace =
       platformId === "grok" && snapshot.source === "intercepted";
     const previous = shouldReplace ? null : currentSnapshot;
-    const acceptedSnapshot = platformId === "chatgpt"
-      ? withoutOlderMeters(previous, snapshot)
-      : snapshot;
-    const merged = mergeUsageSnapshots(previous, acceptedSnapshot);
-    if (platformId === "chatgpt" && snapshot.meters.length > 0) {
-      if (snapshot.source === "api") {
-        merged.status = snapshot.status;
-      }
-      merged.checkedAt = Date.now();
-      if (sameUsageValues(previous, merged)) {
-        merged.updatedAt = previous!.updatedAt;
-      }
-      merged.cacheAgeMs = 0;
-    }
+    const merged = mergeUsageSnapshots(previous, snapshot);
     currentSnapshot = merged;
     widget.setSnapshot(currentSnapshot);
     await setCachedSnapshot(currentSnapshot);
   };
 
   const refreshUsage = async (options: { force: boolean }): Promise<void> => {
+    if (chatGptController) { await chatGptController.refresh(options.force ? "manual" : "poll"); return; }
     if (refreshing) {
       return;
     }
@@ -241,62 +135,12 @@ async function start(platformId: PlatformId): Promise<void> {
     await setLastRefreshAt(platformId, now);
 
     try {
-      let retryableEndpointFailure = false;
-      let snapshot = await fetchPlatformUsage(platformId, async (endpointKey, payload) => {
-        if (
-          platformId === "chatgpt" &&
-          !options.force &&
-          (unavailableChatGptEndpoints.get(endpointKey) ?? 0) > Date.now()
-        ) {
-          return {
-            source: "ai-usage-floating-monitor",
-            direction: "main-to-content",
-            requestId: "unavailable-endpoint",
-            ok: false,
-            platform: platformId,
-            endpointKey,
-            error: { status: 401, message: "Endpoint unavailable in this session" }
-          };
-        }
-        const response = await bridge.fetchUsage(platformId, endpointKey, payload);
-        if (platformId === "chatgpt") {
-          if (response.ok) {
-            unavailableChatGptEndpoints.delete(endpointKey);
-          } else if (
-            response.error?.status === 401 ||
-            response.error?.status === 403 ||
-            response.error?.status === 404
-          ) {
-            unavailableChatGptEndpoints.set(
-              endpointKey,
-              Date.now() + CHATGPT_UNAVAILABLE_RETRY_MS
-            );
-          }
-          if (
-            !response.ok &&
-            (response.error?.status === undefined ||
-              response.error.status === 429 ||
-              response.error.status >= 500)
-          ) {
-            retryableEndpointFailure = true;
-          }
-        }
-        return response;
-      });
-      snapshot = await withEstimateFallback(platformId, snapshot);
-      if (platformId === "chatgpt") {
-        snapshot = {
-          ...snapshot,
-          updatedAt: now,
-          meters: snapshot.meters.map((meter) => ({ ...meter, observedAt: now }))
-        };
-      }
+      const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key, payload) => bridge.fetchUsage(platformId, key, payload)));
       await applySnapshot(snapshot);
       await updateFailureState(
         platformId,
         snapshot,
-        widget,
-        retryableEndpointFailure
+        widget
       );
     } catch (error) {
       const snapshot = await withEstimateFallback(platformId, {
@@ -316,51 +160,26 @@ async function start(platformId: PlatformId): Promise<void> {
     }
   };
 
+  if (platformId === "chatgpt") {
+    chatGptController = new ChatGptUsageController({
+      fetcher: (key) => bridge.fetchUsage(platformId, key),
+      onSnapshot: (snapshot) => { currentSnapshot = snapshot; widget.setSnapshot(snapshot); },
+      onLoading: (loading) => widget.setLoading(loading),
+      readCache: (scope) => getCachedSnapshot("chatgpt", scope),
+      writeCache: setCachedSnapshot
+    });
+    bridge.onContextChanged(() => {
+      chatGptController?.reset();
+      void chatGptController?.refresh("startup");
+    });
+  }
+
   const cached = await getCachedSnapshot(platformId);
   if (cached) {
     currentSnapshot = cached;
     widget.setSnapshot(cached);
   }
-  widget.setBackoffUntil(await getBackoffUntil(platformId));
-
-  const ipRiskSettings = await getIpRiskPublicSettings();
-  widget.setIpRiskSettings(ipRiskSettings);
-  const cachedIpRisk = await getIpRiskState();
-  if (cachedIpRisk) {
-    widget.setIpRiskState(cachedIpRisk);
-  } else if (!ipRiskSettings.enabled) {
-    widget.setIpRiskState(disabledIpRiskState());
-  } else if (!ipRiskSettings.hasApiKey) {
-    widget.setIpRiskState(missingKeyIpRiskState());
-  }
-  void refreshIpRisk({ force: false });
-
-  if (platformId === "chatgpt") {
-    const cachedSentinelState = await getChatGptSentinelState();
-    if (cachedSentinelState) {
-      widget.setChatGptSentinelState(cachedSentinelState);
-    }
-  }
-
-  const onSentinelEvent = (event: Event): void => {
-    if (platformId !== "chatgpt") {
-      return;
-    }
-    const observation = sanitizeSentinelObservation(
-      (event as CustomEvent<unknown>).detail
-    );
-    if (!observation) {
-      return;
-    }
-    const state = toChatGPTSentinelState(observation);
-    widget.setChatGptSentinelState(state);
-    void rememberChatGptSentinelObservation(observation, state).catch(
-      (error: unknown) => {
-        debugLog("failed to cache sentinel observation", error);
-      }
-    );
-  };
-  window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+  widget.setBackoffUntil(platformId === "chatgpt" ? 0 : await getBackoffUntil(platformId));
 
   const onStorageChanged = (
     changes: Record<string, chrome.storage.StorageChange>,
@@ -368,19 +187,6 @@ async function start(platformId: PlatformId): Promise<void> {
   ): void => {
     if (areaName !== "local") {
       return;
-    }
-    const settingsChange = changes[IP_RISK_SETTINGS_KEY];
-    if (settingsChange) {
-      widget.setIpRiskSettings(
-        publicSettingsFromStorageValue(settingsChange.newValue)
-      );
-    }
-    const stateChange = changes[IP_RISK_STATE_KEY];
-    if (stateChange) {
-      const state = ipRiskStateFromStorageValue(stateChange.newValue);
-      if (state) {
-        widget.setIpRiskState(state);
-      }
     }
     const languageChange = changes[LANGUAGE_SETTINGS_KEY];
     if (languageChange) {
@@ -393,6 +199,10 @@ async function start(platformId: PlatformId): Promise<void> {
 
   bridge.onIntercepted((message) => {
     if (message.platform !== platformId) {
+      return;
+    }
+    if (chatGptController && message.endpointKey) {
+      void chatGptController.acceptIntercept(message.endpointKey, message.json, message.ts, message.requestStartedAt, message.scopeKey);
       return;
     }
     const snapshot = normalizeInterceptedUsage({
@@ -411,16 +221,17 @@ async function start(platformId: PlatformId): Promise<void> {
     });
   });
 
-  installSendEstimator(platformId, (snapshot) => {
-    if (!currentSnapshot || currentSnapshot.meters.length === 0) {
+  const stopEstimator = installSendEstimator(platformId, (snapshot) => {
+    if (platformId !== "chatgpt" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
       currentSnapshot = snapshot;
       widget.setSnapshot(snapshot);
     }
     window.clearTimeout(pendingEstimatorRefresh);
     pendingEstimatorRefresh = window.setTimeout(() => {
-      void refreshUsage({ force: false });
+      if (chatGptController) void chatGptController.refresh("operation");
+      else void refreshUsage({ force: false });
     }, 1_500);
-  });
+  }, { recordCounts: platformId !== "chatgpt" });
 
   try {
     await injectMainWorld();
@@ -441,17 +252,19 @@ async function start(platformId: PlatformId): Promise<void> {
         setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
         clearInterval: (id) => window.clearInterval(id),
         refresh: () => {
-          const lastCheck = currentSnapshot?.checkedAt ?? currentSnapshot?.updatedAt ?? 0;
-          if (Date.now() - lastCheck >= CACHE_TTL_MS) {
-            void refreshUsage({ force: false });
-          }
+          void refreshUsage({ force: false });
         }
       })
     : null;
 
-  window.addEventListener("pagehide", () => {
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) return;
+    stopEstimator();
+    widget.destroy();
     stopUsagePolling?.();
-    window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+    chatGptController?.destroy();
+    bridge.destroy();
+    window.clearTimeout(pendingEstimatorRefresh);
     chrome.storage.onChanged.removeListener(onStorageChanged);
   });
 }
@@ -476,35 +289,6 @@ async function injectMainWorld(): Promise<void> {
   if (!response.ok) {
     throw new Error(response.error ?? "Injection failed");
   }
-}
-
-async function requestIpRiskRefresh(): Promise<IpRiskState> {
-  const response = await new Promise<{
-    ok: boolean;
-    error?: string;
-    state?: IpRiskState;
-  }>((resolve, reject) => {
-    chrome.runtime.sendMessage(
-      { type: "AI_USAGE_IP_RISK_REFRESH" },
-      (
-        value:
-          | { ok: boolean; error?: string; state?: IpRiskState }
-          | undefined
-      ) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(value ?? { ok: false, error: "No IP risk response" });
-      }
-    );
-  });
-
-  if (response.state) {
-    return response.state;
-  }
-  throw new Error(response.error ?? "IP 风险检测失败");
 }
 
 async function withEstimateFallback(

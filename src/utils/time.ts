@@ -20,8 +20,9 @@ export function formatAge(timestamp: number, now = Date.now()): string {
 }
 
 export function resolveResetMs(meter: UsageMeter, now = Date.now()): number | null {
-  if (typeof meter.resetAfterSeconds === "number") {
-    return now + meter.resetAfterSeconds * 1000;
+  const anchor = meter.observedAt ?? now;
+  if (typeof meter.resetAfterSeconds === "number" && !meter.resetAt) {
+    return anchor + meter.resetAfterSeconds * 1000;
   }
   if (typeof meter.resetAt === "number") {
     if (meter.resetAt > 10_000_000_000) {
@@ -31,13 +32,13 @@ export function resolveResetMs(meter: UsageMeter, now = Date.now()): number | nu
       return meter.resetAt * 1000;
     }
     if (meter.resetAt > 0) {
-      return now + meter.resetAt * 1000;
+      return anchor + meter.resetAt * 1000;
     }
   }
   if (typeof meter.resetAt === "string") {
     const numeric = Number(meter.resetAt.trim());
     if (Number.isFinite(numeric)) {
-      return resolveNumericResetMs(numeric, now);
+      return resolveNumericResetMs(numeric, anchor);
     }
     const parsed = Date.parse(meter.resetAt);
     return Number.isFinite(parsed) ? parsed : null;

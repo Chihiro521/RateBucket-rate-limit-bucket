@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "reviewedOn": "2026-10-02",
+  "baseUrl": "https://chatgpt.com/backend-api",
+  "scope": "Observed authenticated reads and code-backed candidates; not an exhaustive server inventory",
+  "endpoints": [
+    {
+      "id": "libraryStorage",
+      "method": "GET",
+      "path": "/files/library/storage/usage",
+      "metricKind": "quota",
+      "unit": "bytes",
+      "fields": { "used": "used_bytes", "total": "allowed_bytes", "remaining": "remaining_bytes", "blocked": "is_over_limit" },
+      "verification": { "kind": "live", "date": "2026-10-02", "status": 200 },
+      "rules": ["Do not confuse capacity with upload calls or image generations", "Keep byte precision", "Missing numeric fields are unknown"]
+    },
+    {
+      "id": "creditBalance",
+      "method": "GET",
+      "path": "/accounts/{account_id}/remaining_balance",
+      "metricKind": "balance",
+      "unit": "credits",
+      "accountScoped": true,
+      "fields": { "remaining": "balance" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Use the currently selected nonempty account", "Accept decimal strings", "Zero extra credits does not block included plan usage"]
+    },
+    {
+      "id": "resetCredits",
+      "method": "GET",
+      "path": "/wham/rate-limit-reset-credits",
+      "metricKind": "balance",
+      "unit": "reset_opportunities",
+      "fields": { "remaining": "available_count" },
+      "verification": { "kind": "live", "date": "2026-10-02", "status": 200 },
+      "rules": ["This is not image allowance", "Do not execute the adjacent consume operation", "Zero is a valid optional balance"]
+    },
+    {
+      "id": "premiumFeatureUses",
+      "method": "GET",
+      "path": "/premium-usage/summary/v2",
+      "metricKind": "statistics",
+      "unit": "feature_uses",
+      "fields": { "feature": "features[].feature", "used7d": "features[].uses_7d", "used28d": "features[].uses_28d" },
+      "verification": { "kind": "live", "date": "2026-10-02", "status": 200 },
+      "rules": ["Require ready status and matching available_windows", "Null is unknown", "Never compute image remaining from this history", "HTML failures do not clear prior statistics"]
+    },
+    {
+      "id": "personalActiveAutomations",
+      "method": "POST",
+      "readOnly": true,
+      "path": "/automations/query",
+      "metricKind": "statistics",
+      "unit": "active_tasks",
+      "request": { "scope": "personal", "status": "active", "q": "", "limit": 25, "cursor": null, "sort": "updated_at_desc" },
+      "fields": { "items": "items", "cursor": "cursor", "identity": "items[].id", "status": "items[].status" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Count unique valid active items after complete pagination", "Page size is not a quota", "No verified maximum slots or remaining slots"]
+    },
+    {
+      "id": "automationSchedulePolicy",
+      "method": "GET",
+      "path": "/automations/schedule_policy",
+      "metricKind": "policy",
+      "unit": "iterations_per_hour_per_task",
+      "fields": { "maximum": "max_iterations_per_hour", "minuteScheduleAvailable": "minute_schedule_available" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Do not label this remaining tasks", "Negative one represents unrestricted frequency in current client"]
+    },
+    {
+      "id": "subscriptionState",
+      "method": "GET",
+      "path": "/subscriptions",
+      "query": { "account_id": "{selected_account}" },
+      "metricKind": "policy",
+      "fields": { "plan": "plan_type", "active": "is_active", "periodUntil": "active_until", "willRenew": "will_renew" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Response is an object", "A period end is not by itself a permissions decision"]
+    },
+    {
+      "id": "automaticTopUp",
+      "method": "GET",
+      "path": "/subscriptions/auto_top_up/settings",
+      "query": { "include_payment_method": false },
+      "accountScoped": true,
+      "metricKind": "policy",
+      "fields": { "enabled": "is_enabled", "monthlyRemaining": "recharge_monthly_remaining" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Null remaining is not zero", "Do not update financial settings", "Do not load payment method details"]
+    },
+    {
+      "id": "threadUsageV2",
+      "method": "POST",
+      "readOnly": true,
+      "path": "/wham/usage/thread_usage/query_v2",
+      "metricKind": "statistics",
+      "unit": "plan_percentage_points",
+      "fields": { "state": "threads[].data_status", "fiveHourUsed": "threads[].five_hour_limit_percent", "weeklyUsed": "threads[].weekly_limit_percent" },
+      "verification": { "kind": "live", "date": "2026-10-01", "status": 200 },
+      "rules": ["Use actual native task IDs and source creation times", "Unavailable is not zero", "Values below one remain percentage points", "Task contribution is not account remaining"]
+    },
+    {
+      "id": "whamSupplementalBalances",
+      "method": "GET",
+      "path": "/wham/usage",
+      "metricKind": "balance",
+      "fields": { "availableResets": "rate_limit_reset_credits.available_count", "applicableResets": "rate_limit_reset_credits.applicable_available_count" },
+      "verification": { "kind": "live", "date": "2026-10-02", "status": 200 },
+      "rules": ["These counts already arrive with the main usage response", "Do not equate zero reset opportunities with exhausted ordinary usage", "Current normalizer does not expose these count fields"]
+    },
+    {
+      "id": "workspaceMonthlyCap",
+      "method": "GET",
+      "path": "/accounts/{account_id}/spend-controls/current-user/monthly-usage",
+      "query": { "supports_usage_limit_modes": true },
+      "metricKind": "quota",
+      "accountScoped": true,
+      "requiresWorkspace": true,
+      "verification": { "kind": "unsupportedForTestedPersonalAccount", "date": "2026-10-01", "status": 401 },
+      "rules": ["The observed 401 requires a workspace and is not proof of expired login", "Do not invent a personal monthly cap"]
+    }
+  ],
+  "eventCandidates": [
+    { "id": "voiceAttachmentRemaining", "event": "RelayMessageProcessed", "fields": ["payload.file_upload_usage.remaining", "payload.file_upload_usage.reset_after_seconds"], "verification": "codeOnlyNotLivePayload" },
+    { "id": "nativeImageLimitFailure", "fields": ["failure.type", "failure.limitId", "failure.resetsAt"], "verification": "protocolAndClientCode", "rules": ["Failure does not supply remaining image count"] },
+    { "id": "delayedImageOffer", "fields": ["message.metadata.image_gen_delayed.state", "message.metadata.image_gen_delayed.resets_after"], "verification": "codeOnlyAbsentFromTestedMessages" }
+  ]
+}

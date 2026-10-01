@@ -10,8 +10,8 @@ export type EstimateState = {
   lastSentAt: number;
 };
 
-function snapshotKey(platform: PlatformId): string {
-  return `aiUsage:${platform}:snapshot`;
+function snapshotKey(platform: PlatformId, scope?: string): string {
+  return platform === "chatgpt" && scope ? `aiUsage:chatgpt:${scope}:snapshot` : `aiUsage:${platform}:snapshot`;
 }
 
 function lastRefreshKey(platform: PlatformId): string {
@@ -57,9 +57,11 @@ function storageSet(items: Record<string, unknown>): Promise<void> {
 }
 
 export async function getCachedSnapshot(
-  platform: PlatformId
+  platform: PlatformId,
+  scope?: string
 ): Promise<UsageSnapshot | null> {
-  const key = snapshotKey(platform);
+  if (platform === "chatgpt" && !scope) return null;
+  const key = snapshotKey(platform, scope);
   const items = await storageGet(key);
   const value = items[key];
   if (!isUsageSnapshot(value, platform)) {
@@ -72,8 +74,9 @@ export async function getCachedSnapshot(
 }
 
 export function setCachedSnapshot(snapshot: UsageSnapshot): Promise<void> {
+  if (snapshot.platform === "chatgpt" && !snapshot.scopeKey) return Promise.resolve();
   const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-  return storageSet({ [snapshotKey(snapshot.platform)]: persisted });
+  return storageSet({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
 }
 
 export async function getLastRefreshAt(platform: PlatformId): Promise<number> {

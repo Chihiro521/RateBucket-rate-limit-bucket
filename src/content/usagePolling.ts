@@ -1,7 +1,7 @@
 import type { UsageMeter, UsageSnapshot } from "../platforms/types";
 
-// Check locally more often so the network request lands close to the 60-second TTL.
-export const CHATGPT_POLL_CHECK_MS = 15_000;
+// The controller checks freshness separately for every endpoint.
+export const CHATGPT_POLL_CHECK_MS = 30_000;
 
 type PollingOptions = {
   isVisible: () => boolean;
@@ -74,11 +74,14 @@ function meterValue(meter: UsageMeter): string {
     used: meter.used,
     usedPercent: meter.usedPercent,
     remainingPercent: meter.remainingPercent,
-    resetAt: meter.resetAt,
-    resetAfterSeconds: meter.resetAfterSeconds,
+    resetAt: meter.quotaState === "unknown" ? null : meter.resetAt,
+    resetAfterSeconds: meter.quotaState === "unknown" ? null : meter.resetAfterSeconds,
     windowSeconds: meter.windowSeconds,
     source: meter.source,
     confidence: meter.confidence,
-    rawKind: meter.rawKind
+    rawKind: meter.rawKind,
+    metricKind: meter.metricKind,
+    unit: meter.unit,
+    quotaState: meter.quotaState
   });
 }

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.4
+
+Prepared on 2026-10-02 for synchronized Chrome Web Store and GitHub publication.
+
+### Changed
+
+- Refresh ChatGPT quota endpoints independently every 30 seconds while visible, with concurrent partial updates, request deduplication and per-endpoint backoff.
+- Add library capacity and available reset opportunities; keep image quota explicitly uncalibrated without adding historical image statistics.
+- Preserve the original UI theme and mascot while keeping scroll, focus, language selection and drag nodes stable during updates.
+- Remove IP detection and PoW/account-status heuristics, including their listeners, storage and third-party host access.
+- Isolate cached quota by confirmed account scope and remove retired records on upgrade.
+
+### Fixed
+
+- Read explicit percent fields as percentage points rather than guessing ratios.
+- Anchor relative resets at response reception and preserve per-meter timestamps through failures.
+- Prioritize explicit blocking and prevent optional zero balances from implying plan exhaustion.
+- Filter ChatPass sublimits without changing ordinary five-hour or weekly windows.
+- Fit narrow/short viewports, including pages with scrollbars.
+
+### Validation
+
+- `npm test`: 102 tests in 16 files passed.
+- `npm run build`: TypeScript and extension builds passed.
+- Local browser UI fixture checks completed; no real-account generation requests were sent during validation.
+
 ## v0.1.3
 
 Released on GitHub as `v0.1.3`.

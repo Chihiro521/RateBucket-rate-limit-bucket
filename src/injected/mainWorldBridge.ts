@@ -3,7 +3,7 @@ import type {
   EndpointKey,
   PlatformId
 } from "../platforms/types";
-import { installChatGptSentinelHook } from "./chatgptSentinelHook";
+import { ChatGptSession } from "./chatgptSession";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
 import { asRecord, getString } from "../utils/safeJson";
 
@@ -50,12 +50,17 @@ type GeminiWizGlobalData = {
 };
 
 const FETCH_TIMEOUT_MS = 10_000;
+const ownedFetch = window.fetch.bind(window);
+const chatGptControllers = new Set<AbortController>();
+const chatGptSession = new ChatGptSession(ownedFetch, () => {
+  for (const controller of chatGptControllers) controller.abort();
+  window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
+});
 const GEMINI_USAGE_RPC_ID = "jSf9Qc";
 const geminiBatchExecuteState: GeminiBatchExecuteState = {};
 
 if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
   window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
-  installChatGptSentinelHook();
   installFetchIntercept();
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (event.source !== window || event.origin !== window.location.origin) {
@@ -145,6 +150,9 @@ function resolveEndpoint(
       method: "GET",
       url: "https://claude.ai/api/organizations"
     },
+    "chatgpt:libraryStorage": {
+      platform: "chatgpt", method: "GET", url: "https://chatgpt.com/backend-api/files/library/storage/usage"
+    },
     "chatgpt:conversationInit": {
       platform: "chatgpt",
       method: "POST",
@@ -156,16 +164,8 @@ function resolveEndpoint(
       method: "GET",
       url: "https://chatgpt.com/backend-api/wham/usage"
     },
-    "chatgpt:codexUsage": {
-      platform: "chatgpt",
-      method: "GET",
-      url: "https://chatgpt.com/backend-api/codex/usage"
-    },
-    "chatgpt:whamTasksRateLimit": {
-      platform: "chatgpt",
-      method: "GET",
-      url: "https://chatgpt.com/backend-api/wham/tasks/rate_limit"
-    },
+
+
     "chatgpt:accountsCheck": {
       platform: "chatgpt",
       method: "GET",
@@ -318,37 +318,21 @@ async function fetchEndpoint(
   requestId: string,
   endpointKey: EndpointKey
 ): Promise<BridgeResponse> {
+  const requestedAt = Date.now();
+  let scopeKey: string | undefined;
   const controller = new AbortController();
+  if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
   const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const headers = endpointHeaders(endpoint) ?? {};
     if (endpoint.platform === "chatgpt") {
-      const sessionResponse = await fetch("https://chatgpt.com/api/auth/session", {
-        credentials: "include",
-        cache: "no-store",
-        signal: controller.signal
-      });
-      const session = sessionResponse.ok
-        ? asRecord(await sessionResponse.json())
-        : null;
-      const accessToken = session
-        ? getString(session, "accessToken") ?? getString(session, "access_token")
-        : null;
-      if (!accessToken) {
-        return {
-          source: SOURCE,
-          direction: "main-to-content",
-          requestId,
-          ok: false,
-          platform: endpoint.platform,
-          endpointKey,
-          error: { status: 401, message: "ChatGPT session unavailable" }
-        };
-      }
-      headers.Authorization = `Bearer ${accessToken}`;
+      const session = await chatGptSession.read();
+      headers.Authorization = `Bearer ${session.token}`;
+      if (session.account) headers["ChatGPT-Account-ID"] = session.account;
+      scopeKey = session.scopeKey;
     }
 
-    const response = await fetch(endpoint.url, {
+    const response = await ownedFetch(endpoint.url, {
       method: endpoint.method,
       credentials: "include",
       cache: "no-store",
@@ -358,6 +342,7 @@ async function fetchEndpoint(
     });
 
     if (!response.ok) {
+      if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
       return {
         source: SOURCE,
         direction: "main-to-content",
@@ -450,8 +435,23 @@ function installFetchIntercept(): void {
   function makePatchedFetch(): typeof window.fetch {
     return async (input: RequestInfo | URL, init?: RequestInit) => {
       rememberGeminiBatchExecuteRequest(input, init);
+      const requestedAt = Date.now();
+      const rawUrl = requestUrl(input);
+      if (rawUrl.startsWith("https://chatgpt.com/backend-api/") || rawUrl.startsWith("/backend-api/")) {
+        chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
+      }
+      const scopeKey = chatGptSession.scope();
       const usageRequest = getUsageRequest(input, init);
       const response = await originalFetch(input, init);
+      if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
+        void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => undefined);
+      }
+      if (usageRequest?.platform === "chatgpt") {
+        if (response.ok) {
+          void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => undefined);
+        }
+        return response;
+      }
       try {
         if (usageRequest) {
           if (usageRequest.responseType === "base64") {
@@ -719,6 +719,8 @@ function postInterceptedUsage(args: {
   url: string;
   json?: unknown;
   text?: string;
+  scopeKey?: string;
+  requestStartedAt?: number;
 }): void {
   const message = {
     source: SOURCE,
@@ -779,6 +781,9 @@ function usageUrlInfo(
     return { platform: "claude", endpointKey: "claude:usage" };
   }
   if (url.origin === "https://chatgpt.com") {
+    if (url.pathname === "/backend-api/files/library/storage/usage") {
+      return { platform: "chatgpt", endpointKey: "chatgpt:libraryStorage" };
+    }
     if (url.pathname === "/backend-api/conversation/init") {
       return { platform: "chatgpt", endpointKey: "chatgpt:conversationInit" };
     }

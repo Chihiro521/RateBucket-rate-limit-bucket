@@ -4,7 +4,7 @@
 
 RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude、ChatGPT、Gemini、Kimi 和 Perplexity 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
 
-本项目是独立的个人工具，不隶属于 OpenAI、Anthropic、xAI、Google、Moonshot AI、Perplexity AI 或 proxycheck.io。
+本项目是独立的个人工具，不隶属于 OpenAI、Anthropic、xAI、Google、Moonshot AI、Perplexity AI。
 
 ## 项目状态
 
@@ -22,10 +22,9 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 - Grok credits 会按一个加权总用量 bucket 展示，并把 Imagine、聊天、Grok Build 和 API 作为贡献分段显示。
 - 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示，同时在功能被禁用时替换旧的正额度。
 - 在信号可用时展示 ChatGPT 订阅到期时间、输入/附件额度、功能额度、用量窗口和 Codex 相关窗口。
-- ChatGPT 标签页可见时约每分钟主动校准额度，数值变化后无需重载网页即可更新。
+- ChatGPT 标签页可见时每 30 秒主动查询额度，数值变化后无需重载网页即可更新。
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
-- 在平台缺少可靠额度数据时提供本地估算计数。
-- 提供可选 IP 信誉检测面板，只有用户主动配置 proxycheck.io 时才启用。
+- 其他平台保留本地估算；ChatGPT 不再把发送次数作为额度兜底。
 - 支持英文和简体中文界面，可跟随浏览器语言，也可手动选择语言。
 
 ## 支持的平台
@@ -34,13 +33,13 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 | --- | --- | --- |
 | Grok | `https://grok.com/*` | `grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig` gRPC-web credits config |
 | Claude | `https://claude.ai/*` | `/api/organizations`、`/api/organizations/{orgId}/usage` |
-| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/codex/usage`（`/backend-api/wham/usage` 作为后备）、`/backend-api/wham/tasks/rate_limit`、观察到的 `/backend-api/accounts/check/...` 响应 |
+| ChatGPT | `https://chatgpt.com/*` | `/backend-api/conversation/init`、`/backend-api/wham/usage`、`/backend-api/files/library/storage/usage`、观察到的 `/backend-api/accounts/check/...` 响应 |
 | Gemini | `https://gemini.google.com/*` | `/_/BardChatUi/data/batchexecute` 中的 `jSf9Qc` RPC |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`、`https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
 
 扩展也会观察页面自身对允许列表内用量端点的 fetch 响应。被观察到的响应会经过和主动刷新相同的 normalizer。
-主动查询仅在当次请求中使用当前网页会话的访问令牌，不持久保存令牌或 Authorization 请求头；不再通过隐藏的 Codex analytics iframe 探测用量。
+主动查询在页面内存中复用当前网页会话，最长 60 秒，不持久保存令牌或 Authorization 请求头；不再通过隐藏的 Codex analytics iframe 探测用量。
 
 ## 工作方式
 
@@ -48,10 +47,10 @@ RateBucket 是一个 Manifest V3 扩展：
 
 - `content.js` 在支持的网站中运行，并负责浮动 UI。
 - `mainWorldBridge.js` 在页面主世界中运行，用于在必要时观察平台 fetch 行为。
-- `serviceWorker.js` 处理后台任务，例如可选 IP 信誉检测刷新。
+- `serviceWorker.js` 处理注入支持与旧功能缓存的一次性清理。
 - 平台解析器会把原始端点结构标准化为共享的 usage snapshot。
 - Grok credits 会从 gRPC-web protobuf 响应中解码，并在本地标准化为加权用量 meter。
-- `chrome.storage.local` 保存标准化快照、本地估算计数、重试状态、语言偏好和可选 IP 风险设置。
+- `chrome.storage.local` 保存标准化快照、本地估算计数、重试状态、语言偏好。
 
 项目本身不使用自有外部后端。
 
@@ -136,22 +135,19 @@ RateBucket 尽量保持本地运行：
 - 不读取或保存聊天内容。
 - 不包含分析或遥测。
 - 不申请 `cookies`、`webRequest`、`tabs` 或 `activeTab` 权限。
-- 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据、语言偏好和可选 IP 风险设置。
+- 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据、语言偏好。
 
 同站请求可能使用浏览器中该网站已有的登录态，但 RateBucket 不读取或保存 cookie 值。
 
-扩展只请求 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity 和可选 IP 信誉服务的 host access。
+扩展只请求 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity的 host access。
 
-## 可选 IP 信誉检测
+## ChatGPT 查询与显示
 
-IP 信誉检测默认关闭。用户主动启用并提供 proxycheck.io API 密钥后，扩展会：
+前台每 30 秒独立查询 conversation/init、wham/usage 和文件库容量，也接收页面自然返回的额度数据。并发请求逐项更新，失败不会刷新旧读数的成功时间。
 
-- 将 API 密钥保存到 `chrome.storage.local`；
-- 通过 `https://api64.ipify.org/?format=json` 获取当前公网 IP；
-- 使用 `vpn=1` 和 `risk=1` 查询 `https://proxycheck.io/v2/{ip}`；
-- 只在本地保存标准化后的风险结果。
+文件库按 GiB 展示；额外 Credits 与可用重置次数不是套餐内普通额度。图像读数暂时保留并标注未校准，不增加近 7 天图像统计。超出 2 分钟未更新的项目标为旧数据，旧读数最多保留 30 分钟。
 
-扩展不会保存历史 IP 地址。
+ChatGPT 缓存按登录身份与账号的哈希范围隔离，令牌仅留在页面内存。升级时一次性清除 IP 检测旧配置和未区分账号的旧 ChatGPT 缓存。原主题与人物挂件保留，刷新不重建整块面板，不丢滚动位置与键盘焦点。
 
 ## 调试日志
 

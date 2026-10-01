@@ -1,10 +1,4 @@
 import type { PlatformId, UsageMeter, UsageSnapshot } from "../platforms/types";
-import type { ChatGPTSentinelState } from "../platforms/chatgptSentinel";
-import type {
-  IpRiskPublicSettings,
-  IpRiskSettingsUpdate,
-  IpRiskState
-} from "../platforms/ipRisk";
 import {
   DEFAULT_LANGUAGE_MODE,
   formatAgeLocalized,
@@ -13,7 +7,6 @@ import {
   formatMeterLabelLocalized,
   formatMeterValueLocalized,
   formatResetLocalized,
-  formatRiskLabelLocalized,
   formatSourceLabelLocalized,
   formatSubscriptionExpiryLocalized,
   languageModeFromValue,
@@ -23,19 +16,13 @@ import {
   type ResolvedLanguage,
   type TextKey
 } from "../utils/i18n";
+import { reconcileChildren } from "./reconcileDom";
+import { hasMeaningfulValue, isAlertMeter, isChatPassPath, meterProgress, chatGptPrimaryMeter, STALE_METER_MS } from "../platforms/presentation";
 import { WIDGET_CSS } from "./styles";
 
 type RefreshHandler = () => void;
 type WidgetHandlers = {
-  onIpRiskRefresh?: () => void;
-  onIpRiskSettingsSave?: (update: IpRiskSettingsUpdate) => void;
   onLanguageModeSave?: (mode: LanguageMode) => void;
-};
-type IpRiskSettingsDraft = {
-  enabled: boolean;
-  apiKeyValue: string;
-  keyDirty: boolean;
-  revealKey: boolean;
 };
 type ChipEdge = "left" | "right" | "top" | "bottom";
 
@@ -80,18 +67,20 @@ export class UsageWidget {
   private hidden = false;
   private chipPosition = { edge: "right" as ChipEdge, offset: 96 };
   private loading = false;
-  private snapshot: UsageSnapshot | null = null;
-  private chatGptSentinelState: ChatGPTSentinelState | null = null;
-  private ipRiskState: IpRiskState | null = null;
-  private ipRiskSettings: IpRiskPublicSettings = {
-    provider: "proxycheck",
-    enabled: false,
-    hasApiKey: false,
-    apiKeyPreview: null
+  private settingsOpen = false;
+  private renderFrame = 0;
+  private destroyed = false;
+  private readonly onResize = (): void => {
+    if (!this.hidden && this.expanded) return;
+    const chip = this.root.querySelector<HTMLElement>(".collapsed,.gpt-restore-chip");
+    if (!chip) return;
+    const bounds = chip.getBoundingClientRect();
+    const vertical = this.chipPosition.edge === "left" || this.chipPosition.edge === "right";
+    const maximum = (vertical ? window.innerHeight - bounds.height : window.innerWidth - bounds.width) - 8;
+    this.chipPosition.offset = Math.max(8, Math.min(this.chipPosition.offset, maximum));
+    this.applyChipPosition();
   };
-  private ipRiskRefreshing = false;
-  private ipRiskSettingsOpen = false;
-  private ipRiskSettingsDraft: IpRiskSettingsDraft | null = null;
+  private snapshot: UsageSnapshot | null = null;
   private backoffUntil = 0;
   private languageMode: LanguageMode = DEFAULT_LANGUAGE_MODE;
   private resolvedLanguage: ResolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
@@ -110,8 +99,15 @@ export class UsageWidget {
     const style = document.createElement("style");
     style.textContent = WIDGET_CSS;
     this.shadow.append(style, this.root);
-    this.timerId = window.setInterval(() => this.render(), 15_000);
+    this.timerId = window.setInterval(() => this.tickTimes(), 1_000);
     this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2_000);
+    window.addEventListener("resize", this.onResize);
+    this.root.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.stopPropagation();
+      if (this.settingsOpen) this.closeSettings();
+      else { if (this.platform === "chatgpt") this.hidden = true; else this.expanded = false; this.render(); }
+    });
   }
 
   mount(): void {
@@ -122,6 +118,9 @@ export class UsageWidget {
   destroy(): void {
     window.clearInterval(this.timerId);
     window.clearInterval(this.mountWatchId);
+    this.destroyed = true;
+    window.removeEventListener("resize", this.onResize);
+    cancelAnimationFrame(this.renderFrame);
     this.host.remove();
   }
 
@@ -132,26 +131,6 @@ export class UsageWidget {
 
   setLoading(value: boolean): void {
     this.loading = value;
-    this.render();
-  }
-
-  setChatGptSentinelState(value: ChatGPTSentinelState | null): void {
-    this.chatGptSentinelState = value;
-    this.render();
-  }
-
-  setIpRiskSettings(value: IpRiskPublicSettings): void {
-    this.ipRiskSettings = value;
-    this.render();
-  }
-
-  setIpRiskState(value: IpRiskState | null): void {
-    this.ipRiskState = value;
-    this.render();
-  }
-
-  setIpRiskRefreshing(value: boolean): void {
-    this.ipRiskRefreshing = value;
     this.render();
   }
 
@@ -170,29 +149,34 @@ export class UsageWidget {
     return t(this.resolvedLanguage, key, params);
   }
 
-  private createIpRiskSettingsDraft(): IpRiskSettingsDraft {
-    return {
-      enabled: this.ipRiskSettings.enabled,
-      apiKeyValue: this.ipRiskSettings.apiKeyPreview ?? "",
-      keyDirty: false,
-      revealKey: false
-    };
-  }
-
-  private closeIpRiskSettingsDialog(): void {
-    this.ipRiskSettingsOpen = false;
-    this.ipRiskSettingsDraft = null;
-    this.render();
-  }
-
   private render(): void {
+    if (this.destroyed || this.renderFrame) return;
+    this.renderFrame = requestAnimationFrame(() => {
+      this.renderFrame = 0;
+      if (!this.destroyed) this.renderNow();
+    });
+  }
+
+  private tickTimes(): void {
+    if (document.visibilityState === "hidden" || this.hidden || (this.platform !== "chatgpt" && !this.expanded)) return;
+    for (const node of this.root.querySelectorAll<HTMLElement>("[data-time]")) {
+      let value = node.textContent ?? "";
+      if (node.dataset.time === "updated" && this.snapshot) value = this.text("meta.updatedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt) });
+      if (node.dataset.time === "checked" && this.snapshot?.checkedAt) value = this.text("meta.checkedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt) });
+      if (node.dataset.time === "backoff") value = this.text("meta.waitSeconds", { seconds: Math.max(0, Math.ceil(this.backoffRemainingMs() / 1000)) });
+      const meter = this.snapshot?.meters.find((item) => item.key === node.dataset.meterKey);
+      if (meter && node.dataset.time === "reset") value = this.formatMeterTimePreview(meter);
+      if (meter && node.dataset.time === "badge") value = this.meterBadge(meter);
+      if (meter && node.dataset.time === "subscription") value = formatMeterValueLocalized(this.resolvedLanguage, meter);
+      if (node.textContent !== value) node.textContent = value;
+    }
+  }
+
+  private renderNow(): void {
     this.ensureMounted();
     if (this.hidden) {
-      this.ipRiskSettingsOpen = false;
-      this.ipRiskSettingsDraft = null;
-      this.root.replaceChildren(
-        this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
-      );
+      this.settingsOpen = false;
+      reconcileChildren(this.root, [this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()]);
       return;
     }
     if (this.platform === "chatgpt") {
@@ -215,11 +199,11 @@ export class UsageWidget {
   }
 
   private replaceRootWith(main: HTMLElement): void {
-    if (this.ipRiskSettingsOpen) {
-      this.root.replaceChildren(main, this.renderIpRiskSettingsDialog());
+    if (this.settingsOpen) {
+      reconcileChildren(this.root, [main, this.renderSettingsDialog()]);
       return;
     }
-    this.root.replaceChildren(main);
+    reconcileChildren(this.root, [main]);
   }
 
   private schedulePlatformOverflowCheck(button: HTMLElement): void {
@@ -241,6 +225,7 @@ export class UsageWidget {
 
   private renderChatGptRestoreChip(): HTMLElement {
     const button = el("button", "gpt-restore-chip");
+    button.dataset.nodeKey = "chip";
     button.type = "button";
     this.applyChipPosition();
     button.setAttribute("aria-label", this.text("action.restoreGptPanel"));
@@ -379,6 +364,7 @@ export class UsageWidget {
 
   private renderChatGptPanel(): HTMLElement {
     const panel = el("section", "gpt-panel");
+    panel.dataset.nodeKey = "panel";
     panel.append(
       panelCorners("panel-corners"),
       this.renderChatGptHeader(),
@@ -404,6 +390,7 @@ export class UsageWidget {
       () => this.onRefresh()
     );
     refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
+    refresh.setAttribute("aria-busy", String(this.loading));
 
     const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
       this.hidden = true;
@@ -419,324 +406,49 @@ export class UsageWidget {
   private renderChatGptContent(): HTMLElement {
     const content = el("div", "content gpt-content");
     if (this.snapshot?.errorMessage) {
-      content.append(textEl("div", "error", this.snapshot.errorMessage));
+      content.append(textEl("div", "error", this.snapshot.meters.length ? (this.resolvedLanguage === "zh-CN" ? "部分查询失败，显示上次读数" : "Some queries failed. Showing saved readings.") : (this.resolvedLanguage === "zh-CN" ? "暂时无法获取额度，请稍后刷新" : "Usage unavailable. Try refreshing later.")));
     }
-    const sentinelSection = this.renderChatGptSentinelSection();
-    if (sentinelSection) {
-      content.append(sentinelSection);
-    }
-    content.append(this.renderIpRiskSection());
     const meters = this.chatGptMeters();
     if (meters.length === 0) {
-      if (!sentinelSection && !this.ipRiskSettings.enabled) {
-        content.append(textEl("div", "empty", this.text("usage.empty")));
-      }
+      content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
       return content;
     }
     for (const section of groupChatGptMeters(meters, this.resolvedLanguage)) {
-      content.append(this.renderMeterSection(section.label, section.meters));
+      content.append(this.renderMeterSection(section.label, section.meters, section.key));
     }
     return content;
   }
 
-  private renderChatGptSentinelSection(): HTMLElement | null {
-    const state = this.chatGptSentinelState;
-    if (!state) {
-      return null;
-    }
-    const section = el("section", "meter-section sentinel-section");
-    section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
-    section.append(sectionTitle(this.text("sentinel.accountStatus"), "leaf-small.png"));
-
-    const gate = el("div", "sentinel-block");
-    gate.append(
-      this.renderSentinelRow(
-        this.text("sentinel.gate"),
-        `${formatRiskLabelLocalized(
-          this.resolvedLanguage,
-          state.sentinelRisk.label
-        )} ${state.sentinelRisk.score}/100`
-      ),
-      this.renderSentinelBar(state.sentinelRisk.score),
-      this.renderSentinelRow(
-        "PoW",
-        `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
-      ),
-      textEl("div", "sentinel-explanation", this.text("sentinel.explanation"))
-    );
-    section.append(gate);
-    return section;
+  private closeSettings(): void {
+    this.settingsOpen = false;
+    this.render();
+    requestAnimationFrame(() => this.root.querySelector<HTMLButtonElement>('[data-action="settings"]')?.focus());
   }
 
-  private renderIpRiskSection(): HTMLElement {
-    const section = el("section", "meter-section ip-risk-section");
-    section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
-    section.append(sectionTitle(this.text("usage.networkRisk"), "leaf-small.png"));
-
-    const block = el("div", "sentinel-block ip-risk-block");
-    block.append(this.renderSentinelRow(this.text("ip.check"), this.ipRiskStatusText()));
-
-    const freshIpRisk = this.freshIpRiskState();
-    if (freshIpRisk) {
-      block.append(
-        this.renderSentinelBar(freshIpRisk.score),
-        this.renderSentinelRow(
-          this.text("ip.signal"),
-          formatIpRiskSignals(freshIpRisk, this.resolvedLanguage)
-        ),
-        this.renderSentinelRow(this.text("ip.source"), freshIpRisk.source)
-      );
-    } else if (this.ipRiskRefreshing) {
-      block.append(textEl("div", "sentinel-explanation", this.text("ip.querying")));
-    } else if (
-      this.ipRiskSettings.enabled &&
-      this.ipRiskSettings.hasApiKey &&
-      this.ipRiskState?.status === "error"
-    ) {
-      block.append(
-        textEl(
-          "div",
-          "sentinel-explanation error-text",
-          this.ipRiskState.errorMessage ?? this.text("ip.errorFallback")
-        )
-      );
-    } else {
-      block.append(
-        textEl(
-          "div",
-          "sentinel-explanation",
-          this.ipRiskSettings.enabled
-            ? this.text("ip.enabledHelp")
-            : this.text("ip.disabledHelp")
-        )
-      );
-    }
-
-    section.append(block);
-    return section;
-  }
-
-  private renderIpRiskSettingsDialog(): HTMLElement {
+  private renderSettingsDialog(): HTMLElement {
     const panel = el("section", "settings-popover");
+    panel.dataset.nodeKey = "settings";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", this.text("settings.title"));
     const header = el("div", "settings-header");
-    const draft = this.ipRiskSettingsDraft ?? this.createIpRiskSettingsDraft();
-    this.ipRiskSettingsDraft = draft;
-    header.append(
-      titleNode("settings-title", this.text("settings.title"), "shield.png"),
-      this.renderActionButton("×", this.text("action.closeSettings"), () => {
-        this.closeIpRiskSettingsDialog();
-      })
-    );
-
-    const languageSelect = document.createElement("select");
-    languageSelect.className = "settings-input";
-    for (const [value, label] of [
-      ["auto", this.text("language.auto")],
-      ["zh-CN", this.text("language.zhCN")],
-      ["en", this.text("language.en")]
-    ] as const) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      languageSelect.append(option);
+    header.append(titleNode("settings-title", this.text("settings.title"), "clover-medallion.png"),
+      this.renderActionButton("×", this.text("action.closeSettings"), () => this.closeSettings()));
+    const select = document.createElement("select");
+    select.className = "settings-input";
+    select.dataset.nodeKey = "language";
+    select.setAttribute("aria-label", this.text("language.label"));
+    for (const [value, label] of [["auto", "language.auto"], ["zh-CN", "language.zhCN"], ["en", "language.en"]] as const) {
+      const option = document.createElement("option"); option.value = value; option.textContent = this.text(label); select.append(option);
     }
-    languageSelect.value = this.languageMode;
-
-    const enabledInput = document.createElement("input");
-    enabledInput.type = "checkbox";
-    enabledInput.checked = draft.enabled;
-    enabledInput.addEventListener("change", () => {
-      draft.enabled = enabledInput.checked;
-    });
-
-    const enabledLabel = el("label", "settings-check");
-    enabledLabel.append(
-      enabledInput,
-      textEl("span", "", this.text("ip.enableProxycheck"))
-    );
-
-    const keyInputWrap = el("div", "settings-input-wrap");
-    const keyInput = document.createElement("input");
-    keyInput.className = "settings-input";
-    keyInput.type = draft.revealKey ? "text" : "password";
-    keyInput.autocomplete = "off";
-    keyInput.spellcheck = false;
-    keyInput.value = draft.apiKeyValue;
-    keyInput.placeholder =
-      draft.keyDirty && this.ipRiskSettings.hasApiKey
-        ? this.text("ip.newKeyPlaceholder")
-        : this.ipRiskSettings.hasApiKey
-          ? this.text("ip.savedKeyPlaceholder")
-          : this.text("ip.keyPlaceholder");
-    const prepareKeyEdit = (): void => {
-      if (!draft.keyDirty && this.ipRiskSettings.hasApiKey) {
-        draft.keyDirty = true;
-        keyInput.value = "";
-        keyInput.placeholder = this.text("ip.newKeyPlaceholder");
-        keyInput.type = "password";
-        draft.revealKey = false;
-      }
-      draft.apiKeyValue = keyInput.value;
-    };
-    keyInput.addEventListener("keydown", (event) => {
-      if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
-        prepareKeyEdit();
-      }
-    });
-    keyInput.addEventListener("paste", prepareKeyEdit);
-    keyInput.addEventListener("input", () => {
-      draft.keyDirty = true;
-      draft.apiKeyValue = keyInput.value;
-      draft.revealKey = keyInput.type !== "password";
-    });
-    const syncDraft = (): void => {
-      draft.enabled = enabledInput.checked;
-      draft.apiKeyValue = keyInput.value;
-      draft.revealKey = keyInput.type !== "password";
-    };
-    languageSelect.addEventListener("change", () => {
-      syncDraft();
-      const nextMode = languageModeFromValue(languageSelect.value);
-      this.languageMode = nextMode;
-      this.resolvedLanguage = resolveLanguage(nextMode);
-      this.handlers.onLanguageModeSave?.(nextMode);
-      this.render();
-    });
-
-    const reveal = this.renderActionButton(
-      "👁",
-      this.text("action.toggleSecret"),
-      () => {
-        keyInput.type = keyInput.type === "password" ? "text" : "password";
-        draft.revealKey = keyInput.type !== "password";
-      }
-    );
-    reveal.classList.add("settings-eye-button");
-    keyInputWrap.append(keyInput, reveal);
-
-    const actions = el("div", "settings-actions");
-    const save = textEl(
-      "button",
-      "settings-button primary-button",
-      this.text("settings.save")
-    );
-    save.type = "button";
-    save.addEventListener("click", () => {
-      draft.enabled = enabledInput.checked;
-      draft.apiKeyValue = keyInput.value;
-      const inputValue = draft.apiKeyValue.trim();
-      const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
-      this.handlers.onIpRiskSettingsSave?.({
-        enabled: draft.enabled,
-        apiKey:
-          inputValue && inputValue !== previewValue ? inputValue : undefined
-      });
-      this.closeIpRiskSettingsDialog();
-    });
-
-    const refresh = textEl(
-      "button",
-      "settings-button",
-      this.text("settings.checkNow")
-    );
-    refresh.type = "button";
-    refresh.disabled =
-      this.ipRiskRefreshing ||
-      !this.ipRiskSettings.enabled ||
-      !this.ipRiskSettings.hasApiKey;
-    refresh.addEventListener("click", () => {
-      this.handlers.onIpRiskRefresh?.();
-      this.closeIpRiskSettingsDialog();
-    });
-
-    const remove = textEl(
-      "button",
-      "settings-button danger-button",
-      this.text("ip.deleteKey")
-    );
-    remove.type = "button";
-    remove.disabled = !this.ipRiskSettings.hasApiKey;
-    remove.addEventListener("click", () => {
-      this.handlers.onIpRiskSettingsSave?.({
-        enabled: enabledInput.checked,
-        clearApiKey: true
-      });
-      this.closeIpRiskSettingsDialog();
-    });
-
-    actions.append(save, refresh, remove);
-
-    panel.append(
-      header,
-      textEl("label", "settings-label", this.text("language.label")),
-      languageSelect,
-      enabledLabel,
-      textEl("label", "settings-label", this.text("ip.apiKeyLabel")),
-      keyInputWrap,
-      textEl("div", "settings-help", this.text("ip.help")),
-      actions
-    );
+    select.value = this.languageMode;
+    select.addEventListener("change", () => { const mode = languageModeFromValue(select.value); this.setLanguageMode(mode); this.handlers.onLanguageModeSave?.(mode); });
+    panel.append(header, textEl("label", "settings-label", this.text("language.label")), select);
     return panel;
   }
 
-  private ipRiskStatusText(): string {
-    if (!this.ipRiskSettings.enabled) {
-      return this.text("ip.status.disabled");
-    }
-    if (!this.ipRiskSettings.hasApiKey) {
-      return this.text("ip.status.missingKey");
-    }
-    if (this.ipRiskRefreshing) {
-      return this.text("ip.status.checking");
-    }
-    if (
-      this.ipRiskSettings.enabled &&
-      this.ipRiskSettings.hasApiKey &&
-      this.ipRiskState?.status === "error"
-    ) {
-      return this.text("ip.status.failed");
-    }
-    const freshIpRisk = this.freshIpRiskState();
-    if (freshIpRisk) {
-      return `${formatRiskLabelLocalized(
-        this.resolvedLanguage,
-        freshIpRisk.label
-      )} ${freshIpRisk.score}/100`;
-    }
-    return this.text("ip.status.waiting");
-  }
-
-  private freshIpRiskState(): (IpRiskState & { score: number }) | null {
-    const state = this.ipRiskState;
-    if (
-      this.ipRiskSettings.enabled &&
-      this.ipRiskSettings.hasApiKey &&
-      state?.status === "ok" &&
-      typeof state.score === "number"
-    ) {
-      return state as IpRiskState & { score: number };
-    }
-    return null;
-  }
-
-  private renderSentinelRow(label: string, value: string): HTMLElement {
-    const row = el("div", "sentinel-row");
-    row.append(textEl("span", "sentinel-label", label), textEl("span", "", value));
-    return row;
-  }
-
-  private renderSentinelBar(score: number): HTMLElement {
-    const bar = el("div", "bar sentinel-bar");
-    const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-    const progress = clampPercent(score);
-    fill.style.width = `${progress}%`;
-    bar.style.setProperty("--meter-progress", `${progress}%`);
-    bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
-    return bar;
-  }
-
-  private renderMeterSection(label: string, meters: UsageMeter[]): HTMLElement {
+  private renderMeterSection(label: string, meters: UsageMeter[], groupKey: string): HTMLElement {
     const section = el("section", "meter-section");
+    section.dataset.nodeKey = `section:${groupKey}`;
     section.append(cardCorners(), sectionTitle(label, "leaf-small.png"));
     for (const meter of meters) {
       section.append(this.renderMeter(meter));
@@ -758,17 +470,14 @@ export class UsageWidget {
   }
 
   private renderSettingsButton(): HTMLButtonElement {
-    return this.renderActionButton("⚙", this.text("action.settings"), () => {
-      this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
-      if (!this.ipRiskSettingsOpen) {
-        this.ipRiskSettingsDraft = null;
-      }
-      this.render();
-    });
+    const button = this.renderActionButton("⚙", this.text("action.settings"), () => { this.settingsOpen = !this.settingsOpen; this.render(); });
+    button.dataset.action = "settings";
+    return button;
   }
 
   private renderCollapsed(): HTMLElement {
     const button = el("button", "collapsed");
+    button.dataset.nodeKey = "chip";
     button.type = "button";
     button.setAttribute(
       "aria-label",
@@ -795,6 +504,7 @@ export class UsageWidget {
 
   private renderPanel(): HTMLElement {
     const panel = el("section", "panel");
+    panel.dataset.nodeKey = "panel";
     panel.append(panelCorners("panel-corners compact-corners"), this.renderHeader(), this.renderMeta(), vineDivider());
     if (this.platform === "grok") {
       const modelMeta = this.renderGrokModelMeta();
@@ -859,10 +569,11 @@ export class UsageWidget {
           : this.loading
             ? this.text("meta.loading")
             : "";
-    meta.append(
-      iconText("span", "meta-item", "leaf-small.png", updated),
-      right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
-    );
+    const updatedNode = textEl("span", "", updated); updatedNode.dataset.time = "updated";
+    const rightNode = textEl("span", "", right); rightNode.dataset.time = this.backoffRemainingMs() > 0 ? "backoff" : this.snapshot?.checkedAt ? "checked" : "cache";
+    const leftWrap = el("span", "meta-item"); leftWrap.append(decorativeAsset("leaf-small.png", "inline-icon"), updatedNode);
+    const rightWrap = el("span", "meta-item"); rightWrap.append(rightNode);
+    meta.append(leftWrap, rightWrap);
     return meta;
   }
 
@@ -883,9 +594,9 @@ export class UsageWidget {
     if (this.snapshot?.errorMessage) {
       content.append(textEl("div", "error", this.snapshot.errorMessage));
     }
-    content.append(this.renderIpRiskSection());
-    const meters = this.snapshot?.meters ?? [];
+    const meters = (this.snapshot?.meters ?? []).filter(hasMeaningfulValue);
     if (meters.length === 0) {
+      content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
       return content;
     }
     if (this.platform === "grok" && this.appendGrokCreditsContent(content, meters)) {
@@ -922,6 +633,7 @@ export class UsageWidget {
 
   private renderGrokCreditsMeter(total: UsageMeter, products: UsageMeter[]): HTMLElement {
     const row = el("div", "meter grok-credits-meter");
+    row.dataset.nodeKey = `meter:${total.key}`;
     const top = el("div", "meter-top");
     top.append(
       textEl(
@@ -984,6 +696,7 @@ export class UsageWidget {
 
   private renderMeter(meter: UsageMeter): HTMLElement {
     const row = el("div", "meter");
+    row.dataset.nodeKey = `meter:${meter.key}`;
     const top = el("div", "meter-top");
     top.append(
       textEl(
@@ -1008,33 +721,39 @@ export class UsageWidget {
     bar.style.setProperty("--meter-progress", `${progress}%`);
     bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
 
-    row.append(top, bar, this.renderMeterBottom(meter));
+    if (meter.rawKind === "chatgpt.subscription") { const value = top.querySelector<HTMLElement>(".meter-value"); if (value) { value.dataset.time = "subscription"; value.dataset.meterKey = meter.key; } }
+    const label = top.querySelector<HTMLElement>(".meter-label"); if (label) label.title = label.textContent ?? "";
+    row.append(top);
+    if (progress !== null) row.append(bar);
+    row.append(this.renderMeterBottom(meter));
     return row;
+  }
+
+  private meterBadge(meter: UsageMeter): string {
+    const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
+    const uncalibrated = meter.quotaState === "unknown" ? (this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated") : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
+    const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
+    const stale = this.platform === "chatgpt" && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS
+      ? (this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale") : "";
+    return `${source} · ${uncalibrated}${age ? ` · ${age}` : ""}${stale}`;
   }
 
   private renderMeterBottom(meter: UsageMeter): HTMLElement {
     const bottom = el("div", "meter-bottom");
-    const age = meter.observedAt
-      ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}`
-      : "";
-    bottom.append(
-      textEl(
-        "span",
-        "badge",
-        `${formatSourceLabelLocalized(
-          this.resolvedLanguage,
-          meter.source
-        )} · ${formatConfidenceLabelLocalized(
-          this.resolvedLanguage,
-          meter.confidence
-        )}${age}`
-      ),
-      textEl("span", "", this.formatMeterTimePreview(meter))
-    );
+    const badge = textEl("span", "badge", this.meterBadge(meter));
+    badge.dataset.time = "badge"; badge.dataset.meterKey = meter.key;
+    const reset = textEl("span", "", this.formatMeterTimePreview(meter));
+    reset.dataset.time = "reset"; reset.dataset.meterKey = meter.key;
+    bottom.append(badge, reset);
     return bottom;
   }
 
   private formatMeterTimePreview(meter: UsageMeter): string {
+    if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
+      const fmt = (n: number): string => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });
+      return this.resolvedLanguage === "zh-CN" ? `已用 ${fmt(meter.used)} / 共 ${fmt(meter.total)} GiB` : `Used ${fmt(meter.used)} / ${fmt(meter.total)} GiB`;
+    }
+    if (meter.quotaState === "unknown") return "";
     if (meter.rawKind === "chatgpt.subscription") {
       return formatSubscriptionExpiryLocalized(this.resolvedLanguage, meter);
     }
@@ -1088,22 +807,15 @@ export class UsageWidget {
   }
 
   private chatGptMeters(): UsageMeter[] {
-    const meters = [...(this.snapshot?.meters ?? [])];
+    const meters = [...(this.snapshot?.meters ?? [])].filter((meter) =>
+      hasMeaningfulValue(meter) && !isChatPassPath(meter.key));
     return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
   }
 
   private chatGptPrimaryValue(): string {
     const meters = this.chatGptMeters();
-    const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0)
-      ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5)
-      ?? meters
-        .filter((meter) => typeof meter.remaining === "number")
-        .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0]
-      ?? meters
-        .filter((meter) => typeof meter.remainingPercent === "number")
-        .sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0]
-      ?? meters.find((meter) => typeof meter.usedPercent === "number");
-    return alert ? formatMeterValueLocalized(this.resolvedLanguage, alert) : "?";
+    const primary = chatGptPrimaryMeter(meters);
+    return primary ? formatMeterValueLocalized(this.resolvedLanguage, primary) : "?";
   }
 
   private backoffRemainingMs(): number {
@@ -1142,85 +854,19 @@ export class UsageWidget {
   }
 }
 
-function meterProgress(meter: UsageMeter): number {
-  if (typeof meter.remainingPercent === "number") {
-    return clampPercent(meter.remainingPercent);
-  }
-  if (typeof meter.usedPercent === "number") {
-    return clampPercent(meter.usedPercent);
-  }
-  if (
-    typeof meter.remaining === "number" &&
-    typeof meter.total === "number" &&
-    meter.total > 0
-  ) {
-    return clampPercent(((meter.total - meter.remaining) / meter.total) * 100);
-  }
-  return 0;
-}
-
 function usedMeterProgress(meter: UsageMeter): number {
   if (typeof meter.usedPercent === "number") {
     return clampPercent(meter.usedPercent);
   }
-  return meterProgress(meter);
+  return meterProgress(meter) ?? 0;
 }
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-function sentinelRiskClass(score: number): string {
-  if (score >= 75) {
-    return "sentinel-risk-severe";
-  }
-  if (score >= 50) {
-    return "sentinel-risk-high";
-  }
-  if (score >= 25) {
-    return "sentinel-risk-elevated";
-  }
-  return "sentinel-risk-normal";
-}
-
-function formatIpRiskSignals(
-  state: IpRiskState,
-  language: ResolvedLanguage
-): string {
-  const signals: string[] = [];
-  if (state.signals.proxy) {
-    signals.push("Proxy");
-  }
-  if (state.signals.vpn) {
-    signals.push("VPN");
-  }
-  if (state.signals.tor) {
-    signals.push("Tor");
-  }
-  if (state.signals.hosting) {
-    signals.push("Hosting");
-  }
-  if (state.signals.type && !signals.includes(state.signals.type)) {
-    signals.push(state.signals.type);
-  }
-  return signals.length > 0 ? signals.join(" / ") : t(language, "ip.noProxySignals");
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function isAlertMeter(meter: UsageMeter): boolean {
-  if (typeof meter.remaining === "number" && meter.remaining <= 0) {
-    return true;
-  }
-  if (typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) {
-    return true;
-  }
-  if (typeof meter.usedPercent === "number" && meter.usedPercent >= 95) {
-    return true;
-  }
-  return false;
 }
 
 function chatGptMeterPriority(meter: UsageMeter): number {
@@ -1255,7 +901,7 @@ function chatGptMeterPriority(meter: UsageMeter): number {
 function groupChatGptMeters(
   meters: UsageMeter[],
   language: ResolvedLanguage
-): Array<{ label: string; meters: UsageMeter[] }> {
+): Array<{ key: GptSectionKey; label: string; meters: UsageMeter[] }> {
   const groups: Record<GptSectionKey, UsageMeter[]> = {
     subscription: [],
     input: [],
@@ -1268,6 +914,7 @@ function groupChatGptMeters(
     groups[chatGptMeterSection(meter)].push(meter);
   }
   return GPT_SECTION_ORDER.map((key) => ({
+    key,
     label: formatGptSectionLabelLocalized(language, key),
     meters: groups[key]
   })).filter((section) => section.meters.length > 0);
@@ -1278,6 +925,8 @@ function chatGptMeterSection(meter: UsageMeter): GptSectionKey {
   const rawKind = meter.rawKind?.toLowerCase() ?? "";
   const label = meter.label.toLowerCase();
 
+  if (rawKind === "chatgpt.library_storage") return "input";
+  if (rawKind === "chatgpt.reset_credits") return "codex";
   if (rawKind === "chatgpt.subscription") {
     return "subscription";
   }

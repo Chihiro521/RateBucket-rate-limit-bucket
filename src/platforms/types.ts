@@ -25,6 +25,10 @@ export type UsageMeter = {
   windowSeconds?: number | null;
   source: UsageSource;
   confidence: Confidence;
+  metricKind?: "quota" | "balance" | "subscription";
+  unit?: "count" | "percent" | "credits" | "bytes";
+  quotaState?: "blocked" | "unknown";
+  requestStartedAt?: number;
   observedAt?: number;
   rawKind?: string;
 };
@@ -35,6 +39,7 @@ export type UsageSnapshot = {
   source: UsageSource;
   updatedAt: number;
   checkedAt?: number;
+  scopeKey?: string;
   cacheAgeMs?: number;
   status: "ok" | "partial" | "unknown" | "error";
   errorMessage?: string;
@@ -65,6 +70,7 @@ export type EndpointKey =
   | "chatgpt:codexUsage"
   | "chatgpt:whamTasksRateLimit"
   | "chatgpt:accountsCheck"
+  | "chatgpt:libraryStorage"
   | "gemini:usageBatchExecute"
   | "kimi:subscription"
   | "perplexity:rateLimitAll";
@@ -89,6 +95,9 @@ export type BridgeResponse = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   json?: unknown;
+  scopeKey?: string;
+  requestStartedAt?: number;
+  observedAt?: number;
   text?: string;
   error?: {
     status?: number;
@@ -106,6 +115,8 @@ export type InterceptedUsageMessage = {
   json: unknown;
   text?: string;
   ts: number;
+  requestStartedAt?: number;
+  scopeKey?: string;
 };
 
 export type UsageEndpointFetcher = (

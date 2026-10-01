@@ -63,7 +63,7 @@ describe("chatgpt normalizer", () => {
     });
   });
 
-  it("normalizes object blocked_features as zero remaining feature meters", () => {
+  it("normalizes object blocked_features as explicit blocked feature meters", () => {
     const normalized = normalizeChatGptConversationInit({
       blocked_features: [
         {
@@ -98,7 +98,8 @@ describe("chatgpt normalizer", () => {
     expect(normalized.meters[0]).toMatchObject({
       key: "limits_progress:deep_research",
       label: "Deep Research",
-      remaining: 0,
+      remaining: null,
+      quotaState: "blocked",
       total: null,
       resetAt: "2026-08-02T09:08:12.525030+00:00",
       rawKind: "blocked_features"
@@ -106,7 +107,8 @@ describe("chatgpt normalizer", () => {
     expect(normalized.meters[1]).toMatchObject({
       key: "limits_progress:image_gen",
       label: "Image Generation",
-      remaining: 0,
+      remaining: null,
+      quotaState: "blocked",
       total: null,
       resetAt: "2026-08-03T09:08:12.525030+00:00",
       rawKind: "blocked_features"
@@ -114,7 +116,8 @@ describe("chatgpt normalizer", () => {
     expect(normalized.meters[2]).toMatchObject({
       key: "limits_progress:computer_control",
       label: "Computer Control",
-      remaining: 0,
+      remaining: null,
+      quotaState: "blocked",
       total: null,
       resetAt: "2026-08-04T09:08:12.525030+00:00",
       rawKind: "blocked_features"
@@ -122,7 +125,8 @@ describe("chatgpt normalizer", () => {
     expect(normalized.meters[3]).toMatchObject({
       key: "limits_progress:reason",
       label: "Reasoning Quota",
-      remaining: 0,
+      remaining: null,
+      quotaState: "blocked",
       total: 50,
       resetAt: "2026-07-11T06:26:52.334331+00:00",
       rawKind: "blocked_features"
@@ -136,7 +140,7 @@ describe("chatgpt normalizer", () => {
         allowed: true,
         limit_reached: false,
         primary_window: {
-          used_percent: 0.4,
+          used_percent: 40,
           reset_at: 1_775_000_000,
           limit_window_seconds: 10800
         },
@@ -169,7 +173,7 @@ describe("chatgpt normalizer", () => {
     const meters = normalizeChatGptWhamUsage({
       rate_limit: {
         primary_window: {
-          used_percent: 0.01,
+          used_percent: 1,
           reset_at: 1_775_000_000
         }
       },
@@ -181,7 +185,7 @@ describe("chatgpt normalizer", () => {
         },
         {
           title: "GPT-5.3-Codex-Spark 每周使用限额",
-          percent_remaining: 0.98,
+          percent_remaining: 98,
           reset_at: 1_775_002_000
         }
       ]
@@ -205,7 +209,7 @@ describe("chatgpt normalizer", () => {
     const meters = normalizeChatGptWhamUsage({
       additional_rate_limits: {
         primary_window: {
-          used_percent: 0.28,
+          used_percent: 28,
           reset_at: 1_775_001_000,
           limit_window_seconds: 7200
         },
@@ -229,8 +233,8 @@ describe("chatgpt normalizer", () => {
       key: "codex:root.additional_rate_limits.secondary_window",
       label: "Additional Weekly window",
       rawKind: "codex.additional_rate_limit",
-      usedPercent: 100,
-      remainingPercent: 0
+      usedPercent: 1,
+      remainingPercent: 99
     });
   });
 
@@ -406,11 +410,11 @@ describe("chatgpt normalizer", () => {
     const snapshot = await fetchChatGptUsage(fetcher);
 
     expect(snapshot.status).toBe("partial");
-    expect(snapshot.errorMessage).toBe("部分功能被限制");
+    expect(snapshot.errorMessage).toBe("部分查询失败，保留上次数据");
     expect(snapshot.meters.some((meter) => meter.key === "wham:primary_window")).toBe(true);
   });
 
-  it("prefers the current Codex usage endpoint without calling the old fallback", async () => {
+  it("queries the verified primary endpoint without actively calling legacy sources", async () => {
     const requested: string[] = [];
     const fetcher: UsageEndpointFetcher = async (endpointKey) => {
       requested.push(endpointKey);
@@ -421,7 +425,7 @@ describe("chatgpt normalizer", () => {
         ok: true,
         platform: "chatgpt",
         endpointKey,
-        json: endpointKey === "chatgpt:codexUsage"
+        json: endpointKey === "chatgpt:whamUsage"
           ? { rate_limit: { primary_window: { used_percent: 34 } } }
           : {}
       };
@@ -429,8 +433,10 @@ describe("chatgpt normalizer", () => {
 
     const result = await fetchChatGptUsage(fetcher);
 
-    expect(requested).toContain("chatgpt:codexUsage");
-    expect(requested).not.toContain("chatgpt:whamUsage");
+    expect(requested).not.toContain("chatgpt:codexUsage");
+    expect(requested).not.toContain("chatgpt:whamTasksRateLimit");
+    expect(requested).toContain("chatgpt:whamUsage");
+    expect(requested).toContain("chatgpt:libraryStorage");
     expect(result.meters.find((meter) => meter.key === "wham:primary_window")?.remainingPercent)
       .toBe(66);
   });
@@ -485,7 +491,7 @@ describe("chatgpt normalizer", () => {
     expect(requested).not.toContain("chatgpt:accountsCheck");
   });
 
-  it("does not surface optional wham failures as red errors when other meters exist", async () => {
+  it("reports partial failures without discarding successful meters", async () => {
     const okConversation: BridgeResponse = {
       source: "ai-usage-floating-monitor",
       direction: "main-to-content",
@@ -529,7 +535,7 @@ describe("chatgpt normalizer", () => {
 
     expect(snapshot.status).toBe("partial");
     expect(snapshot.meters).toHaveLength(1);
-    expect(snapshot.errorMessage).toBeUndefined();
+    expect(snapshot.errorMessage).toBe("部分查询失败，保留上次数据");
   });
 
   it("tolerates missing fields", () => {

@@ -1,4 +1,5 @@
 import type { UsageMeter, UsageSnapshot } from "./types";
+import { isChatPassPath } from "./presentation";
 
 export const MERGED_METER_TTL_MS = 30 * 60_000;
 
@@ -8,7 +9,7 @@ export function mergeUsageSnapshots(
   now = Date.now()
 ): UsageSnapshot {
   const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
-  if (!existing || existing.platform !== incoming.platform) {
+  if (!existing || existing.platform !== incoming.platform || existing.scopeKey !== incoming.scopeKey) {
     return {
       ...normalizedIncoming,
       cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
@@ -16,6 +17,17 @@ export function mergeUsageSnapshots(
   }
 
   const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+  normalizedIncoming.meters = normalizedIncoming.meters.map((meter) => {
+    const previous = normalizedExisting.meters.find((item) => item.key === meter.key);
+    if (!previous) return meter;
+    if ((meter.requestStartedAt ?? meter.observedAt ?? 0) <
+        (previous.requestStartedAt ?? previous.observedAt ?? 0)) return previous;
+    if (previous.quotaState === "blocked" && meter.quotaState === "unknown") {
+      return now - (previous.observedAt ?? 0) <= MERGED_METER_TTL_MS
+        ? previous : { ...meter, remaining: null };
+    }
+    return meter;
+  });
   const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
   const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
     (meter) => meter.source !== "estimate"
@@ -36,6 +48,8 @@ export function mergeUsageSnapshots(
 
   return {
     platform: incoming.platform,
+    scopeKey: incoming.scopeKey,
+    checkedAt: incoming.checkedAt ?? existing.checkedAt,
     meters,
     source: normalizedIncoming.source,
     updatedAt,
@@ -65,7 +79,8 @@ function withObservedAt(
 ): UsageSnapshot {
   return {
     ...snapshot,
-    meters: snapshot.meters.map((meter) => ({
+    meters: snapshot.meters.filter((meter) =>
+      snapshot.platform !== "chatgpt" || !isChatPassPath(meter.key)).map((meter) => ({
       ...meter,
       observedAt: meter.observedAt ?? fallbackObservedAt
     }))

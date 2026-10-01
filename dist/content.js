@@ -1,5 +1,35 @@
 (function() {
   "use strict";
+  const STALE_METER_MS = 2 * 6e4;
+  function isChatPassPath(path) {
+    return path.split(/[.:]/).some((part) => part.replaceAll("_", "").toLowerCase().startsWith("chatpass"));
+  }
+  function hasMeaningfulValue(meter) {
+    return meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription" || [meter.remaining, meter.total, meter.used, meter.remainingPercent, meter.usedPercent].some((value) => typeof value === "number" && Number.isFinite(value)) || meter.label === "Credits (unlimited)";
+  }
+  function isAlertMeter(meter) {
+    if (meter.metricKind === "balance" || meter.metricKind === "subscription" || meter.rawKind === "credits" || meter.rawKind === "chatgpt.subscription" || meter.source === "estimate") {
+      return false;
+    }
+    if (meter.quotaState === "blocked") return true;
+    if (meter.quotaState === "unknown") return false;
+    return typeof meter.remaining === "number" && meter.remaining <= 0 || typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5 || typeof meter.usedPercent === "number" && meter.usedPercent >= 95;
+  }
+  function meterProgress(meter) {
+    if (meter.metricKind === "balance" || meter.metricKind === "subscription" || meter.rawKind === "credits" || meter.rawKind === "chatgpt.subscription") return null;
+    const clamp2 = (value) => Math.max(0, Math.min(100, value));
+    if (typeof meter.remainingPercent === "number") return clamp2(meter.remainingPercent);
+    if (typeof meter.usedPercent === "number") return clamp2(meter.usedPercent);
+    if (typeof meter.total === "number" && meter.total > 0) {
+      if (typeof meter.used === "number") return clamp2(meter.used / meter.total * 100);
+      if (typeof meter.remaining === "number") return clamp2((meter.total - meter.remaining) / meter.total * 100);
+    }
+    return null;
+  }
+  function chatGptPrimaryMeter(meters) {
+    const quotas = meters.filter((meter) => hasMeaningfulValue(meter) && !isChatPassPath(meter.key) && meter.metricKind !== "balance" && meter.metricKind !== "subscription" && meter.unit !== "bytes" && meter.rawKind !== "credits" && meter.rawKind !== "chatgpt.subscription" && meter.source !== "estimate");
+    return quotas.find((meter) => meter.quotaState === "blocked") ?? quotas.find((meter) => meter.key === "wham:primary_window") ?? quotas.find((meter) => meter.key === "wham:secondary_window") ?? quotas.find((meter) => meter.quotaState !== "unknown") ?? quotas[0];
+  }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
@@ -25,17 +55,17 @@
   function asBoolean(value) {
     return typeof value === "boolean" ? value : null;
   }
-  function getRecord(record, key) {
-    return asRecord(record[key]);
+  function getRecord(record, key2) {
+    return asRecord(record[key2]);
   }
-  function getArray(record, key) {
-    return asArray(record[key]);
+  function getArray(record, key2) {
+    return asArray(record[key2]);
   }
-  function getNumber(record, key) {
-    return asNumber(record[key]);
+  function getNumber(record, key2) {
+    return asNumber(record[key2]);
   }
-  function getString(record, key) {
-    return asString(record[key]);
+  function getString(record, key2) {
+    return asString(record[key2]);
   }
   function percentFromRatioOrPercent(value) {
     if (value === null) {
@@ -44,8 +74,1097 @@
     const percent = value >= 0 && value <= 1 ? value * 100 : value;
     return Math.max(0, Math.min(100, percent));
   }
-  function titleFromKey(key) {
-    return key.replace(/[_-]+/g, " ").trim().replace(/\w\S*/g, (word) => word[0].toUpperCase() + word.slice(1));
+  function titleFromKey(key2) {
+    return key2.replace(/[_-]+/g, " ").trim().replace(/\w\S*/g, (word) => word[0].toUpperCase() + word.slice(1));
+  }
+  const FEATURE_LABELS$1 = {
+    deep_research: "Deep Research",
+    image_gen: "Image Generation",
+    computer_control: "Computer Control",
+    computer_use: "Computer Use",
+    computer_use_preview: "Computer Use",
+    file_upload: "File Upload",
+    odyssey: "Odyssey",
+    reason: "Reasoning Quota"
+  };
+  function explicitPercent(value) {
+    return value === null ? null : Math.max(0, Math.min(100, value));
+  }
+  function normalizeChatGptConversationInit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return { meters: [], blockedFeatures: [] };
+    }
+    const meters = [];
+    for (const item of getArray(root, "limits_progress")) {
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const featureName = getString(record, "feature_name") ?? "unknown_feature";
+      const remaining = getNumber(record, "remaining");
+      const resetAfter = resetAfterValue(record.reset_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+      meters.push({
+        key: `limits_progress:${featureName}`,
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
+        remaining,
+        resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
+        source,
+        metricKind: "quota",
+        unit: "count",
+        quotaState: featureName === "image_gen" ? "unknown" : void 0,
+        confidence: featureName === "image_gen" ? "low" : remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
+        rawKind: "limits_progress"
+      });
+    }
+    const defaultModelSlug = getString(root, "default_model_slug") ?? void 0;
+    const blocked = normalizeBlockedFeatures(root, source);
+    for (const meter of blocked.meters) {
+      const index = meters.findIndex((item) => item.key === meter.key);
+      if (index >= 0) meters[index] = meter;
+      else meters.push(meter);
+    }
+    return { meters, defaultModelSlug, blockedFeatures: blocked.names };
+  }
+  function normalizeBlockedFeatures(root, source) {
+    const meters = [];
+    const names = [];
+    for (const item of asArray(root.blocked_features)) {
+      if (typeof item === "string") {
+        names.push(item);
+        meters.push({ key: `limits_progress:${item}`, label: FEATURE_LABELS$1[item] ?? titleFromKey(item), source, confidence: "high", metricKind: "quota", unit: "count", quotaState: "blocked", rawKind: "blocked_features" });
+        continue;
+      }
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const featureName = getString(record, "name") ?? getString(record, "feature_name") ?? getString(record, "feature");
+      if (!featureName) {
+        continue;
+      }
+      names.push(featureName);
+      const resetAfter = resetAfterValue(record.reset_after ?? record.resets_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+      const rawTotal = getNumber(record, "limit");
+      meters.push({
+        key: `limits_progress:${featureName}`,
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
+        remaining: getNumber(record, "remaining"),
+        metricKind: "quota",
+        unit: "count",
+        quotaState: "blocked",
+        total: rawTotal !== null && rawTotal > 0 ? rawTotal : null,
+        resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
+        source,
+        confidence: resetAt !== null || resetAfter.resetAfterSeconds !== null ? "high" : "medium",
+        rawKind: "blocked_features"
+      });
+    }
+    return { meters, names };
+  }
+  function normalizeWindowMeter(args) {
+    const explicitRemainingPercent = explicitPercent(
+      numberFromKeys(args.record, [
+        "remaining_percent",
+        "remainingPercent",
+        "percent_remaining",
+        "percentRemaining",
+        "remaining_percentage",
+        "remainingPercentage",
+        "remaining_pct",
+        "remainingPct"
+      ])
+    );
+    const rawUsedPercent = explicitPercent(
+      numberFromKeys(args.record, [
+        "used_percent",
+        "usedPercent",
+        "used_percentage",
+        "usedPercentage",
+        "percent_used",
+        "percentUsed"
+      ])
+    );
+    const remainingPercent = explicitRemainingPercent ?? (args.displayAsRemaining && rawUsedPercent !== null ? explicitPercent(100 - rawUsedPercent) : null);
+    const usedPercent = rawUsedPercent ?? (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
+    const resetValue = resetValueFromRecord(args.record);
+    const windowSeconds = numberFromKeys(args.record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]);
+    if (usedPercent === null && remainingPercent === null && resetValue === null && windowSeconds === null) {
+      return null;
+    }
+    return {
+      key: args.key,
+      label: args.label,
+      usedPercent,
+      remainingPercent,
+      resetAt: resetValue,
+      windowSeconds,
+      source: args.source,
+      confidence: usedPercent !== null && resetValue !== null ? "high" : "medium",
+      metricKind: "quota",
+      unit: "percent",
+      rawKind: args.rawKind
+    };
+  }
+  function normalizeChatGptWhamUsage(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = [];
+    const rateLimit = getRecord(root, "rate_limit");
+    if (rateLimit) {
+      const primary = getRecord(rateLimit, "primary_window");
+      if (primary) {
+        const meter = normalizeWindowMeter({
+          key: "wham:primary_window",
+          label: codexWindowLabel(primary, "Primary window"),
+          record: primary,
+          source,
+          rawKind: "rate_limit.primary_window",
+          displayAsRemaining: true
+        });
+        if (meter) {
+          meters.push(meter);
+        }
+      }
+      const secondary = getRecord(rateLimit, "secondary_window");
+      if (secondary) {
+        const meter = normalizeWindowMeter({
+          key: "wham:secondary_window",
+          label: codexWindowLabel(secondary, "Secondary window"),
+          record: secondary,
+          source,
+          rawKind: "rate_limit.secondary_window",
+          displayAsRemaining: true
+        });
+        if (meter) {
+          meters.push(meter);
+        }
+      }
+    }
+    const codeReviewRateLimit = getRecord(root, "code_review_rate_limit");
+    const codeReviewPrimary = codeReviewRateLimit ? getRecord(codeReviewRateLimit, "primary_window") : null;
+    if (codeReviewPrimary) {
+      const meter = normalizeWindowMeter({
+        key: "wham:code_review",
+        label: "Code Review",
+        record: codeReviewPrimary,
+        source,
+        rawKind: "code_review_rate_limit.primary_window",
+        displayAsRemaining: true
+      });
+      if (meter) {
+        meters.push(meter);
+      }
+    }
+    const credits = getRecord(root, "credits");
+    if (credits) {
+      const unlimited = asBoolean(credits.unlimited);
+      const balance = getNumber(credits, "balance");
+      if (unlimited !== null || balance !== null || asBoolean(credits.has_credits) !== null) {
+        meters.push({
+          key: "wham:credits",
+          label: unlimited ? "Credits (unlimited)" : "Credits",
+          remaining: balance,
+          source,
+          confidence: balance !== null || unlimited === true ? "medium" : "low",
+          metricKind: "balance",
+          unit: "credits",
+          rawKind: "credits"
+        });
+      }
+    }
+    const resets = getRecord(root, "rate_limit_reset_credits");
+    const available = resets ? getNumber(resets, "available_count") : null;
+    if (available !== null && available >= 0 && Number.isInteger(available)) {
+      meters.push({ key: "wham:resetCredits", label: "Available resets", remaining: available, source, confidence: "high", metricKind: "balance", unit: "count", rawKind: "chatgpt.reset_credits" });
+    }
+    meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
+    meters.push(...normalizeWhamCodexNamedUsage(root, source));
+    return dedupeMeters(meters);
+  }
+  function normalizeAdditionalWhamUsageWindows(root, source) {
+    const knownPaths = /* @__PURE__ */ new Set([
+      "root.rate_limit.primary_window",
+      "root.rate_limit.secondary_window",
+      "root.code_review_rate_limit.primary_window",
+      "root.credits"
+    ]);
+    return collectUsageCandidates(root, "root", {
+      maxDepth: 7,
+      includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
+    }).map((candidate) => {
+      const additionalLabel = codexAdditionalRateLimitLabel(
+        candidate.path,
+        candidate.record
+      );
+      return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
+        keyPrefix: additionalLabel ? "codex" : "wham",
+        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
+        displayAsRemaining: true,
+        label: additionalLabel ?? void 0
+      });
+    }).filter((meter) => meter !== null);
+  }
+  function normalizeWhamCodexNamedUsage(root, source) {
+    const codexRoots = collectCodexNamedSubtrees(root);
+    const meters = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const item of codexRoots) {
+      for (const meter of normalizeCodexUsageRecordTree(
+        item.record,
+        `wham.${item.path}`,
+        source
+      )) {
+        if (seen.has(meter.key)) {
+          continue;
+        }
+        seen.add(meter.key);
+        meters.push(meter);
+      }
+    }
+    return meters;
+  }
+  function collectCodexNamedSubtrees(root) {
+    const queue = [
+      { path: "root", value: root, depth: 0 }
+    ];
+    const matches = [];
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item || item.depth > 4) {
+        continue;
+      }
+      const record = asRecord(item.value);
+      if (!record) {
+        continue;
+      }
+      for (const [key2, value] of Object.entries(record)) {
+        const path = `${item.path}.${key2}`;
+        if (isChatPassPath(path)) continue;
+        const childRecord = asRecord(value);
+        if (childRecord) {
+          if (isCodexPath(path)) {
+            matches.push({ path, record: childRecord });
+          }
+          queue.push({ path, value, depth: item.depth + 1 });
+        } else if (Array.isArray(value)) {
+          value.forEach((entry, index) => {
+            queue.push({
+              path: `${path}.${index}`,
+              value: entry,
+              depth: item.depth + 1
+            });
+          });
+        }
+      }
+    }
+    return matches;
+  }
+  function isCodexPath(path) {
+    const normalized = path.toLowerCase();
+    return normalized.includes("codex") && !normalized.includes("code_review");
+  }
+  function normalizeTasksRateLimit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = [];
+    const direct = normalizeWindowMeter({
+      key: "tasks:rate_limit",
+      label: "Tasks rate limit",
+      record: root,
+      source,
+      rawKind: "tasks.rate_limit"
+    });
+    if (direct) {
+      meters.push(direct);
+    }
+    return meters;
+  }
+  function normalizeChatGptAccountsCheck(json, source = "api") {
+    const root = asRecord(json);
+    const accounts = root ? getRecord(root, "accounts") : null;
+    if (!accounts) {
+      return [];
+    }
+    const account = accountCheckRecord(accounts);
+    const entitlement = account ? getRecord(account, "entitlement") : null;
+    if (!entitlement) {
+      return [];
+    }
+    const expiresAt = getString(entitlement, "expires_at");
+    const renewsAt = getString(entitlement, "renews_at");
+    const hasActiveSubscription = asBoolean(entitlement.has_active_subscription);
+    const subscriptionPlan = getString(entitlement, "subscription_plan");
+    const resetAt = expiresAt ?? renewsAt;
+    if (!resetAt && hasActiveSubscription === null && !subscriptionPlan) {
+      return [];
+    }
+    return [
+      {
+        key: "chatgpt:subscription",
+        label: "ChatGPT subscription",
+        requestKind: expiresAt ? "expires" : renewsAt ? "renews" : void 0,
+        modelName: subscriptionPlan ?? void 0,
+        resetAt,
+        source,
+        confidence: resetAt ? "high" : "medium",
+        metricKind: "subscription",
+        rawKind: "chatgpt.subscription"
+      }
+    ];
+  }
+  function accountCheckRecord(accounts) {
+    const defaultAccount = getRecord(accounts, "default");
+    if (defaultAccount) {
+      return defaultAccount;
+    }
+    for (const value of Object.values(accounts)) {
+      const record = asRecord(value);
+      if (record) {
+        return record;
+      }
+    }
+    return null;
+  }
+  function normalizeCodexUsageRecordTree(root, rootPath, source) {
+    const candidates = collectCodexUsageCandidates(root, rootPath);
+    const meters = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const candidate of candidates) {
+      const meter = normalizeCodexUsageObject(candidate.path, candidate.record, source);
+      if (!meter || seen.has(meter.key)) {
+        continue;
+      }
+      seen.add(meter.key);
+      meters.push(meter);
+    }
+    return meters;
+  }
+  function collectCodexUsageCandidates(root, rootPath) {
+    return collectUsageCandidates(root, rootPath, {
+      maxDepth: 7,
+      includeRecord: (_path, record) => isCodexUsageLike(record)
+    });
+  }
+  function isCodexUsageLike(record) {
+    return numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null || numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !== null || numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null || numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null || numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage"
+    ]) !== null || numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null || stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null;
+  }
+  function isGeneralChatGptUsageLike(path, record) {
+    if (isCodexPath(path)) {
+      return false;
+    }
+    if (!isCodexUsageLike(record)) {
+      return false;
+    }
+    const normalizedPath = path.toLowerCase();
+    const label = usageLabel(record, path).toLowerCase();
+    const hasUsageNameSignal = normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
+    const hasCountQuotaSignal = numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null && numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]) !== null;
+    const hasCurrentWindowSignal = hasCountQuotaSignal || numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct",
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed"
+    ]) !== null || resetValueFromRecord(record) !== null || numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds",
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]) !== null;
+    return hasUsageNameSignal && hasCurrentWindowSignal;
+  }
+  function normalizeCodexUsageObject(path, record, source) {
+    return normalizeGenericUsageObject(path, record, source, {
+      keyPrefix: "codex",
+      rawKind: "codex.settings.usage",
+      displayAsRemaining: true
+    });
+  }
+  function normalizeGenericUsageObject(path, record, source, options) {
+    const remaining = numberFromKeys(record, [
+      "remaining",
+      "remaining_credits",
+      "remainingCredits"
+    ]);
+    const total = numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]);
+    const used = numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ?? (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
+    const explicitRemainingPercent = explicitPercent(
+      numberFromKeys(record, [
+        "remaining_percent",
+        "remainingPercent",
+        "percent_remaining",
+        "percentRemaining",
+        "remaining_percentage",
+        "remainingPercentage",
+        "remaining_pct",
+        "remainingPct"
+      ])
+    );
+    const rawUsedPercent = explicitPercent(
+      numberFromKeys(record, [
+        "used_percent",
+        "usedPercent",
+        "used_percentage",
+        "usedPercentage",
+        "percent_used",
+        "percentUsed"
+      ])
+    );
+    const remainingPercent = explicitRemainingPercent ?? (options.displayAsRemaining && rawUsedPercent !== null ? explicitPercent(100 - rawUsedPercent) : null);
+    const usedPercent = rawUsedPercent ?? (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
+    const resetAt = resetValueFromRecord(record);
+    const resetAfterSeconds = numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds"
+    ]);
+    const windowSeconds = numberFromKeys(record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]);
+    const label = options.label ?? usageLabel(record, path);
+    if (remaining === null && total === null && used === null && usedPercent === null && remainingPercent === null && resetAt === null && resetAfterSeconds === null && windowSeconds === null) {
+      return null;
+    }
+    return {
+      key: `${options.keyPrefix}:${path}`,
+      label,
+      remaining,
+      total,
+      used,
+      usedPercent: usedPercent ?? (used !== null && total !== null && total > 0 ? percentFromRatioOrPercent(used / total) : null),
+      remainingPercent: remainingPercent ?? (remaining !== null && total !== null && total > 0 ? percentFromRatioOrPercent(remaining / total) : null),
+      resetAt,
+      resetAfterSeconds,
+      windowSeconds,
+      source,
+      confidence: remaining !== null || total !== null || usedPercent !== null || remainingPercent !== null ? "medium" : "low",
+      rawKind: options.rawKind
+    };
+  }
+  function codexWindowLabel(record, fallback) {
+    const duration = numberFromKeys(record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds"
+    ]);
+    if (duration === 18e3) {
+      return "5-hour window";
+    }
+    if (duration === 604800) {
+      return "Weekly window";
+    }
+    return fallback;
+  }
+  function codexAdditionalRateLimitLabel(path, record) {
+    const normalized = path.toLowerCase();
+    if (!normalized.includes("additional_rate_limits")) {
+      return null;
+    }
+    const name = getString(record, "model_name") ?? getString(record, "model_slug") ?? "Additional";
+    if (normalized.endsWith(".primary_window")) {
+      return `${name} Primary window`;
+    }
+    if (normalized.endsWith(".secondary_window")) {
+      return `${name} Weekly window`;
+    }
+    return `${name} usage limit`;
+  }
+  function collectUsageCandidates(root, rootPath, options) {
+    const queue = [
+      { path: rootPath, value: root, depth: 0 }
+    ];
+    const candidates = [];
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item || item.depth > options.maxDepth) {
+        continue;
+      }
+      if (isChatPassPath(item.path)) continue;
+      const record = asRecord(item.value);
+      if (!record) {
+        continue;
+      }
+      if (options.includeRecord(item.path, record)) {
+        candidates.push({ path: item.path, record });
+      }
+      for (const [key2, value] of Object.entries(record)) {
+        if (Array.isArray(value)) {
+          value.forEach((entry, index) => {
+            queue.push({
+              path: `${item.path}.${key2}.${index}`,
+              value: entry,
+              depth: item.depth + 1
+            });
+          });
+        } else if (asRecord(value)) {
+          queue.push({
+            path: `${item.path}.${key2}`,
+            value,
+            depth: item.depth + 1
+          });
+        }
+      }
+    }
+    return candidates;
+  }
+  function usageLabel(record, path) {
+    const direct = getString(record, "label") ?? getString(record, "title") ?? getString(record, "name") ?? getString(record, "display_name") ?? getString(record, "displayName") ?? getString(record, "feature_name") ?? getString(record, "bucket_name") ?? getString(record, "bucketName") ?? getString(record, "limit_name") ?? getString(record, "limitName");
+    if (direct) {
+      const titled = displayUsageLabel(direct);
+      if (path.toLowerCase().includes("codex") && isSimpleUsageKey(direct) && !/codex|gpt/i.test(titled)) {
+        return `Codex ${titled}`;
+      }
+      return titled;
+    }
+    const model = getString(record, "model") ?? getString(record, "model_name") ?? getString(record, "modelName") ?? getString(record, "model_slug") ?? getString(record, "modelSlug");
+    const windowName = getString(record, "window") ?? getString(record, "window_name") ?? getString(record, "windowName") ?? getString(record, "period") ?? getString(record, "period_name") ?? getString(record, "periodName");
+    if (model && windowName) {
+      return `${model} ${titleFromKey(windowName)} 使用限额`;
+    }
+    if (model) {
+      return `${model} 使用限额`;
+    }
+    const normalizedPath = path.toLowerCase();
+    if (normalizedPath === "codex" || normalizedPath.includes("codex_usage")) {
+      return "Codex usage";
+    }
+    const pathLabel = path.split(".").filter((part) => part !== "root" && !/^\d+$/.test(part)).slice(-3).join(" ");
+    return pathLabel ? titleFromKey(pathLabel) : "Codex usage";
+  }
+  function displayUsageLabel(value) {
+    const trimmed = value.trim();
+    if (!isSimpleUsageKey(trimmed)) {
+      return trimmed;
+    }
+    return titleFromKey(trimmed);
+  }
+  function isSimpleUsageKey(value) {
+    return /^[A-Za-z0-9_]+$/.test(value.trim());
+  }
+  function resetValueFromRecord(record) {
+    return stringOrNumberFromKeys(record, [
+      "reset_at",
+      "resetAt",
+      "resets_at",
+      "resetsAt",
+      "reset_time",
+      "resetTime",
+      "resets"
+    ]);
+  }
+  function resetAfterValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { resetAt: null, resetAfterSeconds: value };
+    }
+    if (typeof value !== "string") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return { resetAt: null, resetAfterSeconds: numeric };
+    }
+    return { resetAt: trimmed, resetAfterSeconds: null };
+  }
+  function dedupeMeters(meters) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const meter of meters) {
+      if (seen.has(meter.key)) {
+        continue;
+      }
+      seen.add(meter.key);
+      result.push(meter);
+    }
+    return result;
+  }
+  function numberFromKeys(record, keys) {
+    for (const key2 of keys) {
+      const value = getNumber(record, key2);
+      if (value !== null) {
+        return value;
+      }
+    }
+    return null;
+  }
+  function stringOrNumberFromKeys(record, keys) {
+    for (const key2 of keys) {
+      const value = record[key2];
+      if (typeof value === "string" || typeof value === "number") {
+        return value;
+      }
+    }
+    return null;
+  }
+  const CHATGPT_USAGE_ENDPOINTS = ["chatgpt:conversationInit", "chatgpt:whamUsage", "chatgpt:libraryStorage"];
+  function normalizeChatGptLibraryStorage(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) return [];
+    const used = getNumber(root, "used_bytes"), total = getNumber(root, "allowed_bytes"), remaining = getNumber(root, "remaining_bytes");
+    if (used === null || total === null || remaining === null || used < 0 || total <= 0 || remaining < 0) return [];
+    return [{
+      key: "chatgpt:libraryStorage",
+      label: "Library storage",
+      used,
+      total,
+      remaining,
+      usedPercent: Math.min(100, used / total * 100),
+      source,
+      confidence: "high",
+      metricKind: "quota",
+      unit: "bytes",
+      quotaState: asBoolean(root.is_over_limit) === true || remaining === 0 ? "blocked" : void 0,
+      rawKind: "chatgpt.library_storage"
+    }];
+  }
+  function normalizeChatGptEndpoint(key2, json, source = "api") {
+    if (key2 === "chatgpt:conversationInit") return normalizeChatGptConversationInit(json, source).meters;
+    if (key2 === "chatgpt:libraryStorage") return normalizeChatGptLibraryStorage(json, source);
+    if (key2 === "chatgpt:accountsCheck") return normalizeChatGptAccountsCheck(json, source);
+    return normalizeChatGptWhamUsage(json, source);
+  }
+  async function fetchChatGptUsage(fetcher) {
+    const results = await Promise.all(CHATGPT_USAGE_ENDPOINTS.map(async (key2) => {
+      const response = await fetcher(key2);
+      return { response, meters: response.ok ? normalizeChatGptEndpoint(key2, response.json) : [] };
+    }));
+    const meters = results.flatMap((item) => item.meters);
+    const failed = results.some((item) => !item.response.ok);
+    return {
+      platform: "chatgpt",
+      meters: dedupeMeters(meters),
+      source: meters.length ? "api" : "unknown",
+      updatedAt: Date.now(),
+      status: meters.length ? failed || meters.some((m) => m.quotaState === "blocked") ? "partial" : "ok" : "error",
+      errorMessage: failed ? "部分查询失败，保留上次数据" : void 0,
+      debug: { endpoint: CHATGPT_USAGE_ENDPOINTS.join(","), parser: "chatgpt" }
+    };
+  }
+  function normalizeChatGptIntercepted(url, json) {
+    const path = safePathname(url);
+    if (path === "/backend-api/conversation/init") {
+      return normalizeChatGptConversationInit(json, "intercepted").meters;
+    }
+    if (path === "/backend-api/files/library/storage/usage") {
+      return normalizeChatGptLibraryStorage(json, "intercepted");
+    }
+    if (path === "/backend-api/wham/usage") {
+      return normalizeChatGptWhamUsage(json, "intercepted");
+    }
+    if (path === "/backend-api/codex/usage") {
+      return normalizeChatGptWhamUsage(json, "intercepted");
+    }
+    if (path === "/backend-api/wham/tasks/rate_limit") {
+      return normalizeTasksRateLimit(json, "intercepted");
+    }
+    if (/^\/backend-api\/accounts\/check\//.test(path)) {
+      return normalizeChatGptAccountsCheck(json, "intercepted");
+    }
+    return [];
+  }
+  function safePathname(url) {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return "";
+    }
+  }
+  const MERGED_METER_TTL_MS = 30 * 6e4;
+  function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
+    const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
+    if (!existing || existing.platform !== incoming.platform || existing.scopeKey !== incoming.scopeKey) {
+      return {
+        ...normalizedIncoming,
+        cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
+      };
+    }
+    const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+    normalizedIncoming.meters = normalizedIncoming.meters.map((meter) => {
+      const previous = normalizedExisting.meters.find((item) => item.key === meter.key);
+      if (!previous) return meter;
+      if ((meter.requestStartedAt ?? meter.observedAt ?? 0) < (previous.requestStartedAt ?? previous.observedAt ?? 0)) return previous;
+      if (previous.quotaState === "blocked" && meter.quotaState === "unknown") {
+        return now - (previous.observedAt ?? 0) <= MERGED_METER_TTL_MS ? previous : { ...meter, remaining: null };
+      }
+      return meter;
+    });
+    const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
+    const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
+      (meter) => meter.source !== "estimate"
+    );
+    const retainedExisting = normalizedExisting.meters.filter((meter) => {
+      if (incomingKeys.has(meter.key)) {
+        return false;
+      }
+      if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
+        return false;
+      }
+      const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
+      return now - observedAt <= MERGED_METER_TTL_MS;
+    });
+    const meters = [...retainedExisting, ...normalizedIncoming.meters];
+    const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
+    return {
+      platform: incoming.platform,
+      scopeKey: incoming.scopeKey,
+      checkedAt: incoming.checkedAt ?? existing.checkedAt,
+      meters,
+      source: normalizedIncoming.source,
+      updatedAt,
+      cacheAgeMs: Math.max(0, now - updatedAt),
+      status: mergedStatus(normalizedExisting, normalizedIncoming, meters.length),
+      errorMessage: mergedErrorMessage(normalizedExisting, normalizedIncoming, meters.length),
+      debug: {
+        endpoint: joinDebugField(
+          normalizedExisting.debug?.endpoint,
+          normalizedIncoming.debug?.endpoint
+        ),
+        parser: joinDebugField(
+          normalizedExisting.debug?.parser,
+          normalizedIncoming.debug?.parser
+        )
+      }
+    };
+  }
+  function isLocalEstimateMeter(meter) {
+    return meter.rawKind === "localEstimate" || meter.key === "local:sent-count";
+  }
+  function withObservedAt(snapshot, fallbackObservedAt) {
+    return {
+      ...snapshot,
+      meters: snapshot.meters.filter((meter) => snapshot.platform !== "chatgpt" || !isChatPassPath(meter.key)).map((meter) => ({
+        ...meter,
+        observedAt: meter.observedAt ?? fallbackObservedAt
+      }))
+    };
+  }
+  function mergedStatus(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.status !== "unknown" ? incoming.status : existing.status;
+    }
+    if (incoming.status === "error") {
+      return "partial";
+    }
+    if (incoming.status === "partial" || existing.status === "partial") {
+      return "partial";
+    }
+    return "ok";
+  }
+  function mergedErrorMessage(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.errorMessage ?? existing.errorMessage;
+    }
+    if (incoming.errorMessage === "部分功能被限制") {
+      return incoming.errorMessage;
+    }
+    return void 0;
+  }
+  function joinDebugField(existing, incoming) {
+    const values = [existing, incoming].filter(
+      (value) => Boolean(value)
+    );
+    if (values.length === 0) {
+      return void 0;
+    }
+    return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
+  }
+  const CHATGPT_POLL_CHECK_MS = 3e4;
+  function startVisibleUsagePolling(options) {
+    const refreshIfVisible = () => {
+      if (options.isVisible()) {
+        options.refresh();
+      }
+    };
+    const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
+    const intervalId = options.setInterval(refreshIfVisible, CHATGPT_POLL_CHECK_MS);
+    return () => {
+      options.clearInterval(intervalId);
+      stopVisibilityListener();
+    };
+  }
+  function sameUsageValues(previous, next) {
+    if (!previous || previous.platform !== next.platform) {
+      return false;
+    }
+    if (previous.status !== next.status || previous.errorMessage !== next.errorMessage || previous.meters.length !== next.meters.length) {
+      return false;
+    }
+    const previousValues = new Map(
+      previous.meters.map((meter) => [meter.key, meterValue(meter)])
+    );
+    return next.meters.every(
+      (meter) => previousValues.get(meter.key) === meterValue(meter)
+    );
+  }
+  function meterValue(meter) {
+    return JSON.stringify({
+      label: meter.label,
+      modelName: meter.modelName,
+      requestKind: meter.requestKind,
+      remaining: meter.remaining,
+      total: meter.total,
+      used: meter.used,
+      usedPercent: meter.usedPercent,
+      remainingPercent: meter.remainingPercent,
+      resetAt: meter.quotaState === "unknown" ? null : meter.resetAt,
+      resetAfterSeconds: meter.quotaState === "unknown" ? null : meter.resetAfterSeconds,
+      windowSeconds: meter.windowSeconds,
+      source: meter.source,
+      confidence: meter.confidence,
+      rawKind: meter.rawKind,
+      metricKind: meter.metricKind,
+      unit: meter.unit,
+      quotaState: meter.quotaState
+    });
+  }
+  const CHATGPT_REFRESH_MS = 3e4;
+  const CHATGPT_OPERATION_INTERVAL_MS = 5e3;
+  class ChatGptUsageController {
+    constructor(options) {
+      this.options = options;
+      this.now = options.now ?? Date.now;
+    }
+    snapshot = null;
+    scope;
+    epoch = 0;
+    states = /* @__PURE__ */ new Map();
+    lastOperation = -Infinity;
+    loading = 0;
+    scopeLoad;
+    writes = Promise.resolve();
+    disposed = false;
+    now;
+    reset() {
+      this.epoch++;
+      this.scope = void 0;
+      this.scopeLoad = void 0;
+      this.snapshot = null;
+      this.states.clear();
+      this.loading = 0;
+      this.options.onLoading(false);
+      this.lastOperation = -Infinity;
+      this.options.onSnapshot(null);
+    }
+    destroy() {
+      this.disposed = true;
+      this.epoch++;
+    }
+    async refresh(reason = "poll") {
+      if (this.disposed) return;
+      if (this.loading > 0 && (reason === "manual" || reason === "operation")) {
+        await Promise.all([...this.states.values()].flatMap((state) => state.flight ? [state.flight] : []));
+        return;
+      }
+      const now = this.now();
+      if (reason === "operation" || reason === "manual") {
+        if (now - this.lastOperation < CHATGPT_OPERATION_INTERVAL_MS) return;
+        this.lastOperation = now;
+      }
+      const epoch = this.epoch;
+      const queries = [];
+      for (const key2 of CHATGPT_USAGE_ENDPOINTS) {
+        const state = this.state(key2);
+        if (state.flight) {
+          queries.push(state.flight);
+          continue;
+        }
+        if (state.retryAt > now) continue;
+        if (reason === "poll" && state.lastSuccess > 0 && now - state.lastSuccess < CHATGPT_REFRESH_MS) continue;
+        const flight = this.query(key2, state, epoch);
+        state.flight = flight;
+        void flight.finally(() => {
+          if (state.flight === flight) state.flight = void 0;
+        });
+        queries.push(flight);
+      }
+      if (!queries.length) {
+        this.publish();
+        return;
+      }
+      this.loading++;
+      this.options.onLoading(true);
+      try {
+        await Promise.all(queries);
+        if (epoch === this.epoch && !this.disposed) {
+          if (!this.snapshot) this.snapshot = this.empty();
+          this.snapshot = { ...this.snapshot, checkedAt: this.now() };
+          this.publish();
+        }
+      } finally {
+        if (epoch === this.epoch && !this.disposed) {
+          this.loading--;
+          this.options.onLoading(this.loading > 0);
+        }
+      }
+    }
+    async acceptIntercept(key2, json, observedAt, requestedAt = observedAt, scope) {
+      const epoch = this.epoch;
+      if (this.scope && !scope) return;
+      await this.adoptScope(scope);
+      if (this.disposed || epoch !== this.epoch) return;
+      const meters = this.stamp(normalizeChatGptEndpoint(key2, json, "intercepted"), observedAt, requestedAt);
+      if (!meters.length) return;
+      const state = this.state(key2);
+      state.lastSuccess = Math.max(state.lastSuccess, observedAt);
+      state.retryAt = 0;
+      state.failures = 0;
+      this.accept(meters, observedAt);
+    }
+    state(key2) {
+      let state = this.states.get(key2);
+      if (!state) {
+        state = { lastSuccess: 0, retryAt: 0, failures: 0 };
+        this.states.set(key2, state);
+      }
+      return state;
+    }
+    async adoptScope(scope) {
+      if (!scope) return;
+      if (this.scope === scope) {
+        await this.scopeLoad;
+        return;
+      }
+      const epoch = this.epoch;
+      this.scope = scope;
+      this.snapshot = null;
+      this.scopeLoad = this.options.readCache(scope).then((cached) => {
+        if (epoch !== this.epoch || this.scope !== scope || this.disposed) return;
+        if (cached?.scopeKey === scope) {
+          this.snapshot = cached;
+          this.publish();
+        }
+      }).catch(() => void 0);
+      await this.scopeLoad;
+    }
+    async query(key2, state, epoch) {
+      const started = this.now();
+      let response;
+      try {
+        response = await this.options.fetcher(key2);
+      } catch {
+        response = { source: "ai-usage-floating-monitor", direction: "main-to-content", requestId: "failed", platform: "chatgpt", ok: false };
+      }
+      if (epoch !== this.epoch || this.disposed) return;
+      if (response.ok) {
+        await this.adoptScope(response.scopeKey);
+        if (epoch !== this.epoch || this.disposed) return;
+        const observedAt = response.observedAt ?? this.now();
+        const meters = this.stamp(normalizeChatGptEndpoint(key2, response.json), observedAt, response.requestStartedAt ?? started);
+        if (meters.length) {
+          state.lastSuccess = observedAt;
+          state.retryAt = 0;
+          state.failures = 0;
+          this.accept(meters, observedAt);
+          return;
+        }
+      }
+      if (state.lastSuccess > started) return;
+      state.failures++;
+      const status = response.error?.status;
+      state.retryAt = this.now() + (status === 403 || status === 404 ? 3e5 : [6e4, 12e4, 3e5][Math.min(state.failures - 1, 2)]);
+      this.publish();
+    }
+    stamp(meters, observedAt, requestStartedAt) {
+      return meters.filter(hasMeaningfulValue).map((meter) => ({
+        ...meter,
+        observedAt,
+        requestStartedAt,
+        resetAt: meter.resetAfterSeconds !== null && meter.resetAfterSeconds !== void 0 ? observedAt + meter.resetAfterSeconds * 1e3 : meter.resetAt
+      }));
+    }
+    accept(meters, time) {
+      const previous = this.snapshot;
+      const incoming = {
+        platform: "chatgpt",
+        scopeKey: this.scope,
+        meters,
+        source: meters[0]?.source ?? "api",
+        updatedAt: time,
+        status: "ok"
+      };
+      const merged = mergeUsageSnapshots(previous, incoming, this.now());
+      if (sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+      this.snapshot = merged;
+      this.publish();
+    }
+    empty() {
+      return { platform: "chatgpt", scopeKey: this.scope, meters: [], source: "unknown", updatedAt: this.now(), status: "unknown" };
+    }
+    publish() {
+      if (this.disposed) return;
+      if (!this.snapshot) this.snapshot = this.empty();
+      const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) && this.now() - (meter.observedAt ?? this.snapshot.updatedAt) <= MERGED_METER_TTL_MS);
+      const failed = [...this.states.values()].some((state) => state.failures > 0);
+      this.snapshot = {
+        ...this.snapshot,
+        meters,
+        status: meters.length ? failed || meters.some((meter) => meter.quotaState === "blocked") ? "partial" : "ok" : failed ? "error" : "unknown",
+        errorMessage: failed ? meters.length ? "部分查询失败，保留上次数据" : "暂时无法获取额度" : void 0
+      };
+      this.options.onSnapshot(this.snapshot);
+      if (this.scope && meters.length) {
+        const value = this.snapshot;
+        this.writes = this.writes.then(() => this.options.writeCache(value)).catch(() => void 0);
+      }
+    }
   }
   const SOURCE = "ai-usage-floating-monitor";
   function isBridgeResponse(value) {
@@ -57,8 +1176,13 @@
   class BridgeClient {
     pending = /* @__PURE__ */ new Map();
     interceptHandlers = /* @__PURE__ */ new Set();
+    contextHandlers = /* @__PURE__ */ new Set();
     onMessage = (event) => {
       if (event.origin !== window.location.origin) {
+        return;
+      }
+      if (event.source === window && event.data && typeof event.data === "object" && event.data.kind === "chatgptContextChanged" && event.data.source === SOURCE && event.data.direction === "main-to-content") {
+        for (const handler of this.contextHandlers) handler();
         return;
       }
       if (isInterceptedUsageMessage(event.data)) {
@@ -91,6 +1215,11 @@
       }
       this.pending.clear();
       this.interceptHandlers.clear();
+      this.contextHandlers.clear();
+    }
+    onContextChanged(handler) {
+      this.contextHandlers.add(handler);
+      return () => this.contextHandlers.delete(handler);
     }
     onIntercepted(handler) {
       this.interceptHandlers.add(handler);
@@ -146,68 +1275,11 @@
     }
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
-  const CHATGPT_POLL_CHECK_MS = 15e3;
-  function startVisibleUsagePolling(options) {
-    const refreshIfVisible = () => {
-      if (options.isVisible()) {
-        options.refresh();
-      }
-    };
-    const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
-    const intervalId = options.setInterval(refreshIfVisible, CHATGPT_POLL_CHECK_MS);
-    return () => {
-      options.clearInterval(intervalId);
-      stopVisibilityListener();
-    };
-  }
-  function sameUsageValues(previous, next) {
-    if (!previous || previous.platform !== next.platform) {
-      return false;
-    }
-    if (previous.status !== next.status || previous.errorMessage !== next.errorMessage || previous.meters.length !== next.meters.length) {
-      return false;
-    }
-    const previousValues = new Map(
-      previous.meters.map((meter) => [meter.key, meterValue(meter)])
-    );
-    return next.meters.every(
-      (meter) => previousValues.get(meter.key) === meterValue(meter)
-    );
-  }
-  function withoutOlderMeters(previous, incoming) {
-    const newestByKey = new Map(
-      previous?.meters.map((meter) => [meter.key, meter.observedAt ?? previous.updatedAt]) ?? []
-    );
-    return {
-      ...incoming,
-      meters: incoming.meters.filter(
-        (meter) => (meter.observedAt ?? incoming.updatedAt) >= (newestByKey.get(meter.key) ?? 0)
-      )
-    };
-  }
-  function meterValue(meter) {
-    return JSON.stringify({
-      label: meter.label,
-      modelName: meter.modelName,
-      requestKind: meter.requestKind,
-      remaining: meter.remaining,
-      total: meter.total,
-      used: meter.used,
-      usedPercent: meter.usedPercent,
-      remainingPercent: meter.remainingPercent,
-      resetAt: meter.resetAt,
-      resetAfterSeconds: meter.resetAfterSeconds,
-      windowSeconds: meter.windowSeconds,
-      source: meter.source,
-      confidence: meter.confidence,
-      rawKind: meter.rawKind
-    });
-  }
   const CACHE_TTL_MS = 6e4;
   const MIN_REFRESH_INTERVAL_MS = 3e4;
   const FAILED_BACKOFF_STEPS_MS = [6e4, 12e4, 3e5];
-  function snapshotKey(platform2) {
-    return `aiUsage:${platform2}:snapshot`;
+  function snapshotKey(platform2, scope) {
+    return platform2 === "chatgpt" && scope ? `aiUsage:chatgpt:${scope}:snapshot` : `aiUsage:${platform2}:snapshot`;
   }
   function lastRefreshKey(platform2) {
     return `aiUsage:${platform2}:lastRefreshAt`;
@@ -221,7 +1293,7 @@
   function estimateKey(platform2) {
     return `aiUsage:${platform2}:estimate`;
   }
-  function storageGet$3(keys) {
+  function storageGet$1(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, (items) => {
         const error = chrome.runtime.lastError;
@@ -233,7 +1305,7 @@
       });
     });
   }
-  function storageSet$3(items) {
+  function storageSet$1(items) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(items, () => {
         const error = chrome.runtime.lastError;
@@ -245,10 +1317,11 @@
       });
     });
   }
-  async function getCachedSnapshot(platform2) {
-    const key = snapshotKey(platform2);
-    const items = await storageGet$3(key);
-    const value = items[key];
+  async function getCachedSnapshot(platform2, scope) {
+    if (platform2 === "chatgpt" && !scope) return null;
+    const key2 = snapshotKey(platform2, scope);
+    const items = await storageGet$1(key2);
+    const value = items[key2];
     if (!isUsageSnapshot(value, platform2)) {
       return null;
     }
@@ -258,37 +1331,38 @@
     };
   }
   function setCachedSnapshot(snapshot) {
+    if (snapshot.platform === "chatgpt" && !snapshot.scopeKey) return Promise.resolve();
     const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-    return storageSet$3({ [snapshotKey(snapshot.platform)]: persisted });
+    return storageSet$1({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
   }
   async function getLastRefreshAt(platform2) {
-    const key = lastRefreshKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = lastRefreshKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setLastRefreshAt(platform2, value) {
-    return storageSet$3({ [lastRefreshKey(platform2)]: value });
+    return storageSet$1({ [lastRefreshKey(platform2)]: value });
   }
   async function getBackoffUntil(platform2) {
-    const key = backoffKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = backoffKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setBackoffUntil(platform2, value) {
-    return storageSet$3({ [backoffKey(platform2)]: value });
+    return storageSet$1({ [backoffKey(platform2)]: value });
   }
   async function getFailureCount(platform2) {
-    const key = failureCountKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = failureCountKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setFailureCount(platform2, value) {
-    return storageSet$3({ [failureCountKey(platform2)]: value });
+    return storageSet$1({ [failureCountKey(platform2)]: value });
   }
   async function getEstimateState(platform2) {
-    const key = estimateKey(platform2);
-    const items = await storageGet$3(key);
-    const value = items[key];
+    const key2 = estimateKey(platform2);
+    const items = await storageGet$1(key2);
+    const value = items[key2];
     if (!isEstimateState(value)) {
       return null;
     }
@@ -302,7 +1376,7 @@
       firstSentAt: existing?.firstSentAt ?? now,
       lastSentAt: now
     };
-    await storageSet$3({ [estimateKey(platform2)]: next });
+    await storageSet$1({ [estimateKey(platform2)]: next });
     return next;
   }
   function isUsageSnapshot(value, platform2) {
@@ -311,7 +1385,7 @@
   function isEstimateState(value) {
     return typeof value === "object" && value !== null && typeof value.sentCount === "number" && typeof value.firstSentAt === "number" && typeof value.lastSentAt === "number";
   }
-  function installSendEstimator(platform2, onEstimate) {
+  function installSendEstimator(platform2, onEstimate, options = {}) {
     let lastIncrementAt = 0;
     const increment = () => {
       const now = Date.now();
@@ -319,6 +1393,10 @@
         return;
       }
       lastIncrementAt = now;
+      if (options.recordCounts === false) {
+        onEstimate({ platform: platform2, meters: [], source: "unknown", status: "unknown", updatedAt: now });
+        return;
+      }
       void incrementEstimateState(platform2).then((state) => {
         onEstimate(snapshotFromEstimate(platform2, state));
       });
@@ -381,8 +1459,9 @@
     return /\bsend\b|发送|submit|composer-submit|send-button/.test(label);
   }
   function resolveResetMs(meter, now = Date.now()) {
-    if (typeof meter.resetAfterSeconds === "number") {
-      return now + meter.resetAfterSeconds * 1e3;
+    const anchor = meter.observedAt ?? now;
+    if (typeof meter.resetAfterSeconds === "number" && !meter.resetAt) {
+      return anchor + meter.resetAfterSeconds * 1e3;
     }
     if (typeof meter.resetAt === "number") {
       if (meter.resetAt > 1e10) {
@@ -392,13 +1471,13 @@
         return meter.resetAt * 1e3;
       }
       if (meter.resetAt > 0) {
-        return now + meter.resetAt * 1e3;
+        return anchor + meter.resetAt * 1e3;
       }
     }
     if (typeof meter.resetAt === "string") {
       const numeric = Number(meter.resetAt.trim());
       if (Number.isFinite(numeric)) {
-        return resolveNumericResetMs(numeric, now);
+        return resolveNumericResetMs(numeric, anchor);
       }
       const parsed = Date.parse(meter.resetAt);
       return Number.isFinite(parsed) ? parsed : null;
@@ -426,35 +1505,14 @@
     "action.refreshUsage": "刷新用量",
     "action.restoreGptPanel": "恢复 GPT 用量面板",
     "action.settings": "设置",
-    "action.toggleSecret": "显示或隐藏密钥",
     "gpt.alertCount": "{count} 项预警",
     "gpt.title": "GPT 用量",
-    "ip.apiKeyLabel": "proxycheck.io API 密钥",
-    "ip.check": "IP 检测",
-    "ip.deleteKey": "删除密钥",
-    "ip.enableProxycheck": "启用 proxycheck.io",
-    "ip.enabledHelp": "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。",
-    "ip.errorFallback": "检测失败",
-    "ip.help": "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。",
-    "ip.keyPlaceholder": "输入 proxycheck.io API 密钥",
-    "ip.newKeyPlaceholder": "输入新的 proxycheck.io API 密钥",
-    "ip.noProxySignals": "未见明显代理信号",
-    "ip.querying": "正在查询 proxycheck.io。",
-    "ip.savedKeyPlaceholder": "已保存密钥，留空则不修改",
-    "ip.source": "来源",
-    "ip.disabledHelp": "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。",
-    "ip.signal": "信号",
-    "ip.status.checking": "检测中",
-    "ip.status.disabled": "未启用",
-    "ip.status.failed": "检测失败",
-    "ip.status.missingKey": "未配置密钥",
-    "ip.status.waiting": "等待检测",
     "language.auto": "跟随浏览器",
     "language.en": "English",
     "language.label": "语言",
     "language.zhCN": "简体中文",
     "meta.cacheSeconds": "缓存 {seconds}秒",
-    "meta.checkedAt": "最近校验 {age}",
+    "meta.checkedAt": "最近查询 {age}",
     "meta.loading": "加载中",
     "meta.neverUpdated": "尚未更新",
     "meta.updatedAt": "更新于 {age}",
@@ -465,14 +1523,9 @@
     "meter.remaining": "剩余 {remaining}",
     "meter.remainingPercent": "{percent}% 剩余",
     "model.label": "模型",
-    "settings.checkNow": "立即检测",
     "settings.save": "保存",
     "settings.title": "设置",
-    "sentinel.accountStatus": "账号状态",
-    "sentinel.explanation": "说明：当前仅验证 PoW 难度，不判断模型 fallback。",
-    "sentinel.gate": "发送门禁",
     "usage.empty": "暂无用量数据",
-    "usage.networkRisk": "网络风险",
     "usage.title": "{platform} 用量"
   };
   const EN_TEXT = {
@@ -483,35 +1536,14 @@
     "action.refreshUsage": "Refresh usage",
     "action.restoreGptPanel": "Restore GPT usage panel",
     "action.settings": "Settings",
-    "action.toggleSecret": "Show or hide key",
     "gpt.alertCount": "{count} alerts",
     "gpt.title": "GPT Usage",
-    "ip.apiKeyLabel": "proxycheck.io API key",
-    "ip.check": "IP check",
-    "ip.deleteKey": "Delete key",
-    "ip.enableProxycheck": "Enable proxycheck.io",
-    "ip.enabledHelp": "The proxycheck.io key is stored locally only. Results do not represent official OpenAI account status.",
-    "ip.errorFallback": "Check failed",
-    "ip.help": "The key is stored in chrome.storage.local. Checks temporarily fetch the current public IP, query proxycheck.io, and do not keep IP history.",
-    "ip.keyPlaceholder": "Enter proxycheck.io API key",
-    "ip.newKeyPlaceholder": "Enter a new proxycheck.io API key",
-    "ip.noProxySignals": "No clear proxy signals",
-    "ip.querying": "Querying proxycheck.io.",
-    "ip.savedKeyPlaceholder": "Key saved. Leave blank to keep it",
-    "ip.source": "Source",
-    "ip.disabledHelp": "Enable proxycheck.io in settings as a third-party IP reputation source.",
-    "ip.signal": "Signals",
-    "ip.status.checking": "Checking",
-    "ip.status.disabled": "Disabled",
-    "ip.status.failed": "Check failed",
-    "ip.status.missingKey": "Missing key",
-    "ip.status.waiting": "Waiting to check",
     "language.auto": "Follow browser",
     "language.en": "English",
     "language.label": "Language",
     "language.zhCN": "Simplified Chinese",
     "meta.cacheSeconds": "Cached {seconds}s",
-    "meta.checkedAt": "Checked {age}",
+    "meta.checkedAt": "Queried {age}",
     "meta.loading": "Loading",
     "meta.neverUpdated": "Not updated yet",
     "meta.updatedAt": "Updated {age}",
@@ -522,14 +1554,9 @@
     "meter.remaining": "Remaining {remaining}",
     "meter.remainingPercent": "{percent}% remaining",
     "model.label": "Model",
-    "settings.checkNow": "Check now",
     "settings.save": "Save",
     "settings.title": "Settings",
-    "sentinel.accountStatus": "Account status",
-    "sentinel.explanation": "Note: currently only validates PoW difficulty, not model fallback.",
-    "sentinel.gate": "Send gate",
     "usage.empty": "No usage data yet",
-    "usage.networkRisk": "Network risk",
     "usage.title": "{platform} Usage"
   };
   const TEXT = {
@@ -580,23 +1607,9 @@
       low: "Low"
     }
   };
-  const RISK_LABELS = {
-    "zh-CN": {
-      正常: "正常",
-      偏高: "偏高",
-      高: "高",
-      严重: "严重",
-      未知: "未知"
-    },
-    en: {
-      正常: "Normal",
-      偏高: "Elevated",
-      高: "High",
-      严重: "Severe",
-      未知: "Unknown"
-    }
-  };
   const METER_LABELS_ZH = {
+    "Library storage": "文件库空间",
+    "Available resets": "可用重置次数",
     "File Upload": "文件上传",
     "Paste Text To File": "粘贴文本转文件",
     Dictation: "听写",
@@ -652,8 +1665,8 @@
     }
     return "en";
   }
-  function t(language, key, params = {}) {
-    return TEXT[language][key].replace(
+  function t(language, key2, params = {}) {
+    return TEXT[language][key2].replace(
       /\{(\w+)\}/g,
       (_, name) => params[name] === void 0 ? "" : String(params[name])
     );
@@ -722,6 +1735,12 @@
     return `${verb} ${exact}`;
   }
   function formatMeterValueLocalized(language, meter) {
+    if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+    if (meter.unit === "bytes") {
+      const gib = (n) => (n / 1073741824).toLocaleString(language, { maximumFractionDigits: 2 });
+      return typeof meter.remaining === "number" ? (language === "zh-CN" ? "剩余 " : "Remaining ") + gib(meter.remaining) + " GiB" : t(language, "meter.unknown");
+    }
+    if (meter.label === "Credits (unlimited)") return language === "zh-CN" ? "无限" : "Unlimited";
     if (meter.rawKind === "chatgpt.subscription") {
       return formatSubscriptionRemainingLocalized(language, meter);
     }
@@ -797,9 +1816,6 @@
   function formatConfidenceLabelLocalized(language, confidence) {
     return CONFIDENCE_LABELS[language][confidence] ?? confidence;
   }
-  function formatRiskLabelLocalized(language, label) {
-    return RISK_LABELS[language][label] ?? label;
-  }
   function browserLanguageCandidates() {
     if (typeof navigator === "undefined") {
       return [];
@@ -808,6 +1824,38 @@
       return [...navigator.languages];
     }
     return navigator.language ? [navigator.language] : [];
+  }
+  function key(node2) {
+    return node2 instanceof Element ? node2.getAttribute("data-node-key") : null;
+  }
+  function compatible(a, b) {
+    return a.nodeType === b.nodeType && (!(a instanceof Element) || b instanceof Element && a.tagName === b.tagName && key(a) === key(b));
+  }
+  function reconcileChildren(parent, desired) {
+    const old = Array.from(parent.childNodes);
+    const claimed = /* @__PURE__ */ new Set();
+    let cursor = parent.firstChild;
+    for (const next of desired) {
+      const nodeKey = key(next);
+      const previous = nodeKey !== null ? old.find((node22) => !claimed.has(node22) && key(node22) === nodeKey && compatible(node22, next)) : cursor && !claimed.has(cursor) && compatible(cursor, next) ? cursor : void 0;
+      const node2 = previous ?? next;
+      claimed.add(node2);
+      if (previous) patch(previous, next);
+      if (node2 !== cursor) parent.insertBefore(node2, cursor);
+      cursor = node2.nextSibling;
+    }
+    for (const node2 of old) if (!claimed.has(node2) && node2.parentNode === parent) parent.removeChild(node2);
+  }
+  function patch(current, next) {
+    if (!(current instanceof Element) || !(next instanceof Element)) {
+      if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+      return;
+    }
+    for (const attr of Array.from(current.attributes)) if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+    for (const attr of Array.from(next.attributes)) if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+    const selected = next instanceof HTMLSelectElement ? next.value : void 0;
+    reconcileChildren(current, Array.from(next.childNodes));
+    if (current instanceof HTMLSelectElement && selected !== void 0) current.value = selected;
   }
   const WIDGET_CSS = `
 :host {
@@ -1194,52 +2242,6 @@ button {
   font-weight: 700;
 }
 
-.sentinel-block {
-  padding: 7px 0 4px;
-}
-
-.sentinel-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-  color: color-mix(in srgb, CanvasText 78%, transparent);
-  font-size: 12px;
-  padding: 2px 0;
-}
-
-.sentinel-label {
-  color: color-mix(in srgb, CanvasText 60%, transparent);
-  font-weight: 650;
-}
-
-.sentinel-bar {
-  margin: 6px 0 7px;
-}
-
-.sentinel-risk-normal {
-  background: #315d86;
-}
-
-.sentinel-risk-elevated {
-  background: #f59e0b;
-}
-
-.sentinel-risk-high {
-  background: #f97316;
-}
-
-.sentinel-risk-severe {
-  background: #ef4444;
-}
-
-.sentinel-explanation {
-  margin-top: 5px;
-  color: color-mix(in srgb, CanvasText 64%, transparent);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
 .error-text {
   color: #ef4444;
 }
@@ -1491,7 +2493,6 @@ button {
   pointer-events: none;
   z-index: 0;
 }
-
 .header,
 .meta,
 .model-meta,
@@ -1504,7 +2505,6 @@ button {
 .settings-input-wrap,
 .settings-help,
 .settings-actions,
-.sentinel-block,
 .meter,
 .meter-section {
   position: relative;
@@ -1592,11 +2592,9 @@ button {
   height: 20px;
   flex-basis: 20px;
 }
-
 .gpt-alerts,
 .meta,
 .model-meta,
-.sentinel-row,
 .meter-bottom,
 .settings-help {
   color: var(--rb-brown);
@@ -2106,30 +3104,6 @@ button {
   pointer-events: none;
 }
 
-.sentinel-risk-normal {
-  background: linear-gradient(90deg, var(--rb-blue), var(--rb-blue-soft));
-}
-
-.sentinel-risk-elevated {
-  background: linear-gradient(90deg, var(--rb-mustard-deep), var(--rb-mustard));
-}
-
-.sentinel-risk-high {
-  background: linear-gradient(90deg, #b56a33, #e0a24d);
-}
-
-.sentinel-risk-severe {
-  background: linear-gradient(90deg, #9f463e, var(--rb-red));
-}
-
-.sentinel-label {
-  color: var(--rb-ink-soft);
-}
-
-.sentinel-explanation {
-  color: var(--rb-brown);
-}
-
 .badge {
   border-color: rgba(112, 103, 93, 0.28);
   background: linear-gradient(180deg, rgba(255, 250, 241, 0.96), rgba(239, 230, 215, 0.86));
@@ -2252,6 +3226,31 @@ button {
     display: none;
   }
 }
+
+/* Existing theme, with stable controls and viewport-safe content. */
+:host { max-width: calc(100% - 16px); transform: none; }
+.panel { display: flex; flex-direction: column; max-height: calc(100dvh - 16px); }
+.panel { transform: translateY(-50%); }
+.panel, .gpt-panel { max-width: 100%; }
+.gpt-panel { min-height: 0; height: min(552px, calc(100dvh - 16px)); width: min(390px, calc(100vw - 16px)); }
+.header, .meta, .model-meta { flex-shrink: 0; }
+.content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.icon-button { width: 32px; height: 32px; min-width: 32px; min-height: 32px; flex-shrink: 0; }
+.icon-button:disabled { opacity: .55; cursor: wait; transform: none; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); outline-offset: 2px; }
+.meter-top { align-items: start; gap: 8px; }
+.meter-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
+.meter-value { text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.meter-bottom { flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
+.badge, .meta, .settings-label, .settings-help, .model-meta { font-size: 12px; }
+.settings-popover { max-height: calc(100dvh - 16px); max-width: calc(100% - 16px); overflow-y: auto; width: min(360px, calc(100vw - 16px)); }
+.panel { width: min(314px, calc(100vw - 16px)); }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 520px), (max-height: 600px) {
+  :host([data-platform="chatgpt"]) { top: 8px; right: 8px; }
+  :host:not([data-platform="chatgpt"]) { right: 8px; }
+  .settings-popover { top: 8px; right: 8px; }
+}
 `;
   const PLATFORM_LABEL = {
     grok: "Grok",
@@ -2281,8 +3280,19 @@ button {
       const style = document.createElement("style");
       style.textContent = WIDGET_CSS;
       this.shadow.append(style, this.root);
-      this.timerId = window.setInterval(() => this.render(), 15e3);
+      this.timerId = window.setInterval(() => this.tickTimes(), 1e3);
       this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2e3);
+      window.addEventListener("resize", this.onResize);
+      this.root.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        if (this.settingsOpen) this.closeSettings();
+        else {
+          if (this.platform === "chatgpt") this.hidden = true;
+          else this.expanded = false;
+          this.render();
+        }
+      });
     }
     host = document.createElement("div");
     shadow = this.host.attachShadow({ mode: "open" });
@@ -2291,18 +3301,20 @@ button {
     hidden = false;
     chipPosition = { edge: "right", offset: 96 };
     loading = false;
-    snapshot = null;
-    chatGptSentinelState = null;
-    ipRiskState = null;
-    ipRiskSettings = {
-      provider: "proxycheck",
-      enabled: false,
-      hasApiKey: false,
-      apiKeyPreview: null
+    settingsOpen = false;
+    renderFrame = 0;
+    destroyed = false;
+    onResize = () => {
+      if (!this.hidden && this.expanded) return;
+      const chip = this.root.querySelector(".collapsed,.gpt-restore-chip");
+      if (!chip) return;
+      const bounds = chip.getBoundingClientRect();
+      const vertical = this.chipPosition.edge === "left" || this.chipPosition.edge === "right";
+      const maximum = (vertical ? window.innerHeight - bounds.height : window.innerWidth - bounds.width) - 8;
+      this.chipPosition.offset = Math.max(8, Math.min(this.chipPosition.offset, maximum));
+      this.applyChipPosition();
     };
-    ipRiskRefreshing = false;
-    ipRiskSettingsOpen = false;
-    ipRiskSettingsDraft = null;
+    snapshot = null;
     backoffUntil = 0;
     languageMode = DEFAULT_LANGUAGE_MODE;
     resolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
@@ -2315,6 +3327,9 @@ button {
     destroy() {
       window.clearInterval(this.timerId);
       window.clearInterval(this.mountWatchId);
+      this.destroyed = true;
+      window.removeEventListener("resize", this.onResize);
+      cancelAnimationFrame(this.renderFrame);
       this.host.remove();
     }
     setSnapshot(snapshot) {
@@ -2323,22 +3338,6 @@ button {
     }
     setLoading(value) {
       this.loading = value;
-      this.render();
-    }
-    setChatGptSentinelState(value) {
-      this.chatGptSentinelState = value;
-      this.render();
-    }
-    setIpRiskSettings(value) {
-      this.ipRiskSettings = value;
-      this.render();
-    }
-    setIpRiskState(value) {
-      this.ipRiskState = value;
-      this.render();
-    }
-    setIpRiskRefreshing(value) {
-      this.ipRiskRefreshing = value;
       this.render();
     }
     setBackoffUntil(value) {
@@ -2350,30 +3349,35 @@ button {
       this.resolvedLanguage = resolveLanguage(value);
       this.render();
     }
-    text(key, params) {
-      return t(this.resolvedLanguage, key, params);
-    }
-    createIpRiskSettingsDraft() {
-      return {
-        enabled: this.ipRiskSettings.enabled,
-        apiKeyValue: this.ipRiskSettings.apiKeyPreview ?? "",
-        keyDirty: false,
-        revealKey: false
-      };
-    }
-    closeIpRiskSettingsDialog() {
-      this.ipRiskSettingsOpen = false;
-      this.ipRiskSettingsDraft = null;
-      this.render();
+    text(key2, params) {
+      return t(this.resolvedLanguage, key2, params);
     }
     render() {
+      if (this.destroyed || this.renderFrame) return;
+      this.renderFrame = requestAnimationFrame(() => {
+        this.renderFrame = 0;
+        if (!this.destroyed) this.renderNow();
+      });
+    }
+    tickTimes() {
+      if (document.visibilityState === "hidden" || this.hidden || this.platform !== "chatgpt" && !this.expanded) return;
+      for (const node2 of this.root.querySelectorAll("[data-time]")) {
+        let value = node2.textContent ?? "";
+        if (node2.dataset.time === "updated" && this.snapshot) value = this.text("meta.updatedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt) });
+        if (node2.dataset.time === "checked" && this.snapshot?.checkedAt) value = this.text("meta.checkedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt) });
+        if (node2.dataset.time === "backoff") value = this.text("meta.waitSeconds", { seconds: Math.max(0, Math.ceil(this.backoffRemainingMs() / 1e3)) });
+        const meter = this.snapshot?.meters.find((item) => item.key === node2.dataset.meterKey);
+        if (meter && node2.dataset.time === "reset") value = this.formatMeterTimePreview(meter);
+        if (meter && node2.dataset.time === "badge") value = this.meterBadge(meter);
+        if (meter && node2.dataset.time === "subscription") value = formatMeterValueLocalized(this.resolvedLanguage, meter);
+        if (node2.textContent !== value) node2.textContent = value;
+      }
+    }
+    renderNow() {
       this.ensureMounted();
       if (this.hidden) {
-        this.ipRiskSettingsOpen = false;
-        this.ipRiskSettingsDraft = null;
-        this.root.replaceChildren(
-          this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
-        );
+        this.settingsOpen = false;
+        reconcileChildren(this.root, [this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()]);
         return;
       }
       if (this.platform === "chatgpt") {
@@ -2394,11 +3398,11 @@ button {
       }
     }
     replaceRootWith(main) {
-      if (this.ipRiskSettingsOpen) {
-        this.root.replaceChildren(main, this.renderIpRiskSettingsDialog());
+      if (this.settingsOpen) {
+        reconcileChildren(this.root, [main, this.renderSettingsDialog()]);
         return;
       }
-      this.root.replaceChildren(main);
+      reconcileChildren(this.root, [main]);
     }
     schedulePlatformOverflowCheck(button) {
       const platformLabel = button.querySelector(".platform");
@@ -2418,6 +3422,7 @@ button {
     }
     renderChatGptRestoreChip() {
       const button = el("button", "gpt-restore-chip");
+      button.dataset.nodeKey = "chip";
       button.type = "button";
       this.applyChipPosition();
       button.setAttribute("aria-label", this.text("action.restoreGptPanel"));
@@ -2533,17 +3538,18 @@ button {
       if (edge === "left" || edge === "right") {
         this.chipPosition = {
           edge,
-          offset: clamp$1(clientY - 24, margin, viewportHeight - 56)
+          offset: clamp(clientY - 24, margin, viewportHeight - 56)
         };
         return;
       }
       this.chipPosition = {
         edge,
-        offset: clamp$1(clientX - 44, margin, viewportWidth - 96)
+        offset: clamp(clientX - 44, margin, viewportWidth - 96)
       };
     }
     renderChatGptPanel() {
       const panel = el("section", "gpt-panel");
+      panel.dataset.nodeKey = "panel";
       panel.append(
         panelCorners("panel-corners"),
         this.renderChatGptHeader(),
@@ -2567,6 +3573,7 @@ button {
         () => this.onRefresh()
       );
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
+      refresh.setAttribute("aria-busy", String(this.loading));
       const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
         this.hidden = true;
         this.render();
@@ -2579,278 +3586,55 @@ button {
     renderChatGptContent() {
       const content = el("div", "content gpt-content");
       if (this.snapshot?.errorMessage) {
-        content.append(textEl("div", "error", this.snapshot.errorMessage));
+        content.append(textEl("div", "error", this.snapshot.meters.length ? this.resolvedLanguage === "zh-CN" ? "部分查询失败，显示上次读数" : "Some queries failed. Showing saved readings." : this.resolvedLanguage === "zh-CN" ? "暂时无法获取额度，请稍后刷新" : "Usage unavailable. Try refreshing later."));
       }
-      const sentinelSection = this.renderChatGptSentinelSection();
-      if (sentinelSection) {
-        content.append(sentinelSection);
-      }
-      content.append(this.renderIpRiskSection());
       const meters = this.chatGptMeters();
       if (meters.length === 0) {
-        if (!sentinelSection && !this.ipRiskSettings.enabled) {
-          content.append(textEl("div", "empty", this.text("usage.empty")));
-        }
+        content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
         return content;
       }
       for (const section of groupChatGptMeters(meters, this.resolvedLanguage)) {
-        content.append(this.renderMeterSection(section.label, section.meters));
+        content.append(this.renderMeterSection(section.label, section.meters, section.key));
       }
       return content;
     }
-    renderChatGptSentinelSection() {
-      const state = this.chatGptSentinelState;
-      if (!state) {
-        return null;
-      }
-      const section = el("section", "meter-section sentinel-section");
-      section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
-      section.append(sectionTitle(this.text("sentinel.accountStatus"), "leaf-small.png"));
-      const gate = el("div", "sentinel-block");
-      gate.append(
-        this.renderSentinelRow(
-          this.text("sentinel.gate"),
-          `${formatRiskLabelLocalized(
-            this.resolvedLanguage,
-            state.sentinelRisk.label
-          )} ${state.sentinelRisk.score}/100`
-        ),
-        this.renderSentinelBar(state.sentinelRisk.score),
-        this.renderSentinelRow(
-          "PoW",
-          `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
-        ),
-        textEl("div", "sentinel-explanation", this.text("sentinel.explanation"))
-      );
-      section.append(gate);
-      return section;
+    closeSettings() {
+      this.settingsOpen = false;
+      this.render();
+      requestAnimationFrame(() => this.root.querySelector('[data-action="settings"]')?.focus());
     }
-    renderIpRiskSection() {
-      const section = el("section", "meter-section ip-risk-section");
-      section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
-      section.append(sectionTitle(this.text("usage.networkRisk"), "leaf-small.png"));
-      const block = el("div", "sentinel-block ip-risk-block");
-      block.append(this.renderSentinelRow(this.text("ip.check"), this.ipRiskStatusText()));
-      const freshIpRisk = this.freshIpRiskState();
-      if (freshIpRisk) {
-        block.append(
-          this.renderSentinelBar(freshIpRisk.score),
-          this.renderSentinelRow(
-            this.text("ip.signal"),
-            formatIpRiskSignals(freshIpRisk, this.resolvedLanguage)
-          ),
-          this.renderSentinelRow(this.text("ip.source"), freshIpRisk.source)
-        );
-      } else if (this.ipRiskRefreshing) {
-        block.append(textEl("div", "sentinel-explanation", this.text("ip.querying")));
-      } else if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
-        block.append(
-          textEl(
-            "div",
-            "sentinel-explanation error-text",
-            this.ipRiskState.errorMessage ?? this.text("ip.errorFallback")
-          )
-        );
-      } else {
-        block.append(
-          textEl(
-            "div",
-            "sentinel-explanation",
-            this.ipRiskSettings.enabled ? this.text("ip.enabledHelp") : this.text("ip.disabledHelp")
-          )
-        );
-      }
-      section.append(block);
-      return section;
-    }
-    renderIpRiskSettingsDialog() {
+    renderSettingsDialog() {
       const panel = el("section", "settings-popover");
+      panel.dataset.nodeKey = "settings";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", this.text("settings.title"));
       const header = el("div", "settings-header");
-      const draft = this.ipRiskSettingsDraft ?? this.createIpRiskSettingsDraft();
-      this.ipRiskSettingsDraft = draft;
       header.append(
-        titleNode("settings-title", this.text("settings.title"), "shield.png"),
-        this.renderActionButton("×", this.text("action.closeSettings"), () => {
-          this.closeIpRiskSettingsDialog();
-        })
+        titleNode("settings-title", this.text("settings.title"), "clover-medallion.png"),
+        this.renderActionButton("×", this.text("action.closeSettings"), () => this.closeSettings())
       );
-      const languageSelect = document.createElement("select");
-      languageSelect.className = "settings-input";
-      for (const [value, label] of [
-        ["auto", this.text("language.auto")],
-        ["zh-CN", this.text("language.zhCN")],
-        ["en", this.text("language.en")]
-      ]) {
+      const select = document.createElement("select");
+      select.className = "settings-input";
+      select.dataset.nodeKey = "language";
+      select.setAttribute("aria-label", this.text("language.label"));
+      for (const [value, label] of [["auto", "language.auto"], ["zh-CN", "language.zhCN"], ["en", "language.en"]]) {
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = label;
-        languageSelect.append(option);
+        option.textContent = this.text(label);
+        select.append(option);
       }
-      languageSelect.value = this.languageMode;
-      const enabledInput = document.createElement("input");
-      enabledInput.type = "checkbox";
-      enabledInput.checked = draft.enabled;
-      enabledInput.addEventListener("change", () => {
-        draft.enabled = enabledInput.checked;
+      select.value = this.languageMode;
+      select.addEventListener("change", () => {
+        const mode = languageModeFromValue(select.value);
+        this.setLanguageMode(mode);
+        this.handlers.onLanguageModeSave?.(mode);
       });
-      const enabledLabel = el("label", "settings-check");
-      enabledLabel.append(
-        enabledInput,
-        textEl("span", "", this.text("ip.enableProxycheck"))
-      );
-      const keyInputWrap = el("div", "settings-input-wrap");
-      const keyInput = document.createElement("input");
-      keyInput.className = "settings-input";
-      keyInput.type = draft.revealKey ? "text" : "password";
-      keyInput.autocomplete = "off";
-      keyInput.spellcheck = false;
-      keyInput.value = draft.apiKeyValue;
-      keyInput.placeholder = draft.keyDirty && this.ipRiskSettings.hasApiKey ? this.text("ip.newKeyPlaceholder") : this.ipRiskSettings.hasApiKey ? this.text("ip.savedKeyPlaceholder") : this.text("ip.keyPlaceholder");
-      const prepareKeyEdit = () => {
-        if (!draft.keyDirty && this.ipRiskSettings.hasApiKey) {
-          draft.keyDirty = true;
-          keyInput.value = "";
-          keyInput.placeholder = this.text("ip.newKeyPlaceholder");
-          keyInput.type = "password";
-          draft.revealKey = false;
-        }
-        draft.apiKeyValue = keyInput.value;
-      };
-      keyInput.addEventListener("keydown", (event) => {
-        if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
-          prepareKeyEdit();
-        }
-      });
-      keyInput.addEventListener("paste", prepareKeyEdit);
-      keyInput.addEventListener("input", () => {
-        draft.keyDirty = true;
-        draft.apiKeyValue = keyInput.value;
-        draft.revealKey = keyInput.type !== "password";
-      });
-      const syncDraft = () => {
-        draft.enabled = enabledInput.checked;
-        draft.apiKeyValue = keyInput.value;
-        draft.revealKey = keyInput.type !== "password";
-      };
-      languageSelect.addEventListener("change", () => {
-        syncDraft();
-        const nextMode = languageModeFromValue(languageSelect.value);
-        this.languageMode = nextMode;
-        this.resolvedLanguage = resolveLanguage(nextMode);
-        this.handlers.onLanguageModeSave?.(nextMode);
-        this.render();
-      });
-      const reveal = this.renderActionButton(
-        "👁",
-        this.text("action.toggleSecret"),
-        () => {
-          keyInput.type = keyInput.type === "password" ? "text" : "password";
-          draft.revealKey = keyInput.type !== "password";
-        }
-      );
-      reveal.classList.add("settings-eye-button");
-      keyInputWrap.append(keyInput, reveal);
-      const actions = el("div", "settings-actions");
-      const save = textEl(
-        "button",
-        "settings-button primary-button",
-        this.text("settings.save")
-      );
-      save.type = "button";
-      save.addEventListener("click", () => {
-        draft.enabled = enabledInput.checked;
-        draft.apiKeyValue = keyInput.value;
-        const inputValue = draft.apiKeyValue.trim();
-        const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
-        this.handlers.onIpRiskSettingsSave?.({
-          enabled: draft.enabled,
-          apiKey: inputValue && inputValue !== previewValue ? inputValue : void 0
-        });
-        this.closeIpRiskSettingsDialog();
-      });
-      const refresh = textEl(
-        "button",
-        "settings-button",
-        this.text("settings.checkNow")
-      );
-      refresh.type = "button";
-      refresh.disabled = this.ipRiskRefreshing || !this.ipRiskSettings.enabled || !this.ipRiskSettings.hasApiKey;
-      refresh.addEventListener("click", () => {
-        this.handlers.onIpRiskRefresh?.();
-        this.closeIpRiskSettingsDialog();
-      });
-      const remove = textEl(
-        "button",
-        "settings-button danger-button",
-        this.text("ip.deleteKey")
-      );
-      remove.type = "button";
-      remove.disabled = !this.ipRiskSettings.hasApiKey;
-      remove.addEventListener("click", () => {
-        this.handlers.onIpRiskSettingsSave?.({
-          enabled: enabledInput.checked,
-          clearApiKey: true
-        });
-        this.closeIpRiskSettingsDialog();
-      });
-      actions.append(save, refresh, remove);
-      panel.append(
-        header,
-        textEl("label", "settings-label", this.text("language.label")),
-        languageSelect,
-        enabledLabel,
-        textEl("label", "settings-label", this.text("ip.apiKeyLabel")),
-        keyInputWrap,
-        textEl("div", "settings-help", this.text("ip.help")),
-        actions
-      );
+      panel.append(header, textEl("label", "settings-label", this.text("language.label")), select);
       return panel;
     }
-    ipRiskStatusText() {
-      if (!this.ipRiskSettings.enabled) {
-        return this.text("ip.status.disabled");
-      }
-      if (!this.ipRiskSettings.hasApiKey) {
-        return this.text("ip.status.missingKey");
-      }
-      if (this.ipRiskRefreshing) {
-        return this.text("ip.status.checking");
-      }
-      if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
-        return this.text("ip.status.failed");
-      }
-      const freshIpRisk = this.freshIpRiskState();
-      if (freshIpRisk) {
-        return `${formatRiskLabelLocalized(
-          this.resolvedLanguage,
-          freshIpRisk.label
-        )} ${freshIpRisk.score}/100`;
-      }
-      return this.text("ip.status.waiting");
-    }
-    freshIpRiskState() {
-      const state = this.ipRiskState;
-      if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && state?.status === "ok" && typeof state.score === "number") {
-        return state;
-      }
-      return null;
-    }
-    renderSentinelRow(label, value) {
-      const row = el("div", "sentinel-row");
-      row.append(textEl("span", "sentinel-label", label), textEl("span", "", value));
-      return row;
-    }
-    renderSentinelBar(score) {
-      const bar = el("div", "bar sentinel-bar");
-      const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-      const progress = clampPercent$1(score);
-      fill.style.width = `${progress}%`;
-      bar.style.setProperty("--meter-progress", `${progress}%`);
-      bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
-      return bar;
-    }
-    renderMeterSection(label, meters) {
+    renderMeterSection(label, meters, groupKey) {
       const section = el("section", "meter-section");
+      section.dataset.nodeKey = `section:${groupKey}`;
       section.append(cardCorners(), sectionTitle(label, "leaf-small.png"));
       for (const meter of meters) {
         section.append(this.renderMeter(meter));
@@ -2866,16 +3650,16 @@ button {
       return button;
     }
     renderSettingsButton() {
-      return this.renderActionButton("⚙", this.text("action.settings"), () => {
-        this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
-        if (!this.ipRiskSettingsOpen) {
-          this.ipRiskSettingsDraft = null;
-        }
+      const button = this.renderActionButton("⚙", this.text("action.settings"), () => {
+        this.settingsOpen = !this.settingsOpen;
         this.render();
       });
+      button.dataset.action = "settings";
+      return button;
     }
     renderCollapsed() {
       const button = el("button", "collapsed");
+      button.dataset.nodeKey = "chip";
       button.type = "button";
       button.setAttribute(
         "aria-label",
@@ -2900,6 +3684,7 @@ button {
     }
     renderPanel() {
       const panel = el("section", "panel");
+      panel.dataset.nodeKey = "panel";
       panel.append(panelCorners("panel-corners compact-corners"), this.renderHeader(), this.renderMeta(), vineDivider());
       if (this.platform === "grok") {
         const modelMeta = this.renderGrokModelMeta();
@@ -2948,10 +3733,15 @@ button {
       }) : this.snapshot?.cacheAgeMs !== void 0 ? this.text("meta.cacheSeconds", {
         seconds: Math.floor(this.snapshot.cacheAgeMs / 1e3)
       }) : this.loading ? this.text("meta.loading") : "";
-      meta.append(
-        iconText("span", "meta-item", "leaf-small.png", updated),
-        right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
-      );
+      const updatedNode = textEl("span", "", updated);
+      updatedNode.dataset.time = "updated";
+      const rightNode = textEl("span", "", right);
+      rightNode.dataset.time = this.backoffRemainingMs() > 0 ? "backoff" : this.snapshot?.checkedAt ? "checked" : "cache";
+      const leftWrap = el("span", "meta-item");
+      leftWrap.append(decorativeAsset("leaf-small.png", "inline-icon"), updatedNode);
+      const rightWrap = el("span", "meta-item");
+      rightWrap.append(rightNode);
+      meta.append(leftWrap, rightWrap);
       return meta;
     }
     renderGrokModelMeta() {
@@ -2970,9 +3760,9 @@ button {
       if (this.snapshot?.errorMessage) {
         content.append(textEl("div", "error", this.snapshot.errorMessage));
       }
-      content.append(this.renderIpRiskSection());
-      const meters = this.snapshot?.meters ?? [];
+      const meters = (this.snapshot?.meters ?? []).filter(hasMeaningfulValue);
       if (meters.length === 0) {
+        content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
         return content;
       }
       if (this.platform === "grok" && this.appendGrokCreditsContent(content, meters)) {
@@ -3005,6 +3795,7 @@ button {
     }
     renderGrokCreditsMeter(total, products) {
       const row = el("div", "meter grok-credits-meter");
+      row.dataset.nodeKey = `meter:${total.key}`;
       const top = el("div", "meter-top");
       top.append(
         textEl(
@@ -3063,6 +3854,7 @@ button {
     }
     renderMeter(meter) {
       const row = el("div", "meter");
+      row.dataset.nodeKey = `meter:${meter.key}`;
       const top = el("div", "meter-top");
       top.append(
         textEl(
@@ -3085,29 +3877,44 @@ button {
       fill.style.width = `${progress}%`;
       bar.style.setProperty("--meter-progress", `${progress}%`);
       bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
-      row.append(top, bar, this.renderMeterBottom(meter));
+      if (meter.rawKind === "chatgpt.subscription") {
+        const value = top.querySelector(".meter-value");
+        if (value) {
+          value.dataset.time = "subscription";
+          value.dataset.meterKey = meter.key;
+        }
+      }
+      const label = top.querySelector(".meter-label");
+      if (label) label.title = label.textContent ?? "";
+      row.append(top);
+      if (progress !== null) row.append(bar);
+      row.append(this.renderMeterBottom(meter));
       return row;
+    }
+    meterBadge(meter) {
+      const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
+      const uncalibrated = meter.quotaState === "unknown" ? this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated" : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
+      const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
+      const stale = this.platform === "chatgpt" && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS ? this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale" : "";
+      return `${source} · ${uncalibrated}${age ? ` · ${age}` : ""}${stale}`;
     }
     renderMeterBottom(meter) {
       const bottom = el("div", "meter-bottom");
-      const age = meter.observedAt ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}` : "";
-      bottom.append(
-        textEl(
-          "span",
-          "badge",
-          `${formatSourceLabelLocalized(
-            this.resolvedLanguage,
-            meter.source
-          )} · ${formatConfidenceLabelLocalized(
-            this.resolvedLanguage,
-            meter.confidence
-          )}${age}`
-        ),
-        textEl("span", "", this.formatMeterTimePreview(meter))
-      );
+      const badge = textEl("span", "badge", this.meterBadge(meter));
+      badge.dataset.time = "badge";
+      badge.dataset.meterKey = meter.key;
+      const reset = textEl("span", "", this.formatMeterTimePreview(meter));
+      reset.dataset.time = "reset";
+      reset.dataset.meterKey = meter.key;
+      bottom.append(badge, reset);
       return bottom;
     }
     formatMeterTimePreview(meter) {
+      if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
+        const fmt = (n) => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });
+        return this.resolvedLanguage === "zh-CN" ? `已用 ${fmt(meter.used)} / 共 ${fmt(meter.total)} GiB` : `Used ${fmt(meter.used)} / ${fmt(meter.total)} GiB`;
+      }
+      if (meter.quotaState === "unknown") return "";
       if (meter.rawKind === "chatgpt.subscription") {
         return formatSubscriptionExpiryLocalized(this.resolvedLanguage, meter);
       }
@@ -3149,13 +3956,13 @@ button {
       return this.chatGptMeters().filter(isAlertMeter).length;
     }
     chatGptMeters() {
-      const meters = [...this.snapshot?.meters ?? []];
+      const meters = [...this.snapshot?.meters ?? []].filter((meter) => hasMeaningfulValue(meter) && !isChatPassPath(meter.key));
       return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
     }
     chatGptPrimaryValue() {
       const meters = this.chatGptMeters();
-      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0] ?? meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0] ?? meters.find((meter) => typeof meter.usedPercent === "number");
-      return alert ? formatMeterValueLocalized(this.resolvedLanguage, alert) : "?";
+      const primary = chatGptPrimaryMeter(meters);
+      return primary ? formatMeterValueLocalized(this.resolvedLanguage, primary) : "?";
     }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
@@ -3183,80 +3990,25 @@ button {
       )[0] ?? null;
     }
   }
-  function meterProgress(meter) {
-    if (typeof meter.remainingPercent === "number") {
-      return clampPercent$1(meter.remainingPercent);
-    }
-    if (typeof meter.usedPercent === "number") {
-      return clampPercent$1(meter.usedPercent);
-    }
-    if (typeof meter.remaining === "number" && typeof meter.total === "number" && meter.total > 0) {
-      return clampPercent$1((meter.total - meter.remaining) / meter.total * 100);
-    }
-    return 0;
-  }
   function usedMeterProgress(meter) {
     if (typeof meter.usedPercent === "number") {
       return clampPercent$1(meter.usedPercent);
     }
-    return meterProgress(meter);
+    return meterProgress(meter) ?? 0;
   }
   function clampPercent$1(value) {
     return Math.max(0, Math.min(100, value));
   }
-  function sentinelRiskClass(score) {
-    if (score >= 75) {
-      return "sentinel-risk-severe";
-    }
-    if (score >= 50) {
-      return "sentinel-risk-high";
-    }
-    if (score >= 25) {
-      return "sentinel-risk-elevated";
-    }
-    return "sentinel-risk-normal";
-  }
-  function formatIpRiskSignals(state, language) {
-    const signals = [];
-    if (state.signals.proxy) {
-      signals.push("Proxy");
-    }
-    if (state.signals.vpn) {
-      signals.push("VPN");
-    }
-    if (state.signals.tor) {
-      signals.push("Tor");
-    }
-    if (state.signals.hosting) {
-      signals.push("Hosting");
-    }
-    if (state.signals.type && !signals.includes(state.signals.type)) {
-      signals.push(state.signals.type);
-    }
-    return signals.length > 0 ? signals.join(" / ") : t(language, "ip.noProxySignals");
-  }
-  function clamp$1(value, min, max) {
+  function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
-  function isAlertMeter(meter) {
-    if (typeof meter.remaining === "number" && meter.remaining <= 0) {
-      return true;
-    }
-    if (typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) {
-      return true;
-    }
-    if (typeof meter.usedPercent === "number" && meter.usedPercent >= 95) {
-      return true;
-    }
-    return false;
-  }
   function chatGptMeterPriority(meter) {
-    const key = meter.key.toLowerCase();
+    const key2 = meter.key.toLowerCase();
     const label = meter.label.toLowerCase();
-    if (key.startsWith("limits_progress:file_upload")) {
+    if (key2.startsWith("limits_progress:file_upload")) {
       return 10;
     }
-    if (key.startsWith("limits_progress:") || key.startsWith("blocked_features:") || meter.rawKind === "limits_progress" || meter.rawKind === "blocked_features") {
+    if (key2.startsWith("limits_progress:") || key2.startsWith("blocked_features:") || meter.rawKind === "limits_progress" || meter.rawKind === "blocked_features") {
       return 20;
     }
     if (label.includes("primary window") || label.includes("5-hour window")) {
@@ -3268,7 +4020,7 @@ button {
     if (label.includes("credits")) {
       return 42;
     }
-    if (key.includes("codex") || meter.rawKind === "codex.settings.usage") {
+    if (key2.includes("codex") || meter.rawKind === "codex.settings.usage") {
       return 50;
     }
     return 80;
@@ -3285,31 +4037,34 @@ button {
     for (const meter of meters) {
       groups[chatGptMeterSection(meter)].push(meter);
     }
-    return GPT_SECTION_ORDER.map((key) => ({
-      label: formatGptSectionLabelLocalized(language, key),
-      meters: groups[key]
+    return GPT_SECTION_ORDER.map((key2) => ({
+      key: key2,
+      label: formatGptSectionLabelLocalized(language, key2),
+      meters: groups[key2]
     })).filter((section) => section.meters.length > 0);
   }
   function chatGptMeterSection(meter) {
-    const key = meter.key.toLowerCase();
+    const key2 = meter.key.toLowerCase();
     const rawKind = meter.rawKind?.toLowerCase() ?? "";
     const label = meter.label.toLowerCase();
+    if (rawKind === "chatgpt.library_storage") return "input";
+    if (rawKind === "chatgpt.reset_credits") return "codex";
     if (rawKind === "chatgpt.subscription") {
       return "subscription";
     }
-    if (key.includes("codex") || rawKind === "codex.settings.usage" || rawKind.includes("codex") || rawKind === "credits" || key === "wham:credits") {
+    if (key2.includes("codex") || rawKind === "codex.settings.usage" || rawKind.includes("codex") || rawKind === "credits" || key2 === "wham:credits") {
       return "codex";
     }
-    if (key.startsWith("wham:") || key.startsWith("tasks:") || rawKind.includes("rate_limit") || rawKind.includes("window")) {
+    if (key2.startsWith("wham:") || key2.startsWith("tasks:") || rawKind.includes("rate_limit") || rawKind.includes("window")) {
       return "windows";
     }
-    if (rawKind === "limits_progress" || rawKind === "blocked_features" || key.startsWith("limits_progress:") || key.startsWith("blocked_features:")) {
-      return isInputOrAttachmentMeter(key, label) ? "input" : "features";
+    if (rawKind === "limits_progress" || rawKind === "blocked_features" || key2.startsWith("limits_progress:") || key2.startsWith("blocked_features:")) {
+      return isInputOrAttachmentMeter(key2, label) ? "input" : "features";
     }
     return "other";
   }
-  function isInputOrAttachmentMeter(key, label) {
-    return key.includes("file_upload") || key.includes("paste_text") || key.includes("dictation") || key.includes("upload") || label.includes("file upload") || label.includes("paste text") || label.includes("dictation");
+  function isInputOrAttachmentMeter(key2, label) {
+    return key2.includes("file_upload") || key2.includes("paste_text") || key2.includes("dictation") || key2.includes("upload") || label.includes("file upload") || label.includes("paste text") || label.includes("dictation");
   }
   function grokMeterPriority(meter) {
     if (meter.rawKind === "grokCreditsConfig:total") {
@@ -3398,11 +4153,6 @@ button {
       textEl("span", "section-title-text", label)
     );
     return title;
-  }
-  function iconText(tagName, className, assetName, label) {
-    const element = el(tagName, className);
-    element.append(decorativeAsset(assetName, "inline-icon"), document.createTextNode(label));
-    return element;
   }
   function panelCorners(className) {
     const frame = el("div", className);
@@ -3527,748 +4277,6 @@ button {
     const status = error.status ? `${error.status} ` : "";
     return `${prefix}${status}${error.message}`;
   }
-  const FEATURE_LABELS$1 = {
-    deep_research: "Deep Research",
-    image_gen: "Image Generation",
-    computer_control: "Computer Control",
-    computer_use: "Computer Use",
-    computer_use_preview: "Computer Use",
-    file_upload: "File Upload",
-    odyssey: "Odyssey",
-    reason: "Reasoning Quota"
-  };
-  function normalizeChatGptConversationInit(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return { meters: [], blockedFeatures: [] };
-    }
-    const meters = [];
-    const progressFeatureNames = /* @__PURE__ */ new Set();
-    for (const item of getArray(root, "limits_progress")) {
-      const record = asRecord(item);
-      if (!record) {
-        continue;
-      }
-      const featureName = getString(record, "feature_name") ?? "unknown_feature";
-      progressFeatureNames.add(featureName);
-      const remaining = getNumber(record, "remaining");
-      const resetAfter = resetAfterValue(record.reset_after);
-      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
-      meters.push({
-        key: `limits_progress:${featureName}`,
-        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
-        remaining,
-        resetAt,
-        resetAfterSeconds: resetAfter.resetAfterSeconds,
-        source,
-        confidence: remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
-        rawKind: "limits_progress"
-      });
-    }
-    const defaultModelSlug = getString(root, "default_model_slug") ?? void 0;
-    const blocked = normalizeBlockedFeatures(root, source, progressFeatureNames);
-    meters.push(...blocked.meters);
-    return { meters, defaultModelSlug, blockedFeatures: blocked.names };
-  }
-  function normalizeBlockedFeatures(root, source, progressFeatureNames) {
-    const meters = [];
-    const names = [];
-    for (const item of asArray(root.blocked_features)) {
-      if (typeof item === "string") {
-        names.push(item);
-        continue;
-      }
-      const record = asRecord(item);
-      if (!record) {
-        continue;
-      }
-      const featureName = getString(record, "name") ?? getString(record, "feature_name") ?? getString(record, "feature");
-      if (!featureName) {
-        continue;
-      }
-      names.push(featureName);
-      if (progressFeatureNames.has(featureName)) {
-        continue;
-      }
-      const resetAfter = resetAfterValue(record.reset_after ?? record.resets_after);
-      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
-      const rawTotal = getNumber(record, "limit");
-      meters.push({
-        key: `limits_progress:${featureName}`,
-        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
-        remaining: getNumber(record, "remaining") ?? 0,
-        total: rawTotal !== null && rawTotal > 0 ? rawTotal : null,
-        resetAt,
-        resetAfterSeconds: resetAfter.resetAfterSeconds,
-        source,
-        confidence: resetAt !== null || resetAfter.resetAfterSeconds !== null ? "high" : "medium",
-        rawKind: "blocked_features"
-      });
-    }
-    return { meters, names };
-  }
-  function normalizeWindowMeter(args) {
-    const explicitRemainingPercent = percentFromRatioOrPercent(
-      numberFromKeys(args.record, [
-        "remaining_percent",
-        "remainingPercent",
-        "percent_remaining",
-        "percentRemaining",
-        "remaining_percentage",
-        "remainingPercentage",
-        "remaining_pct",
-        "remainingPct"
-      ])
-    );
-    const rawUsedPercent = percentFromRatioOrPercent(
-      numberFromKeys(args.record, [
-        "used_percent",
-        "usedPercent",
-        "used_percentage",
-        "usedPercentage",
-        "percent_used",
-        "percentUsed",
-        "utilization"
-      ])
-    );
-    const remainingPercent = explicitRemainingPercent ?? (args.displayAsRemaining && rawUsedPercent !== null ? percentFromRatioOrPercent(100 - rawUsedPercent) : null);
-    const usedPercent = remainingPercent !== null ? percentFromRatioOrPercent(100 - remainingPercent) : rawUsedPercent;
-    const resetValue = resetValueFromRecord(args.record);
-    const windowSeconds = numberFromKeys(args.record, [
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]);
-    if (usedPercent === null && remainingPercent === null && resetValue === null && windowSeconds === null) {
-      return null;
-    }
-    return {
-      key: args.key,
-      label: args.label,
-      usedPercent,
-      remainingPercent,
-      resetAt: resetValue,
-      windowSeconds,
-      source: args.source,
-      confidence: usedPercent !== null && resetValue !== null ? "high" : "medium",
-      rawKind: args.rawKind
-    };
-  }
-  function normalizeChatGptWhamUsage(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    const meters = [];
-    const rateLimit = getRecord(root, "rate_limit");
-    if (rateLimit) {
-      const primary = getRecord(rateLimit, "primary_window");
-      if (primary) {
-        const meter = normalizeWindowMeter({
-          key: "wham:primary_window",
-          label: codexWindowLabel(primary, "Primary window"),
-          record: primary,
-          source,
-          rawKind: "rate_limit.primary_window",
-          displayAsRemaining: true
-        });
-        if (meter) {
-          meters.push(meter);
-        }
-      }
-      const secondary = getRecord(rateLimit, "secondary_window");
-      if (secondary) {
-        const meter = normalizeWindowMeter({
-          key: "wham:secondary_window",
-          label: codexWindowLabel(secondary, "Secondary window"),
-          record: secondary,
-          source,
-          rawKind: "rate_limit.secondary_window",
-          displayAsRemaining: true
-        });
-        if (meter) {
-          meters.push(meter);
-        }
-      }
-    }
-    const codeReviewRateLimit = getRecord(root, "code_review_rate_limit");
-    const codeReviewPrimary = codeReviewRateLimit ? getRecord(codeReviewRateLimit, "primary_window") : null;
-    if (codeReviewPrimary) {
-      const meter = normalizeWindowMeter({
-        key: "wham:code_review",
-        label: "Code Review",
-        record: codeReviewPrimary,
-        source,
-        rawKind: "code_review_rate_limit.primary_window",
-        displayAsRemaining: true
-      });
-      if (meter) {
-        meters.push(meter);
-      }
-    }
-    const credits = getRecord(root, "credits");
-    if (credits) {
-      const unlimited = asBoolean(credits.unlimited);
-      const balance = getNumber(credits, "balance");
-      if (unlimited !== null || balance !== null || asBoolean(credits.has_credits) !== null) {
-        meters.push({
-          key: "wham:credits",
-          label: unlimited ? "Credits (unlimited)" : "Credits",
-          remaining: balance,
-          source,
-          confidence: balance !== null || unlimited === true ? "medium" : "low",
-          rawKind: "credits"
-        });
-      }
-    }
-    meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
-    meters.push(...normalizeWhamCodexNamedUsage(root, source));
-    return dedupeMeters(meters);
-  }
-  function normalizeAdditionalWhamUsageWindows(root, source) {
-    const knownPaths = /* @__PURE__ */ new Set([
-      "root.rate_limit.primary_window",
-      "root.rate_limit.secondary_window",
-      "root.code_review_rate_limit.primary_window",
-      "root.credits"
-    ]);
-    return collectUsageCandidates(root, "root", {
-      maxDepth: 7,
-      includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
-    }).map((candidate) => {
-      const additionalLabel = codexAdditionalRateLimitLabel(
-        candidate.path,
-        candidate.record
-      );
-      return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: additionalLabel ? "codex" : "wham",
-        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
-        displayAsRemaining: true,
-        label: additionalLabel ?? void 0
-      });
-    }).filter((meter) => meter !== null);
-  }
-  function normalizeWhamCodexNamedUsage(root, source) {
-    const codexRoots = collectCodexNamedSubtrees(root);
-    const meters = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const item of codexRoots) {
-      for (const meter of normalizeCodexUsageRecordTree(
-        item.record,
-        `wham.${item.path}`,
-        source
-      )) {
-        if (seen.has(meter.key)) {
-          continue;
-        }
-        seen.add(meter.key);
-        meters.push(meter);
-      }
-    }
-    return meters;
-  }
-  function collectCodexNamedSubtrees(root) {
-    const queue = [
-      { path: "root", value: root, depth: 0 }
-    ];
-    const matches = [];
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (!item || item.depth > 4) {
-        continue;
-      }
-      const record = asRecord(item.value);
-      if (!record) {
-        continue;
-      }
-      for (const [key, value] of Object.entries(record)) {
-        const path = `${item.path}.${key}`;
-        const childRecord = asRecord(value);
-        if (childRecord) {
-          if (isCodexPath(path)) {
-            matches.push({ path, record: childRecord });
-          }
-          queue.push({ path, value, depth: item.depth + 1 });
-        } else if (Array.isArray(value)) {
-          value.forEach((entry, index) => {
-            queue.push({
-              path: `${path}.${index}`,
-              value: entry,
-              depth: item.depth + 1
-            });
-          });
-        }
-      }
-    }
-    return matches;
-  }
-  function isCodexPath(path) {
-    const normalized = path.toLowerCase();
-    return normalized.includes("codex") && !normalized.includes("code_review");
-  }
-  function normalizeTasksRateLimit(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    const meters = [];
-    const direct = normalizeWindowMeter({
-      key: "tasks:rate_limit",
-      label: "Tasks rate limit",
-      record: root,
-      source,
-      rawKind: "tasks.rate_limit"
-    });
-    if (direct) {
-      meters.push(direct);
-    }
-    return meters;
-  }
-  function normalizeChatGptAccountsCheck(json, source = "api") {
-    const root = asRecord(json);
-    const accounts = root ? getRecord(root, "accounts") : null;
-    if (!accounts) {
-      return [];
-    }
-    const account = accountCheckRecord(accounts);
-    const entitlement = account ? getRecord(account, "entitlement") : null;
-    if (!entitlement) {
-      return [];
-    }
-    const expiresAt = getString(entitlement, "expires_at");
-    const renewsAt = getString(entitlement, "renews_at");
-    const hasActiveSubscription = asBoolean(entitlement.has_active_subscription);
-    const subscriptionPlan = getString(entitlement, "subscription_plan");
-    const resetAt = expiresAt ?? renewsAt;
-    if (!resetAt && hasActiveSubscription === null && !subscriptionPlan) {
-      return [];
-    }
-    return [
-      {
-        key: "chatgpt:subscription",
-        label: "ChatGPT subscription",
-        requestKind: expiresAt ? "expires" : renewsAt ? "renews" : void 0,
-        modelName: subscriptionPlan ?? void 0,
-        resetAt,
-        source,
-        confidence: resetAt ? "high" : "medium",
-        rawKind: "chatgpt.subscription"
-      }
-    ];
-  }
-  function accountCheckRecord(accounts) {
-    const defaultAccount = getRecord(accounts, "default");
-    if (defaultAccount) {
-      return defaultAccount;
-    }
-    for (const value of Object.values(accounts)) {
-      const record = asRecord(value);
-      if (record) {
-        return record;
-      }
-    }
-    return null;
-  }
-  function normalizeCodexUsageRecordTree(root, rootPath, source) {
-    const candidates = collectCodexUsageCandidates(root, rootPath);
-    const meters = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const candidate of candidates) {
-      const meter = normalizeCodexUsageObject(candidate.path, candidate.record, source);
-      if (!meter || seen.has(meter.key)) {
-        continue;
-      }
-      seen.add(meter.key);
-      meters.push(meter);
-    }
-    return meters;
-  }
-  function collectCodexUsageCandidates(root, rootPath) {
-    return collectUsageCandidates(root, rootPath, {
-      maxDepth: 7,
-      includeRecord: (_path, record) => isCodexUsageLike(record)
-    });
-  }
-  function isCodexUsageLike(record) {
-    return numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null || numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !== null || numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null || numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null || numberFromKeys(record, [
-      "remaining_percent",
-      "remainingPercent",
-      "percent_remaining",
-      "percentRemaining",
-      "remaining_percentage",
-      "remainingPercentage"
-    ]) !== null || numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null || stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null;
-  }
-  function isGeneralChatGptUsageLike(path, record) {
-    if (isCodexPath(path)) {
-      return false;
-    }
-    if (!isCodexUsageLike(record)) {
-      return false;
-    }
-    const normalizedPath = path.toLowerCase();
-    const label = usageLabel(record, path).toLowerCase();
-    const hasUsageNameSignal = normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
-    const hasCountQuotaSignal = numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null && numberFromKeys(record, [
-      "total",
-      "limit",
-      "quota",
-      "total_credits",
-      "totalCredits"
-    ]) !== null;
-    const hasCurrentWindowSignal = hasCountQuotaSignal || numberFromKeys(record, [
-      "remaining_percent",
-      "remainingPercent",
-      "percent_remaining",
-      "percentRemaining",
-      "remaining_percentage",
-      "remainingPercentage",
-      "remaining_pct",
-      "remainingPct",
-      "used_percent",
-      "usedPercent",
-      "used_percentage",
-      "usedPercentage",
-      "percent_used",
-      "percentUsed",
-      "utilization"
-    ]) !== null || resetValueFromRecord(record) !== null || numberFromKeys(record, [
-      "reset_after",
-      "resetAfter",
-      "reset_after_seconds",
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]) !== null;
-    return hasUsageNameSignal && hasCurrentWindowSignal;
-  }
-  function normalizeCodexUsageObject(path, record, source) {
-    return normalizeGenericUsageObject(path, record, source, {
-      keyPrefix: "codex",
-      rawKind: "codex.settings.usage",
-      displayAsRemaining: true
-    });
-  }
-  function normalizeGenericUsageObject(path, record, source, options) {
-    const remaining = numberFromKeys(record, [
-      "remaining",
-      "remaining_credits",
-      "remainingCredits"
-    ]);
-    const total = numberFromKeys(record, [
-      "total",
-      "limit",
-      "quota",
-      "total_credits",
-      "totalCredits"
-    ]);
-    const used = numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ?? (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
-    const explicitRemainingPercent = percentFromRatioOrPercent(
-      numberFromKeys(record, [
-        "remaining_percent",
-        "remainingPercent",
-        "percent_remaining",
-        "percentRemaining",
-        "remaining_percentage",
-        "remainingPercentage",
-        "remaining_pct",
-        "remainingPct"
-      ])
-    );
-    const rawUsedPercent = percentFromRatioOrPercent(
-      numberFromKeys(record, [
-        "used_percent",
-        "usedPercent",
-        "used_percentage",
-        "usedPercentage",
-        "percent_used",
-        "percentUsed",
-        "utilization"
-      ])
-    );
-    const remainingPercent = explicitRemainingPercent ?? (options.displayAsRemaining && rawUsedPercent !== null ? percentFromRatioOrPercent(100 - rawUsedPercent) : null);
-    const usedPercent = remainingPercent !== null ? percentFromRatioOrPercent(100 - remainingPercent) : rawUsedPercent;
-    const resetAt = resetValueFromRecord(record);
-    const resetAfterSeconds = numberFromKeys(record, [
-      "reset_after",
-      "resetAfter",
-      "reset_after_seconds"
-    ]);
-    const windowSeconds = numberFromKeys(record, [
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]);
-    const label = options.label ?? usageLabel(record, path);
-    if (remaining === null && total === null && used === null && usedPercent === null && remainingPercent === null && resetAt === null && resetAfterSeconds === null && windowSeconds === null) {
-      return null;
-    }
-    return {
-      key: `${options.keyPrefix}:${path}`,
-      label,
-      remaining,
-      total,
-      used,
-      usedPercent: usedPercent ?? (used !== null && total !== null && total > 0 ? percentFromRatioOrPercent(used / total) : null),
-      remainingPercent: remainingPercent ?? (remaining !== null && total !== null && total > 0 ? percentFromRatioOrPercent(remaining / total) : null),
-      resetAt,
-      resetAfterSeconds,
-      windowSeconds,
-      source,
-      confidence: remaining !== null || total !== null || usedPercent !== null || remainingPercent !== null ? "medium" : "low",
-      rawKind: options.rawKind
-    };
-  }
-  function codexWindowLabel(record, fallback) {
-    const duration = numberFromKeys(record, [
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds"
-    ]);
-    if (duration === 18e3) {
-      return "5-hour window";
-    }
-    if (duration === 604800) {
-      return "Weekly window";
-    }
-    return fallback;
-  }
-  function codexAdditionalRateLimitLabel(path, record) {
-    const normalized = path.toLowerCase();
-    if (!normalized.includes("additional_rate_limits")) {
-      return null;
-    }
-    const name = getString(record, "model_name") ?? getString(record, "model_slug") ?? "Additional";
-    if (normalized.endsWith(".primary_window")) {
-      return `${name} Primary window`;
-    }
-    if (normalized.endsWith(".secondary_window")) {
-      return `${name} Weekly window`;
-    }
-    return `${name} usage limit`;
-  }
-  function collectUsageCandidates(root, rootPath, options) {
-    const queue = [
-      { path: rootPath, value: root, depth: 0 }
-    ];
-    const candidates = [];
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (!item || item.depth > options.maxDepth) {
-        continue;
-      }
-      const record = asRecord(item.value);
-      if (!record) {
-        continue;
-      }
-      if (options.includeRecord(item.path, record)) {
-        candidates.push({ path: item.path, record });
-      }
-      for (const [key, value] of Object.entries(record)) {
-        if (Array.isArray(value)) {
-          value.forEach((entry, index) => {
-            queue.push({
-              path: `${item.path}.${key}.${index}`,
-              value: entry,
-              depth: item.depth + 1
-            });
-          });
-        } else if (asRecord(value)) {
-          queue.push({
-            path: `${item.path}.${key}`,
-            value,
-            depth: item.depth + 1
-          });
-        }
-      }
-    }
-    return candidates;
-  }
-  function usageLabel(record, path) {
-    const direct = getString(record, "label") ?? getString(record, "title") ?? getString(record, "name") ?? getString(record, "display_name") ?? getString(record, "displayName") ?? getString(record, "feature_name") ?? getString(record, "bucket_name") ?? getString(record, "bucketName") ?? getString(record, "limit_name") ?? getString(record, "limitName");
-    if (direct) {
-      const titled = displayUsageLabel(direct);
-      if (path.toLowerCase().includes("codex") && isSimpleUsageKey(direct) && !/codex|gpt/i.test(titled)) {
-        return `Codex ${titled}`;
-      }
-      return titled;
-    }
-    const model = getString(record, "model") ?? getString(record, "model_name") ?? getString(record, "modelName") ?? getString(record, "model_slug") ?? getString(record, "modelSlug");
-    const windowName = getString(record, "window") ?? getString(record, "window_name") ?? getString(record, "windowName") ?? getString(record, "period") ?? getString(record, "period_name") ?? getString(record, "periodName");
-    if (model && windowName) {
-      return `${model} ${titleFromKey(windowName)} 使用限额`;
-    }
-    if (model) {
-      return `${model} 使用限额`;
-    }
-    const normalizedPath = path.toLowerCase();
-    if (normalizedPath === "codex" || normalizedPath.includes("codex_usage")) {
-      return "Codex usage";
-    }
-    const pathLabel = path.split(".").filter((part) => part !== "root" && !/^\d+$/.test(part)).slice(-3).join(" ");
-    return pathLabel ? titleFromKey(pathLabel) : "Codex usage";
-  }
-  function displayUsageLabel(value) {
-    const trimmed = value.trim();
-    if (!isSimpleUsageKey(trimmed)) {
-      return trimmed;
-    }
-    return titleFromKey(trimmed);
-  }
-  function isSimpleUsageKey(value) {
-    return /^[A-Za-z0-9_]+$/.test(value.trim());
-  }
-  function resetValueFromRecord(record) {
-    return stringOrNumberFromKeys(record, [
-      "reset_at",
-      "resetAt",
-      "resets_at",
-      "resetsAt",
-      "reset_time",
-      "resetTime",
-      "resets"
-    ]);
-  }
-  function resetAfterValue(value) {
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return { resetAt: null, resetAfterSeconds: value };
-    }
-    if (typeof value !== "string") {
-      return { resetAt: null, resetAfterSeconds: null };
-    }
-    const trimmed = value.trim();
-    if (trimmed === "") {
-      return { resetAt: null, resetAfterSeconds: null };
-    }
-    const numeric = Number(trimmed);
-    if (Number.isFinite(numeric)) {
-      return { resetAt: null, resetAfterSeconds: numeric };
-    }
-    return { resetAt: trimmed, resetAfterSeconds: null };
-  }
-  function dedupeMeters(meters) {
-    const seen = /* @__PURE__ */ new Set();
-    const result = [];
-    for (const meter of meters) {
-      if (seen.has(meter.key)) {
-        continue;
-      }
-      seen.add(meter.key);
-      result.push(meter);
-    }
-    return result;
-  }
-  function numberFromKeys(record, keys) {
-    for (const key of keys) {
-      const value = getNumber(record, key);
-      if (value !== null) {
-        return value;
-      }
-    }
-    return null;
-  }
-  function stringOrNumberFromKeys(record, keys) {
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === "string" || typeof value === "number") {
-        return value;
-      }
-    }
-    return null;
-  }
-  function responseFailure$4(response) {
-    return formatUsageError(
-      usageErrorFromBridge(response),
-      response.endpointKey ?? "chatgpt"
-    );
-  }
-  async function fetchChatGptUsage(fetcher) {
-    const meters = [];
-    const requiredFailures = [];
-    const optionalFailures = [];
-    let defaultModelSlug;
-    let blockedFeatures = [];
-    const conversation = await fetcher("chatgpt:conversationInit");
-    if (conversation.ok) {
-      const normalized = normalizeChatGptConversationInit(conversation.json, "api");
-      meters.push(...normalized.meters);
-      defaultModelSlug = normalized.defaultModelSlug;
-      blockedFeatures = normalized.blockedFeatures;
-    } else {
-      requiredFailures.push(responseFailure$4(conversation));
-    }
-    const codex = await fetcher("chatgpt:codexUsage");
-    const codexMeters = codex.ok ? normalizeChatGptWhamUsage(codex.json, "api") : [];
-    meters.push(...codexMeters);
-    const hasCodexWindow = codexMeters.some(
-      (meter) => meter.key === "wham:primary_window" || meter.key === "wham:secondary_window" || meter.key.startsWith("codex:")
-    );
-    if (!hasCodexWindow) {
-      const wham = await fetcher("chatgpt:whamUsage");
-      if (wham.ok) {
-        meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
-      } else {
-        optionalFailures.push(responseFailure$4(wham));
-      }
-    }
-    const tasks = await fetcher("chatgpt:whamTasksRateLimit");
-    if (tasks.ok) {
-      meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$4(tasks));
-    }
-    const hasBlocking = blockedFeatures.length > 0;
-    const hasOptionalFailures = optionalFailures.length > 0;
-    const firstFailure = requiredFailures[0] ?? optionalFailures[0];
-    return {
-      platform: "chatgpt",
-      meters: dedupeMeters(meters),
-      source: meters.length > 0 ? "api" : "unknown",
-      updatedAt: Date.now(),
-      status: meters.length > 0 ? hasOptionalFailures || hasBlocking ? "partial" : "ok" : firstFailure ? "error" : "unknown",
-      errorMessage: hasBlocking ? "部分功能被限制" : meters.length === 0 && firstFailure ? firstFailure : void 0,
-      debug: {
-        endpoint: "chatgpt:conversationInit,chatgpt:codexUsage,chatgpt:whamTasksRateLimit",
-        parser: defaultModelSlug ? `chatgpt.default_model=${defaultModelSlug}` : "chatgpt"
-      }
-    };
-  }
-  function normalizeChatGptIntercepted(url, json) {
-    const path = safePathname(url);
-    if (path === "/backend-api/conversation/init") {
-      return normalizeChatGptConversationInit(json, "intercepted").meters;
-    }
-    if (path === "/backend-api/wham/usage") {
-      return normalizeChatGptWhamUsage(json, "intercepted");
-    }
-    if (path === "/backend-api/codex/usage") {
-      return normalizeChatGptWhamUsage(json, "intercepted");
-    }
-    if (path === "/backend-api/wham/tasks/rate_limit") {
-      return normalizeTasksRateLimit(json, "intercepted");
-    }
-    if (/^\/backend-api\/accounts\/check\//.test(path)) {
-      return normalizeChatGptAccountsCheck(json, "intercepted");
-    }
-    return [];
-  }
-  function safePathname(url) {
-    try {
-      return new URL(url).pathname;
-    } catch {
-      return "";
-    }
-  }
   const FRIENDLY_LABELS = {
     five_hour: "5h",
     seven_day: "7d all models",
@@ -4299,7 +4307,7 @@ button {
   function isUsageLike(record) {
     return "utilization" in record || "used_percentage" in record || "used_credits" in record || "monthly_limit" in record;
   }
-  function normalizeUsageObject(key, record, source) {
+  function normalizeUsageObject(key2, record, source) {
     if (!isUsageLike(record)) {
       return null;
     }
@@ -4315,8 +4323,8 @@ button {
       return null;
     }
     return {
-      key,
-      label: FRIENDLY_LABELS[key] ?? titleFromKey(key),
+      key: key2,
+      label: FRIENDLY_LABELS[key2] ?? titleFromKey(key2),
       remaining,
       total,
       used,
@@ -4324,7 +4332,7 @@ button {
       resetAt,
       source,
       confidence: usedPercent !== null && resetAt !== null ? "high" : usedPercent !== null || total !== null || used !== null ? "medium" : "low",
-      rawKind: key
+      rawKind: key2
     };
   }
   function normalizeClaudeUsage(json, source = "api") {
@@ -4333,12 +4341,12 @@ button {
       return [];
     }
     const meters = [];
-    for (const [key, value] of Object.entries(root)) {
+    for (const [key2, value] of Object.entries(root)) {
       const record = asRecord(value);
       if (!record) {
         continue;
       }
-      const meter = normalizeUsageObject(key, record, source);
+      const meter = normalizeUsageObject(key2, record, source);
       if (meter) {
         meters.push(meter);
       }
@@ -4806,13 +4814,13 @@ button {
     const result = [];
     let offset = 0;
     while (offset < bytes.length) {
-      const key = readVarint(bytes, offset);
-      if (!key) {
+      const key2 = readVarint(bytes, offset);
+      if (!key2) {
         break;
       }
-      offset = key.offset;
-      const field = Number(key.value >> 3n);
-      const wireType = Number(key.value & 7n);
+      offset = key2.offset;
+      const field = Number(key2.value >> 3n);
+      const wireType = Number(key2.value & 7n);
       if (field <= 0) {
         break;
       }
@@ -5141,412 +5149,6 @@ button {
     }
     return normalizeChatGptIntercepted(args.url, args.json);
   }
-  const MERGED_METER_TTL_MS = 30 * 6e4;
-  function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
-    const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
-    if (!existing || existing.platform !== incoming.platform) {
-      return {
-        ...normalizedIncoming,
-        cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
-      };
-    }
-    const normalizedExisting = withObservedAt(existing, existing.updatedAt);
-    const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
-    const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
-      (meter) => meter.source !== "estimate"
-    );
-    const retainedExisting = normalizedExisting.meters.filter((meter) => {
-      if (incomingKeys.has(meter.key)) {
-        return false;
-      }
-      if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
-        return false;
-      }
-      const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
-      return now - observedAt <= MERGED_METER_TTL_MS;
-    });
-    const meters = [...retainedExisting, ...normalizedIncoming.meters];
-    const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
-    return {
-      platform: incoming.platform,
-      meters,
-      source: normalizedIncoming.source,
-      updatedAt,
-      cacheAgeMs: Math.max(0, now - updatedAt),
-      status: mergedStatus(normalizedExisting, normalizedIncoming, meters.length),
-      errorMessage: mergedErrorMessage(normalizedExisting, normalizedIncoming, meters.length),
-      debug: {
-        endpoint: joinDebugField(
-          normalizedExisting.debug?.endpoint,
-          normalizedIncoming.debug?.endpoint
-        ),
-        parser: joinDebugField(
-          normalizedExisting.debug?.parser,
-          normalizedIncoming.debug?.parser
-        )
-      }
-    };
-  }
-  function isLocalEstimateMeter(meter) {
-    return meter.rawKind === "localEstimate" || meter.key === "local:sent-count";
-  }
-  function withObservedAt(snapshot, fallbackObservedAt) {
-    return {
-      ...snapshot,
-      meters: snapshot.meters.map((meter) => ({
-        ...meter,
-        observedAt: meter.observedAt ?? fallbackObservedAt
-      }))
-    };
-  }
-  function mergedStatus(existing, incoming, meterCount) {
-    if (meterCount === 0) {
-      return incoming.status !== "unknown" ? incoming.status : existing.status;
-    }
-    if (incoming.status === "error") {
-      return "partial";
-    }
-    if (incoming.status === "partial" || existing.status === "partial") {
-      return "partial";
-    }
-    return "ok";
-  }
-  function mergedErrorMessage(existing, incoming, meterCount) {
-    if (meterCount === 0) {
-      return incoming.errorMessage ?? existing.errorMessage;
-    }
-    if (incoming.errorMessage === "部分功能被限制") {
-      return incoming.errorMessage;
-    }
-    return void 0;
-  }
-  function joinDebugField(existing, incoming) {
-    const values = [existing, incoming].filter(
-      (value) => Boolean(value)
-    );
-    if (values.length === 0) {
-      return void 0;
-    }
-    return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
-  }
-  const CHATGPT_SENTINEL_EVENT = "__AIQM_SENTINEL_EVENT__";
-  function sanitizeSentinelObservation(value) {
-    const record = asRecord(value);
-    if (!record || record.source !== "chatgpt-sentinel") {
-      return null;
-    }
-    const urlKind = record.urlKind;
-    if (urlKind !== "chat-requirements" && urlKind !== "prepare") {
-      return null;
-    }
-    const ts = getNumber(record, "ts");
-    if (ts === null) {
-      return null;
-    }
-    const powDifficulty = getString(record, "powDifficulty");
-    return {
-      source: "chatgpt-sentinel",
-      ts,
-      urlKind,
-      powRequired: asBoolean(record.powRequired) === true,
-      powDifficulty
-    };
-  }
-  function parsePowRisk(difficulty) {
-    if (!difficulty || typeof difficulty !== "string") {
-      return {
-        raw: null,
-        clean: null,
-        len: null,
-        decimal: null,
-        level: "Unknown",
-        risk: 0
-      };
-    }
-    const clean = difficulty.replace(/^0x/i, "").replace(/^0+/, "") || "0";
-    const len = clean.length;
-    const parsed = Number.parseInt(clean, 16);
-    const decimal = Number.isFinite(parsed) ? parsed : null;
-    if (len <= 2) {
-      return { raw: difficulty, clean, len, decimal, level: "Critical", risk: 100 };
-    }
-    if (len <= 3) {
-      return { raw: difficulty, clean, len, decimal, level: "Hard", risk: 75 };
-    }
-    if (len <= 4) {
-      return { raw: difficulty, clean, len, decimal, level: "Medium", risk: 50 };
-    }
-    if (len <= 5) {
-      return { raw: difficulty, clean, len, decimal, level: "Easy", risk: 25 };
-    }
-    return { raw: difficulty, clean, len, decimal, level: "Very Easy", risk: 0 };
-  }
-  function computeSentinelRisk(obs) {
-    const pow = parsePowRisk(obs.powDifficulty);
-    const powRequiredWithoutDifficulty = obs.powRequired === true && !obs.powDifficulty;
-    const score = clamp(
-      pow.risk + 10 * Number(powRequiredWithoutDifficulty)
-    );
-    const label = score >= 75 ? "严重" : score >= 50 ? "高" : score >= 25 ? "偏高" : "正常";
-    return {
-      score,
-      label,
-      pow,
-      factors: {
-        powRequired: obs.powRequired,
-        powRequiredWithoutDifficulty
-      }
-    };
-  }
-  function toChatGPTSentinelState(obs) {
-    const sentinel = computeSentinelRisk(obs);
-    return {
-      updatedAt: obs.ts,
-      sentinelRisk: {
-        score: sentinel.score,
-        label: sentinel.label
-      },
-      pow: sentinel.pow,
-      gates: {
-        powRequired: obs.powRequired
-      },
-      explanation: "当前仅验证 PoW 难度，不判断模型 fallback。"
-    };
-  }
-  function containsForbiddenSentinelKey(value) {
-    const queue = [value];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const record = asRecord(current);
-      if (!record) {
-        if (Array.isArray(current)) {
-          queue.push(...current);
-        }
-        continue;
-      }
-      for (const [key, child] of Object.entries(record)) {
-        if (isForbiddenSentinelKey(key)) {
-          return true;
-        }
-        queue.push(child);
-      }
-    }
-    return false;
-  }
-  function isForbiddenSentinelKey(key) {
-    const normalized = key.toLowerCase();
-    return normalized === "token" || normalized === "prepare_token" || normalized === "dx" || normalized === "collector_dx" || normalized === "seed" || normalized === "cookie" || normalized === "authorization" || normalized.startsWith("oai-") || normalized.startsWith("x-oai-");
-  }
-  function clamp(n, min = 0, max = 100) {
-    return Math.max(min, Math.min(max, Math.round(n)));
-  }
-  const IP_RISK_AUTO_REFRESH_MS = 24 * 60 * 60 * 1e3;
-  const DEFAULT_IP_RISK_PUBLIC_SETTINGS = {
-    enabled: false
-  };
-  function disabledIpRiskState(now = Date.now()) {
-    return {
-      provider: "proxycheck",
-      source: "proxycheck.io",
-      status: "disabled",
-      updatedAt: now,
-      score: null,
-      label: "未知",
-      signals: emptySignals()
-    };
-  }
-  function missingKeyIpRiskState(now = Date.now()) {
-    return {
-      provider: "proxycheck",
-      source: "proxycheck.io",
-      status: "missing-key",
-      updatedAt: now,
-      score: null,
-      label: "未知",
-      signals: emptySignals()
-    };
-  }
-  function sanitizeProxycheckApiKey(value) {
-    if (typeof value !== "string") {
-      return null;
-    }
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 512) {
-      return null;
-    }
-    return trimmed;
-  }
-  function publicIpRiskSettings(settings) {
-    return {
-      provider: "proxycheck",
-      enabled: settings.enabled,
-      hasApiKey: Boolean(settings.proxycheckApiKey),
-      apiKeyPreview: maskProxycheckApiKey(settings.proxycheckApiKey)
-    };
-  }
-  function maskProxycheckApiKey(value) {
-    const apiKey = sanitizeProxycheckApiKey(value);
-    if (!apiKey) {
-      return null;
-    }
-    if (apiKey.length <= 4) {
-      return "••••";
-    }
-    const suffix = apiKey.slice(-4);
-    const hiddenLength = Math.min(Math.max(apiKey.length - 4, 6), 14);
-    return `${"•".repeat(hiddenLength)}${suffix}`;
-  }
-  function emptySignals() {
-    return {
-      proxy: false,
-      vpn: false,
-      tor: false,
-      hosting: false,
-      type: null
-    };
-  }
-  const OBSERVATION_LIMIT = 20;
-  const STATE_KEY = "aiUsage:chatgpt:sentinelState";
-  const OBSERVATIONS_KEY = "aiUsage:chatgpt:sentinelObservations";
-  async function getChatGptSentinelState() {
-    const items = await storageGet$2(STATE_KEY);
-    const value = items[STATE_KEY];
-    return isChatGptSentinelState(value) ? value : null;
-  }
-  async function rememberChatGptSentinelObservation(observation, state) {
-    if (containsForbiddenSentinelKey(observation) || containsForbiddenSentinelKey(state)) {
-      return;
-    }
-    const existing = await getChatGptSentinelObservations();
-    const observations = [observation, ...existing].slice(0, OBSERVATION_LIMIT);
-    await storageSet$2({
-      [STATE_KEY]: state,
-      [OBSERVATIONS_KEY]: observations
-    });
-  }
-  async function getChatGptSentinelObservations() {
-    const items = await storageGet$2(OBSERVATIONS_KEY);
-    const value = items[OBSERVATIONS_KEY];
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value.filter(isChatGptSentinelObservation).slice(0, OBSERVATION_LIMIT);
-  }
-  function storageGet$2(keys) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.get(keys, (items) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(items);
-      });
-    });
-  }
-  function storageSet$2(items) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.set(items, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  function isChatGptSentinelObservation(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && candidate.source === "chatgpt-sentinel" && (candidate.urlKind === "chat-requirements" || candidate.urlKind === "prepare") && typeof candidate.ts === "number" && typeof candidate.powRequired === "boolean";
-  }
-  function isChatGptSentinelState(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && typeof candidate.updatedAt === "number" && typeof candidate.sentinelRisk?.score === "number" && typeof candidate.sentinelRisk?.label === "string" && typeof candidate.pow?.risk === "number" && typeof candidate.gates?.powRequired === "boolean";
-  }
-  const IP_RISK_SETTINGS_KEY = "aiUsage:ipRisk:settings";
-  const IP_RISK_STATE_KEY = "aiUsage:ipRisk:state";
-  async function getStoredIpRiskSettings() {
-    const items = await storageGet$1(IP_RISK_SETTINGS_KEY);
-    return storedIpRiskSettingsFromValue(items[IP_RISK_SETTINGS_KEY]);
-  }
-  async function getIpRiskPublicSettings() {
-    return publicIpRiskSettings(await getStoredIpRiskSettings());
-  }
-  async function saveIpRiskSettings(update) {
-    const existing = await getStoredIpRiskSettings();
-    const next = {
-      provider: "proxycheck",
-      enabled: update.enabled,
-      proxycheckApiKey: existing.proxycheckApiKey
-    };
-    const apiKey = sanitizeProxycheckApiKey(update.apiKey);
-    if (apiKey) {
-      next.proxycheckApiKey = apiKey;
-    }
-    if (update.clearApiKey) {
-      delete next.proxycheckApiKey;
-    }
-    await storageSet$1({ [IP_RISK_SETTINGS_KEY]: next });
-    return publicIpRiskSettings(next);
-  }
-  async function getIpRiskState() {
-    const items = await storageGet$1(IP_RISK_STATE_KEY);
-    const state = items[IP_RISK_STATE_KEY];
-    return isIpRiskState(state) ? state : null;
-  }
-  function setIpRiskState(state) {
-    return storageSet$1({ [IP_RISK_STATE_KEY]: state });
-  }
-  function publicSettingsFromStorageValue(value) {
-    return publicIpRiskSettings(storedIpRiskSettingsFromValue(value));
-  }
-  function ipRiskStateFromStorageValue(value) {
-    return isIpRiskState(value) ? value : null;
-  }
-  function storedIpRiskSettingsFromValue(value) {
-    if (typeof value !== "object" || value === null) {
-      return {
-        provider: "proxycheck",
-        enabled: DEFAULT_IP_RISK_PUBLIC_SETTINGS.enabled
-      };
-    }
-    const record = value;
-    const apiKey = sanitizeProxycheckApiKey(record.proxycheckApiKey);
-    return {
-      provider: "proxycheck",
-      enabled: record.enabled === true,
-      ...apiKey ? { proxycheckApiKey: apiKey } : {}
-    };
-  }
-  function isIpRiskState(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && candidate.provider === "proxycheck" && candidate.source === "proxycheck.io" && typeof candidate.updatedAt === "number" && typeof candidate.signals === "object" && candidate.signals !== null;
-  }
-  function storageGet$1(keys) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.get(keys, (items) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(items);
-      });
-    });
-  }
-  function storageSet$1(items) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.set(items, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve();
-      });
-    });
-  }
   const LANGUAGE_SETTINGS_KEY = "aiUsage:language";
   async function getLanguageMode() {
     const items = await storageGet(LANGUAGE_SETTINGS_KEY);
@@ -5602,7 +5204,6 @@ button {
     console.debug(`[ai-usage] ${message}`, details);
   }
   const platform = detectPlatform(window.location);
-  const CHATGPT_UNAVAILABLE_RETRY_MS = 5 * 6e4;
   if (platform && shouldStartOnThisFrame(platform) && !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__) {
     window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
     void start(platform);
@@ -5621,55 +5222,8 @@ button {
     const bridge = new BridgeClient();
     let currentSnapshot = null;
     let refreshing = false;
-    let ipRiskRefreshing = false;
+    let chatGptController;
     let pendingEstimatorRefresh = 0;
-    const unavailableChatGptEndpoints = /* @__PURE__ */ new Map();
-    const refreshIpRisk = async (options) => {
-      if (ipRiskRefreshing) {
-        return;
-      }
-      const settings = await getIpRiskPublicSettings();
-      widget.setIpRiskSettings(settings);
-      if (!settings.enabled) {
-        const state = disabledIpRiskState();
-        widget.setIpRiskState(state);
-        if (options.force) {
-          await setIpRiskState(state);
-        }
-        return;
-      }
-      if (!settings.hasApiKey) {
-        const state = missingKeyIpRiskState();
-        widget.setIpRiskState(state);
-        if (options.force) {
-          await setIpRiskState(state);
-        }
-        return;
-      }
-      const cached2 = await getIpRiskState();
-      if (cached2) {
-        widget.setIpRiskState(cached2);
-      }
-      if (!options.force && cached2 && cached2.status === "ok" && Date.now() - cached2.updatedAt < IP_RISK_AUTO_REFRESH_MS) {
-        return;
-      }
-      ipRiskRefreshing = true;
-      widget.setIpRiskRefreshing(true);
-      try {
-        const state = await requestIpRiskRefresh();
-        widget.setIpRiskState(state);
-      } catch (error) {
-        debugLog("proxycheck refresh failed", error);
-      } finally {
-        ipRiskRefreshing = false;
-        widget.setIpRiskRefreshing(false);
-      }
-    };
-    const saveIpRisk = async (update) => {
-      const settings = await saveIpRiskSettings(update);
-      widget.setIpRiskSettings(settings);
-      await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
-    };
     const saveLanguage = async (mode) => {
       widget.setLanguageMode(await saveLanguageMode(mode));
     };
@@ -5679,14 +5233,6 @@ button {
         void refreshUsage({ force: true });
       },
       {
-        onIpRiskRefresh: () => {
-          void refreshIpRisk({ force: true });
-        },
-        onIpRiskSettingsSave: (update) => {
-          void saveIpRisk(update).catch((error) => {
-            debugLog("failed to save IP risk settings", error);
-          });
-        },
         onLanguageModeSave: (mode) => {
           void saveLanguage(mode).catch((error) => {
             debugLog("failed to save language settings", error);
@@ -5699,23 +5245,16 @@ button {
     const applySnapshot = async (snapshot) => {
       const shouldReplace = platformId === "grok" && snapshot.source === "intercepted";
       const previous = shouldReplace ? null : currentSnapshot;
-      const acceptedSnapshot = platformId === "chatgpt" ? withoutOlderMeters(previous, snapshot) : snapshot;
-      const merged = mergeUsageSnapshots(previous, acceptedSnapshot);
-      if (platformId === "chatgpt" && snapshot.meters.length > 0) {
-        if (snapshot.source === "api") {
-          merged.status = snapshot.status;
-        }
-        merged.checkedAt = Date.now();
-        if (sameUsageValues(previous, merged)) {
-          merged.updatedAt = previous.updatedAt;
-        }
-        merged.cacheAgeMs = 0;
-      }
+      const merged = mergeUsageSnapshots(previous, snapshot);
       currentSnapshot = merged;
       widget.setSnapshot(currentSnapshot);
       await setCachedSnapshot(currentSnapshot);
     };
     const refreshUsage = async (options) => {
+      if (chatGptController) {
+        await chatGptController.refresh(options.force ? "manual" : "poll");
+        return;
+      }
       if (refreshing) {
         return;
       }
@@ -5743,49 +5282,12 @@ button {
       widget.setLoading(true);
       await setLastRefreshAt(platformId, now);
       try {
-        let retryableEndpointFailure = false;
-        let snapshot = await fetchPlatformUsage(platformId, async (endpointKey, payload) => {
-          if (platformId === "chatgpt" && !options.force && (unavailableChatGptEndpoints.get(endpointKey) ?? 0) > Date.now()) {
-            return {
-              source: "ai-usage-floating-monitor",
-              direction: "main-to-content",
-              requestId: "unavailable-endpoint",
-              ok: false,
-              platform: platformId,
-              endpointKey,
-              error: { status: 401, message: "Endpoint unavailable in this session" }
-            };
-          }
-          const response = await bridge.fetchUsage(platformId, endpointKey, payload);
-          if (platformId === "chatgpt") {
-            if (response.ok) {
-              unavailableChatGptEndpoints.delete(endpointKey);
-            } else if (response.error?.status === 401 || response.error?.status === 403 || response.error?.status === 404) {
-              unavailableChatGptEndpoints.set(
-                endpointKey,
-                Date.now() + CHATGPT_UNAVAILABLE_RETRY_MS
-              );
-            }
-            if (!response.ok && (response.error?.status === void 0 || response.error.status === 429 || response.error.status >= 500)) {
-              retryableEndpointFailure = true;
-            }
-          }
-          return response;
-        });
-        snapshot = await withEstimateFallback(platformId, snapshot);
-        if (platformId === "chatgpt") {
-          snapshot = {
-            ...snapshot,
-            updatedAt: now,
-            meters: snapshot.meters.map((meter) => ({ ...meter, observedAt: now }))
-          };
-        }
+        const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key2, payload) => bridge.fetchUsage(platformId, key2, payload)));
         await applySnapshot(snapshot);
         await updateFailureState(
           platformId,
           snapshot,
-          widget,
-          retryableEndpointFailure
+          widget
         );
       } catch (error) {
         const snapshot = await withEstimateFallback(platformId, {
@@ -5803,64 +5305,31 @@ button {
         widget.setLoading(false);
       }
     };
+    if (platformId === "chatgpt") {
+      chatGptController = new ChatGptUsageController({
+        fetcher: (key2) => bridge.fetchUsage(platformId, key2),
+        onSnapshot: (snapshot) => {
+          currentSnapshot = snapshot;
+          widget.setSnapshot(snapshot);
+        },
+        onLoading: (loading) => widget.setLoading(loading),
+        readCache: (scope) => getCachedSnapshot("chatgpt", scope),
+        writeCache: setCachedSnapshot
+      });
+      bridge.onContextChanged(() => {
+        chatGptController?.reset();
+        void chatGptController?.refresh("startup");
+      });
+    }
     const cached = await getCachedSnapshot(platformId);
     if (cached) {
       currentSnapshot = cached;
       widget.setSnapshot(cached);
     }
-    widget.setBackoffUntil(await getBackoffUntil(platformId));
-    const ipRiskSettings = await getIpRiskPublicSettings();
-    widget.setIpRiskSettings(ipRiskSettings);
-    const cachedIpRisk = await getIpRiskState();
-    if (cachedIpRisk) {
-      widget.setIpRiskState(cachedIpRisk);
-    } else if (!ipRiskSettings.enabled) {
-      widget.setIpRiskState(disabledIpRiskState());
-    } else if (!ipRiskSettings.hasApiKey) {
-      widget.setIpRiskState(missingKeyIpRiskState());
-    }
-    void refreshIpRisk({ force: false });
-    if (platformId === "chatgpt") {
-      const cachedSentinelState = await getChatGptSentinelState();
-      if (cachedSentinelState) {
-        widget.setChatGptSentinelState(cachedSentinelState);
-      }
-    }
-    const onSentinelEvent = (event) => {
-      if (platformId !== "chatgpt") {
-        return;
-      }
-      const observation = sanitizeSentinelObservation(
-        event.detail
-      );
-      if (!observation) {
-        return;
-      }
-      const state = toChatGPTSentinelState(observation);
-      widget.setChatGptSentinelState(state);
-      void rememberChatGptSentinelObservation(observation, state).catch(
-        (error) => {
-          debugLog("failed to cache sentinel observation", error);
-        }
-      );
-    };
-    window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+    widget.setBackoffUntil(platformId === "chatgpt" ? 0 : await getBackoffUntil(platformId));
     const onStorageChanged = (changes, areaName) => {
       if (areaName !== "local") {
         return;
-      }
-      const settingsChange = changes[IP_RISK_SETTINGS_KEY];
-      if (settingsChange) {
-        widget.setIpRiskSettings(
-          publicSettingsFromStorageValue(settingsChange.newValue)
-        );
-      }
-      const stateChange = changes[IP_RISK_STATE_KEY];
-      if (stateChange) {
-        const state = ipRiskStateFromStorageValue(stateChange.newValue);
-        if (state) {
-          widget.setIpRiskState(state);
-        }
       }
       const languageChange = changes[LANGUAGE_SETTINGS_KEY];
       if (languageChange) {
@@ -5872,6 +5341,10 @@ button {
     chrome.storage.onChanged.addListener(onStorageChanged);
     bridge.onIntercepted((message) => {
       if (message.platform !== platformId) {
+        return;
+      }
+      if (chatGptController && message.endpointKey) {
+        void chatGptController.acceptIntercept(message.endpointKey, message.json, message.ts, message.requestStartedAt, message.scopeKey);
         return;
       }
       const snapshot = normalizeInterceptedUsage({
@@ -5889,16 +5362,17 @@ button {
         debugLog("failed to cache intercepted usage", error);
       });
     });
-    installSendEstimator(platformId, (snapshot) => {
-      if (!currentSnapshot || currentSnapshot.meters.length === 0) {
+    const stopEstimator = installSendEstimator(platformId, (snapshot) => {
+      if (platformId !== "chatgpt" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
         currentSnapshot = snapshot;
         widget.setSnapshot(snapshot);
       }
       window.clearTimeout(pendingEstimatorRefresh);
       pendingEstimatorRefresh = window.setTimeout(() => {
-        void refreshUsage({ force: false });
+        if (chatGptController) void chatGptController.refresh("operation");
+        else void refreshUsage({ force: false });
       }, 1500);
-    });
+    }, { recordCounts: platformId !== "chatgpt" });
     try {
       await injectMainWorld();
       await bridge.enableIntercept(platformId);
@@ -5915,15 +5389,17 @@ button {
       setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
       clearInterval: (id) => window.clearInterval(id),
       refresh: () => {
-        const lastCheck = currentSnapshot?.checkedAt ?? currentSnapshot?.updatedAt ?? 0;
-        if (Date.now() - lastCheck >= CACHE_TTL_MS) {
-          void refreshUsage({ force: false });
-        }
+        void refreshUsage({ force: false });
       }
     }) : null;
-    window.addEventListener("pagehide", () => {
+    window.addEventListener("pagehide", (event) => {
+      if (event.persisted) return;
+      stopEstimator();
+      widget.destroy();
       stopUsagePolling?.();
-      window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+      chatGptController?.destroy();
+      bridge.destroy();
+      window.clearTimeout(pendingEstimatorRefresh);
       chrome.storage.onChanged.removeListener(onStorageChanged);
     });
   }
@@ -5946,25 +5422,6 @@ button {
     if (!response.ok) {
       throw new Error(response.error ?? "Injection failed");
     }
-  }
-  async function requestIpRiskRefresh() {
-    const response = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        { type: "AI_USAGE_IP_RISK_REFRESH" },
-        (value) => {
-          const error = chrome.runtime.lastError;
-          if (error) {
-            reject(new Error(error.message));
-            return;
-          }
-          resolve(value ?? { ok: false, error: "No IP risk response" });
-        }
-      );
-    });
-    if (response.state) {
-      return response.state;
-    }
-    throw new Error(response.error ?? "IP 风险检测失败");
   }
   async function withEstimateFallback(platform2, snapshot) {
     if (snapshot.meters.length > 0 && snapshot.status !== "error") {

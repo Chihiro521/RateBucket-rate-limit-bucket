@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_name__",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "__MSG_description__",
   "default_locale": "zh_CN",
   "icons": {
@@ -13,7 +13,10 @@
       "128": "icon/128x128.png"
     }
   },
-  "permissions": ["storage", "scripting"],
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
   "host_permissions": [
     "https://grok.com/*",
     "https://claude.ai/*",
@@ -21,16 +24,16 @@
     "https://gemini.google.com/*",
     "https://www.kimi.com/*",
     "https://perplexity.ai/*",
-    "https://www.perplexity.ai/*",
-    "https://proxycheck.io/*",
-    "https://api64.ipify.org/*"
+    "https://www.perplexity.ai/*"
   ],
   "background": {
     "service_worker": "serviceWorker.js"
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/little-chihiro/*.png"],
+      "resources": [
+        "assets/little-chihiro/*.png"
+      ],
       "matches": [
         "https://grok.com/*",
         "https://claude.ai/*",
@@ -53,7 +56,9 @@
         "https://perplexity.ai/*",
         "https://www.perplexity.ai/*"
       ],
-      "js": ["mainWorldBridge.js"],
+      "js": [
+        "mainWorldBridge.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true,
@@ -70,7 +75,9 @@
         "https://perplexity.ai/*",
         "https://www.perplexity.ai/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
       "match_about_blank": true,
