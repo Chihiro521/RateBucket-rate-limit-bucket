@@ -90,21 +90,23 @@
 <body>
 
   <h1>RateBucket Privacy Policy</h1>
-  <p class="effective-date">Effective Date: 2026-05-27</p>
+  <p class="effective-date">Effective Date: 2026-10-02</p>
 
   <div class="highlight">
     <strong>Key principle:</strong> All data is processed locally. There is no backend server, no analytics, and no telemetry.
   </div>
 
   <h2>Overview</h2>
+  <p>This policy describes RateBucket 0.1.4 and later. Earlier versions included optional diagnostic features; updating to 0.1.4 removes those features and their stored settings.</p>
   <p>RateBucket is a browser extension that displays a floating usage widget on AI platform websites (ChatGPT, Claude, Grok, Gemini, Kimi, Perplexity). This privacy policy explains what data the extension collects, how it is used, and where it is stored.</p>
 
   <h2>Data We Collect</h2>
+  <p>ChatGPT normalized readings are isolated using a locally stored hash of the signed-in user and selected account. Authentication is held only in page memory for up to 60 seconds and is never persisted or transmitted to an extension-owned service. Retired IP-check settings and unscoped ChatGPT caches are removed once on upgrade.</p>
 
   <h3>1. Usage Quota Data (Functional Data)</h3>
   <table>
     <tr><th>Aspect</th><th>Detail</th></tr>
-    <tr><td><strong>What</strong></td><td>Numerical usage counters: <code>remaining</code>, <code>total</code>, <code>used</code>, <code>resetAt</code>, <code>windowSeconds</code></td></tr>
+    <tr><td><strong>What</strong></td><td>Numerical usage counters and storage byte balances: <code>remaining</code>, <code>total</code>, <code>used</code>, <code>resetAt</code>, <code>windowSeconds</code></td></tr>
     <tr><td><strong>Source</strong></td><td>Platform-owned web endpoints on the AI platform websites you visit</td></tr>
     <tr><td><strong>How</strong></td><td>The extension either actively fetches these endpoints with the current website session or intercepts the responses already made by the website</td></tr>
     <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code> (browser local storage)</td></tr>
@@ -112,21 +114,10 @@
     <tr><td><strong>Shared</strong></td><td><strong>Never</strong>. This data never leaves your browser.</td></tr>
   </table>
 
-  <h3>2. IP Risk Detection Data (Optional, Disabled by Default)</h3>
+  <h3>2. User Preferences</h3>
   <table>
     <tr><th>Aspect</th><th>Detail</th></tr>
-    <tr><td><strong>What</strong></td><td>Your public IP address and a risk score/signals from proxycheck.io</td></tr>
-    <tr><td><strong>Source</strong></td><td><code>api64.ipify.org</code> (to obtain your public IP) &rarr; <code>proxycheck.io</code> (to check IP risk)</td></tr>
-    <tr><td><strong>When</strong></td><td>Only when you <strong>manually enable</strong> IP Risk Detection and provide your own proxycheck.io API key</td></tr>
-    <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code></td></tr>
-    <tr><td><strong>Shared</strong></td><td>Sent to <code>proxycheck.io</code> <strong>only</strong> with your explicit API key. RateBucket does not have access to this data.</td></tr>
-    <tr><td><strong>Retention</strong></td><td>Cached for up to 24 hours to avoid repeated queries</td></tr>
-  </table>
-
-  <h3>3. User Preferences</h3>
-  <table>
-    <tr><th>Aspect</th><th>Detail</th></tr>
-    <tr><td><strong>What</strong></td><td>Language preference (<code>"en"</code> or <code>"zh-CN"</code>) and IP risk settings (enabled/disabled, API key presence)</td></tr>
+    <tr><td><strong>What</strong></td><td>Language preference (<code>"en"</code> or <code>"zh-CN"</code>)</td></tr>
     <tr><td><strong>Storage</strong></td><td><code>chrome.storage.local</code></td></tr>
     <tr><td><strong>Shared</strong></td><td><strong>Never</strong></td></tr>
   </table>
@@ -150,11 +141,7 @@
 
   <h2>Third-Party Services</h2>
   <p>Same-site requests to supported AI platforms may use your existing browser login session for that website. RateBucket does not read, store, export, or display cookie values, session tokens, or Authorization headers.</p>
-  <table>
-    <tr><th>Service</th><th>Purpose</th><th>Data Sent</th><th>User Control</th></tr>
-    <tr><td><code>proxycheck.io</code></td><td>Optional IP risk analysis</td><td>Public IP address</td><td><strong>Disabled by default</strong>. Only enabled if user provides their own API key.</td></tr>
-    <tr><td><code>api64.ipify.org</code></td><td>Obtain public IP address for proxycheck query</td><td>None (GET request)</td><td>Only called when IP risk detection is enabled.</td></tr>
-  </table>
+  <p>Requests are made only to the supported AI platform websites. No IP reputation service is used.</p>
 
   <h2>Chrome Web Store Dashboard Privacy Declarations</h2>
   <table>
@@ -168,7 +155,7 @@
     <tr><td>User activity</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td>Website content</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td><strong>Non-personal usage data</strong> (quota numbers)</td><td><strong>Yes</strong></td><td>Core functionality — display usage widget</td></tr>
-    <tr><td><strong>IP address</strong> (optional feature)</td><td><strong>Yes</strong></td><td>Only for optional IP risk detection, disabled by default</td></tr>
+    <tr><td><strong>IP address</strong></td><td><strong>No</strong></td><td>No IP reputation service is used.</td></tr>
   </table>
 
   <p><strong>Remote code:</strong> No<br>
