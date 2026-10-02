@@ -1,5 +1,5 @@
 import { CHATGPT_USAGE_ENDPOINTS, normalizeChatGptEndpoint } from "../platforms/chatgpt";
-import { MERGED_METER_TTL_MS, mergeUsageSnapshots } from "../platforms/merge";
+import { mergeUsageSnapshots, shouldRetainMeter } from "../platforms/merge";
 import { hasMeaningfulValue, isChatPassPath } from "../platforms/presentation";
 import type { BridgeResponse, EndpointKey, UsageEndpointFetcher, UsageMeter, UsageSnapshot } from "../platforms/types";
 import { sameUsageValues } from "./usagePolling";
@@ -173,8 +173,9 @@ export class ChatGptUsageController {
   private publish(): void {
     if (this.disposed) return;
     if (!this.snapshot) this.snapshot = this.empty();
+    const now = this.now();
     const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) &&
-      this.now() - (meter.observedAt ?? this.snapshot!.updatedAt) <= MERGED_METER_TTL_MS);
+      shouldRetainMeter(meter, now, this.snapshot!.updatedAt));
     const failed = [...this.states.values()].some((state) => state.failures > 0);
     this.snapshot = { ...this.snapshot, meters,
       status: meters.length ? failed || meters.some((meter) => meter.quotaState === "blocked") ? "partial" : "ok" : failed ? "error" : "unknown",

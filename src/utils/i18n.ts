@@ -356,22 +356,23 @@ function formatSubscriptionRemainingLocalized(
   const days = Math.floor(seconds / 86_400);
   const hours = Math.floor((seconds % 86_400) / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
   if (language === "zh-CN") {
     if (days > 0) {
-      return `剩余 ${days}天 ${hours}小时 ${minutes}分钟`;
+      return `剩余 ${days}天 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
     }
     if (hours > 0) {
-      return `剩余 ${hours}小时 ${minutes}分钟`;
+      return `剩余 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
     }
-    return `剩余 ${minutes}分钟`;
+    return minutes > 0 ? `剩余 ${minutes}分钟 ${remainingSeconds}秒` : `剩余 ${remainingSeconds}秒`;
   }
   if (days > 0) {
-    return `${days}d ${hours}h ${minutes}m left`;
+    return `${days}d ${hours}h ${minutes}m ${remainingSeconds}s left`;
   }
   if (hours > 0) {
-    return `${hours}h ${minutes}m left`;
+    return `${hours}h ${minutes}m ${remainingSeconds}s left`;
   }
-  return `${minutes}m left`;
+  return minutes > 0 ? `${minutes}m ${remainingSeconds}s left` : `${remainingSeconds}s left`;
 }
 
 function pad2(value: number): string {

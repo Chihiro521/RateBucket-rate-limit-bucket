@@ -152,6 +152,28 @@ describe("mergeUsageSnapshots", () => {
     expect(merged.meters.map((meter) => meter.key)).toEqual(["wham:primary_window"]);
   });
 
+  it("retains subscription dates beyond the quota ttl without changing their observation time", () => {
+    const existing = snapshot({ updatedAt: 1_000, key: "chatgpt:subscription", label: "ChatGPT subscription" });
+    existing.meters[0] = { ...existing.meters[0], rawKind: "chatgpt.subscription", metricKind: "subscription",
+      resetAt: "1970-01-01T00:01:00Z", observedAt: 1_000 };
+    existing.meters.push({ key: "limits_progress:file_upload", label: "File Upload", remaining: 1, source: "api", confidence: "high" });
+    const incoming = snapshot({ updatedAt: MERGED_METER_TTL_MS + 2_000, key: "wham:primary_window", label: "Primary window" });
+
+    const merged = mergeUsageSnapshots(existing, incoming, incoming.updatedAt);
+
+    expect(merged.meters.map((meter) => meter.key)).toEqual(["chatgpt:subscription", "wham:primary_window"]);
+    expect(merged.meters[0]).toEqual(existing.meters[0]);
+  });
+
+  it("clears retained subscription data when the account scope changes", () => {
+    const existing = snapshot({ updatedAt: 1_000, key: "chatgpt:subscription", label: "ChatGPT subscription" });
+    existing.scopeKey = "scope-a";
+    existing.meters[0].metricKind = "subscription";
+    const incoming = snapshot({ updatedAt: 2_000, key: "wham:primary_window", label: "Primary window" });
+    incoming.scopeKey = "scope-b";
+    expect(mergeUsageSnapshots(existing, incoming, 2_000).meters.map((meter) => meter.key)).toEqual(["wham:primary_window"]);
+  });
+
   it("drops local send estimates once authoritative meters arrive", () => {
     const existing: UsageSnapshot = {
       ...snapshot({

@@ -3,6 +3,18 @@ import { isChatPassPath } from "./presentation";
 
 export const MERGED_METER_TTL_MS = 30 * 60_000;
 
+export function shouldRetainMeter(
+  meter: UsageMeter,
+  now = Date.now(),
+  fallbackObservedAt = now
+): boolean {
+  // Subscription dates stay valid until the server sends a new entitlement.
+  if (meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription") {
+    return true;
+  }
+  return now - (meter.observedAt ?? fallbackObservedAt) <= MERGED_METER_TTL_MS;
+}
+
 export function mergeUsageSnapshots(
   existing: UsageSnapshot | null,
   incoming: UsageSnapshot,
@@ -39,8 +51,7 @@ export function mergeUsageSnapshots(
     if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
       return false;
     }
-    const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
-    return now - observedAt <= MERGED_METER_TTL_MS;
+    return shouldRetainMeter(meter, now, normalizedExisting.updatedAt);
   });
 
   const meters = [...retainedExisting, ...normalizedIncoming.meters];

@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   vi.stubGlobal("chrome", { runtime: { getURL: (path: string) => `/assets/${path}` } });
 });
-afterEach(() => { widgets.forEach((widget) => widget.destroy()); document.documentElement.querySelectorAll("#ai-usage-floating-monitor").forEach((node) => node.remove()); vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { widgets.forEach((widget) => widget.destroy()); document.documentElement.querySelectorAll("#ai-usage-floating-monitor").forEach((node) => node.remove()); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("existing widget experience", () => {
   it.each<PlatformId>(["chatgpt", "grok", "claude", "kimi", "gemini", "perplexity"])("keeps %s theme, mascot and language settings without IP UI", (platform) => {
@@ -70,6 +70,49 @@ describe("existing widget experience", () => {
     expect(row.querySelector(".bar")).toBeNull(); expect(row.textContent).toContain("未校准");
     vi.advanceTimersByTime(121_000); flush(); expect(row.textContent).toContain("数据较旧");
   });
+
+  it("counts subscription seconds locally without refreshing, replacing rows or losing scroll", () => {
+    const { widget, root, refresh } = mount();
+    const initial = snapshot("chatgpt");
+    const subscription = { key: "chatgpt:subscription", label: "ChatGPT subscription", rawKind: "chatgpt.subscription",
+      metricKind: "subscription" as const, source: "intercepted" as const, confidence: "high" as const,
+      observedAt: Date.now(), resetAt: new Date(Date.now() + (15 * 86_400 + 5 * 3600 + 43 * 60 + 2) * 1000).toISOString() };
+    widget.setSnapshot({ ...initial, meters: [subscription, ...initial.meters] }); flush();
+    const value = root.querySelector<HTMLElement>('[data-time="subscription"]')!;
+    const row = value.closest(".meter");
+    const content = root.querySelector<HTMLElement>(".gpt-content")!;
+    content.scrollTop = 123;
+    expect(value.textContent).toBe("剩余 15天 5小时 43分钟 2秒");
+    vi.advanceTimersByTime(1000); flush();
+    expect(value.textContent).toBe("剩余 15天 5小时 43分钟 1秒");
+    widget.setSnapshot({ ...snapshot("chatgpt", 21), meters: [subscription, ...snapshot("chatgpt", 21).meters] }); flush();
+    vi.advanceTimersByTime(1000); flush();
+    expect(value.textContent).toBe("剩余 15天 5小时 43分钟 0秒");
+    expect(root.querySelector('[data-time="subscription"]')).toBe(value);
+    expect(value.closest(".meter")).toBe(row);
+    expect(root.querySelector(".gpt-content")).toBe(content);
+    expect(content.scrollTop).toBe(123);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("catches up immediately after a hidden tab and clamps an expired subscription to zero", () => {
+    const { widget, root, refresh } = mount();
+    widget.setSnapshot({ ...snapshot("chatgpt"), meters: [{ key: "chatgpt:subscription", label: "ChatGPT subscription",
+      rawKind: "chatgpt.subscription", source: "intercepted", confidence: "high", resetAt: new Date(Date.now() + 90_000).toISOString() }] }); flush();
+    const value = root.querySelector<HTMLElement>('[data-time="subscription"]')!;
+    expect(value.textContent).toBe("剩余 1分钟 30秒");
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    vi.advanceTimersByTime(65_000); flush();
+    expect(value.textContent).toBe("剩余 1分钟 30秒");
+    visibility.mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(value.textContent).toBe("剩余 25秒");
+    vi.advanceTimersByTime(26_000); flush();
+    expect(value.textContent).toBe("剩余 0秒");
+    expect(root.querySelector('[data-time="subscription"]')).toBe(value);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   it("keeps the captured drag node alive while quota responses arrive", () => {
     const { widget, root } = mount();
     root.querySelector<HTMLButtonElement>('button[title="隐藏用量面板"]')!.click(); flush();

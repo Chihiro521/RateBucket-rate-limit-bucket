@@ -828,6 +828,12 @@
     }
   }
   const MERGED_METER_TTL_MS = 30 * 6e4;
+  function shouldRetainMeter(meter, now = Date.now(), fallbackObservedAt = now) {
+    if (meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription") {
+      return true;
+    }
+    return now - (meter.observedAt ?? fallbackObservedAt) <= MERGED_METER_TTL_MS;
+  }
   function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
     const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
     if (!existing || existing.platform !== incoming.platform || existing.scopeKey !== incoming.scopeKey) {
@@ -857,8 +863,7 @@
       if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
         return false;
       }
-      const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
-      return now - observedAt <= MERGED_METER_TTL_MS;
+      return shouldRetainMeter(meter, now, normalizedExisting.updatedAt);
     });
     const meters = [...retainedExisting, ...normalizedIncoming.meters];
     const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
@@ -1151,7 +1156,8 @@
     publish() {
       if (this.disposed) return;
       if (!this.snapshot) this.snapshot = this.empty();
-      const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) && this.now() - (meter.observedAt ?? this.snapshot.updatedAt) <= MERGED_METER_TTL_MS);
+      const now = this.now();
+      const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) && shouldRetainMeter(meter, now, this.snapshot.updatedAt));
       const failed = [...this.states.values()].some((state) => state.failures > 0);
       this.snapshot = {
         ...this.snapshot,
@@ -1777,22 +1783,23 @@
     const days = Math.floor(seconds / 86400);
     const hours = Math.floor(seconds % 86400 / 3600);
     const minutes = Math.floor(seconds % 3600 / 60);
+    const remainingSeconds = seconds % 60;
     if (language === "zh-CN") {
       if (days > 0) {
-        return `剩余 ${days}天 ${hours}小时 ${minutes}分钟`;
+        return `剩余 ${days}天 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
       }
       if (hours > 0) {
-        return `剩余 ${hours}小时 ${minutes}分钟`;
+        return `剩余 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
       }
-      return `剩余 ${minutes}分钟`;
+      return minutes > 0 ? `剩余 ${minutes}分钟 ${remainingSeconds}秒` : `剩余 ${remainingSeconds}秒`;
     }
     if (days > 0) {
-      return `${days}d ${hours}h ${minutes}m left`;
+      return `${days}d ${hours}h ${minutes}m ${remainingSeconds}s left`;
     }
     if (hours > 0) {
-      return `${hours}h ${minutes}m left`;
+      return `${hours}h ${minutes}m ${remainingSeconds}s left`;
     }
-    return `${minutes}m left`;
+    return minutes > 0 ? `${minutes}m ${remainingSeconds}s left` : `${remainingSeconds}s left`;
   }
   function pad2(value) {
     return String(value).padStart(2, "0");
@@ -3282,6 +3289,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       this.shadow.append(style, this.root);
       this.timerId = window.setInterval(() => this.tickTimes(), 1e3);
       this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2e3);
+      document.addEventListener("visibilitychange", this.onVisibilityChange);
       window.addEventListener("resize", this.onResize);
       this.root.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
@@ -3320,6 +3328,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     resolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
     timerId;
     mountWatchId;
+    onVisibilityChange = () => this.tickTimes();
     mount() {
       this.ensureMounted();
       this.render();
@@ -3327,6 +3336,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     destroy() {
       window.clearInterval(this.timerId);
       window.clearInterval(this.mountWatchId);
+      document.removeEventListener("visibilitychange", this.onVisibilityChange);
       this.destroyed = true;
       window.removeEventListener("resize", this.onResize);
       cancelAnimationFrame(this.renderFrame);

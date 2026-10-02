@@ -101,7 +101,7 @@ describe("i18n", () => {
         rawKind: "chatgpt.subscription",
         resetAfterSeconds: 90_000
       })
-    ).toBe("剩余 1天 1小时 0分钟");
+    ).toBe("剩余 1天 1小时 0分钟 0秒");
     expect(
       formatMeterValueLocalized("en", {
         ...baseMeter,
@@ -109,7 +109,26 @@ describe("i18n", () => {
         rawKind: "chatgpt.subscription",
         resetAfterSeconds: 90_000
       })
-    ).toBe("1d 1h 0m left");
+    ).toBe("1d 1h 0m 0s left");
+  });
+
+  it.each([
+    [90_061, "剩余 1天 1小时 1分钟 1秒", "1d 1h 1m 1s left"],
+    [3_600, "剩余 1小时 0分钟 0秒", "1h 0m 0s left"],
+    [61, "剩余 1分钟 1秒", "1m 1s left"],
+    [60, "剩余 1分钟 0秒", "1m 0s left"],
+    [59, "剩余 59秒", "59s left"],
+    [1, "剩余 1秒", "1s left"],
+    [0, "剩余 0秒", "0s left"],
+    [-5, "剩余 0秒", "0s left"]
+  ])("shows subscription seconds across duration boundaries (%s)", (seconds, zh, en) => {
+    const meter: UsageMeter = {
+      ...baseMeter,
+      rawKind: "chatgpt.subscription",
+      resetAfterSeconds: seconds as number
+    };
+    expect(formatMeterValueLocalized("zh-CN", meter)).toBe(zh);
+    expect(formatMeterValueLocalized("en", meter)).toBe(en);
   });
 
   it("localizes relative ages and reset durations", () => {

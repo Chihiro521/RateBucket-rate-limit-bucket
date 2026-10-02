@@ -86,6 +86,7 @@ export class UsageWidget {
   private resolvedLanguage: ResolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
   private readonly timerId: number;
   private readonly mountWatchId: number;
+  private readonly onVisibilityChange = (): void => this.tickTimes();
 
   constructor(
     private readonly platform: PlatformId,
@@ -101,6 +102,7 @@ export class UsageWidget {
     this.shadow.append(style, this.root);
     this.timerId = window.setInterval(() => this.tickTimes(), 1_000);
     this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2_000);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
     window.addEventListener("resize", this.onResize);
     this.root.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
@@ -118,6 +120,7 @@ export class UsageWidget {
   destroy(): void {
     window.clearInterval(this.timerId);
     window.clearInterval(this.mountWatchId);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.destroyed = true;
     window.removeEventListener("resize", this.onResize);
     cancelAnimationFrame(this.renderFrame);

@@ -145,6 +145,8 @@ The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi,
 
 ChatGPT uses conversation/init, wham/usage, and library storage usage. The visible page checks every 30 seconds and also accepts observed quota responses. Requests run independently; failures do not reset the age of successful readings. File capacity uses GiB; optional Credits and reset opportunities are not ordinary plan quotas. Image quota remains visible as an uncalibrated reading, not a verified live image balance. No seven-day image statistics are collected.
 
+Subscription expiry is retained within the same account scope, independently of the 30-minute quota TTL. Its local countdown updates every second, catches up when the tab becomes visible, and is recalibrated only when a new subscription response arrives.
+
 Normalized ChatGPT readings are cached under a hashed user/account scope. Authentication remains in page memory for up to 60 seconds. Old IP-check settings and unscoped ChatGPT caches are removed once on upgrade. The original theme and mascot remain; UI updates preserve scrolling, focus and dragging.
 
 ## Debug Logging
