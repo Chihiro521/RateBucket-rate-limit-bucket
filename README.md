@@ -114,7 +114,7 @@ Load it in Chrome:
 
 ## Development
 
-Development takes place on `master`. Published versions are preserved as Git tags and GitHub Releases.
+Daily development takes place on `dev`. Merge validated changes into `master`. Published versions are preserved as Git tags and GitHub Releases.
 
 Run tests:
 

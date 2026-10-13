@@ -114,7 +114,7 @@ npm run build
 
 ## 开发
 
-日常开发统一使用 `master` 分支；已发布版本通过 Git 标签和 GitHub Release 保留。
+日常开发使用 `dev` 分支，完成验证后合并到 `master`；已发布版本通过 Git 标签和 GitHub Release 保留。
 
 运行测试：
 
