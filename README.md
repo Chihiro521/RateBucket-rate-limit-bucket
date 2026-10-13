@@ -233,6 +233,7 @@ The bundled visual assets are part of the current project package. Before publis
 A small nod to my informal teachers and collaborators:
 
 - Claude, the resident philosopher.
+- [Codex](https://github.com/codex), the coding collaborator for implementation, testing, and release maintenance.
 - GPT, the most pragmatic pair-programming partner.
 - Grok, the back-channel rumor desk.
 - Gemini, the occasional spark of inspiration, even when mostly cameoing.
@@ -476,6 +477,7 @@ RateBucket 使用 MIT License 发布，见 [LICENSE](LICENSE)。
 感谢我的几位非正式老师兼协作者：
 
 - Claude，常驻哲学顾问。
+- [Codex](https://github.com/codex)，参与功能实现、测试验证和发布维护的编程协作者。
 - GPT，最务实的结对编程伙伴。
 - Grok，小道消息来源。
 - Gemini，偶尔点亮灵感，虽然经常像是在打酱油。

@@ -226,6 +226,7 @@ The bundled visual assets are part of the current project package. Before publis
 A small nod to my informal teachers and collaborators:
 
 - Claude, the resident philosopher.
+- [Codex](https://github.com/codex), the coding collaborator for implementation, testing, and release maintenance.
 - GPT, the most pragmatic pair-programming partner.
 - Grok, the back-channel rumor desk.
 - Gemini, the occasional spark of inspiration, even when mostly cameoing.
