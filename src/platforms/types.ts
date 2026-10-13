@@ -1,4 +1,11 @@
-export type PlatformId = "grok" | "claude" | "chatgpt" | "kimi" | "gemini";
+export type PlatformId =
+  | "grok"
+  | "claude"
+  | "chatgpt"
+  | "kimi"
+  | "gemini"
+  | "perplexity"
+  | "muse";
 
 export type UsageSource = "api" | "intercepted" | "estimate" | "unknown";
 
@@ -7,6 +14,7 @@ export type Confidence = "high" | "medium" | "low";
 export type UsageMeter = {
   key: string;
   label: string;
+  displayValue?: string;
   modelName?: string;
   requestKind?: string;
   remaining?: number | null;
@@ -19,6 +27,10 @@ export type UsageMeter = {
   windowSeconds?: number | null;
   source: UsageSource;
   confidence: Confidence;
+  metricKind?: "quota" | "balance" | "subscription";
+  unit?: "count" | "percent" | "credits" | "bytes";
+  quotaState?: "blocked" | "unknown";
+  requestStartedAt?: number;
   observedAt?: number;
   rawKind?: string;
 };
@@ -28,9 +40,12 @@ export type UsageSnapshot = {
   meters: UsageMeter[];
   source: UsageSource;
   updatedAt: number;
+  checkedAt?: number;
+  scopeKey?: string;
   cacheAgeMs?: number;
   status: "ok" | "partial" | "unknown" | "error";
   errorMessage?: string;
+  errorCode?: UsageError["code"];
   debug?: {
     endpoint?: string;
     parser?: string;
@@ -50,15 +65,19 @@ export type UsageError = {
 };
 
 export type EndpointKey =
-  | "grok:rate-limits"
+  | "grok:credits-config"
   | "claude:organizations"
   | "claude:usage"
   | "chatgpt:conversationInit"
   | "chatgpt:whamUsage"
+  | "chatgpt:codexUsage"
   | "chatgpt:whamTasksRateLimit"
-  | "chatgpt:codexSettingsUsage"
+  | "chatgpt:accountsCheck"
+  | "chatgpt:libraryStorage"
   | "gemini:usageBatchExecute"
-  | "kimi:subscription";
+  | "kimi:subscription"
+  | "perplexity:rateLimitAll"
+  | "muse:subscription";
 
 export type BridgeAction = "fetchUsage" | "enableIntercept";
 
@@ -80,8 +99,12 @@ export type BridgeResponse = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   json?: unknown;
+  scopeKey?: string;
+  requestStartedAt?: number;
+  observedAt?: number;
   text?: string;
   error?: {
+    code?: UsageError["code"];
     status?: number;
     message: string;
   };
@@ -94,15 +117,11 @@ export type InterceptedUsageMessage = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   url: string;
-  usageContext?: UsageRequestContext;
   json: unknown;
   text?: string;
   ts: number;
-};
-
-export type UsageRequestContext = {
-  modelName?: string;
-  requestKind?: string;
+  requestStartedAt?: number;
+  scopeKey?: string;
 };
 
 export type UsageEndpointFetcher = (

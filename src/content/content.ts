@@ -1,23 +1,16 @@
+import { ChatGptUsageController } from "./chatgptUsageController";
 import { BridgeClient } from "./bridgeClient";
-import { probeCodexAnalyticsUsage } from "./codexProbe";
+import {
+  startVisibleUsagePolling,
+  sameUsageValues
+} from "./usagePolling";
 import { getEstimateSnapshot, installSendEstimator } from "./estimator";
 import { UsageWidget } from "./widget";
 import { detectPlatform } from "../platforms/detect";
 import { fetchPlatformUsage } from "../platforms";
 import { normalizeInterceptedUsage } from "../platforms/intercepted";
 import { mergeUsageSnapshots } from "../platforms/merge";
-import {
-  CHATGPT_SENTINEL_EVENT,
-  sanitizeSentinelObservation,
-  toChatGPTSentinelState
-} from "../platforms/chatgptSentinel";
-import {
-  IP_RISK_AUTO_REFRESH_MS,
-  disabledIpRiskState,
-  missingKeyIpRiskState,
-  type IpRiskSettingsUpdate,
-  type IpRiskState
-} from "../platforms/ipRisk";
+import { mergeMuseUsageSnapshots } from "../platforms/muse";
 import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
@@ -27,25 +20,12 @@ import {
   getCachedSnapshot,
   getFailureCount,
   getLastRefreshAt,
+  clearCachedSnapshot,
   setBackoffUntil,
   setCachedSnapshot,
   setFailureCount,
   setLastRefreshAt
 } from "../storage/cache";
-import {
-  getChatGptSentinelState,
-  rememberChatGptSentinelObservation
-} from "../storage/chatgptSentinel";
-import {
-  IP_RISK_SETTINGS_KEY,
-  IP_RISK_STATE_KEY,
-  getIpRiskPublicSettings,
-  getIpRiskState,
-  ipRiskStateFromStorageValue,
-  publicSettingsFromStorageValue,
-  saveIpRiskSettings,
-  setIpRiskState
-} from "../storage/ipRisk";
 import {
   LANGUAGE_SETTINGS_KEY,
   getLanguageMode,
@@ -55,10 +35,31 @@ import {
 import type { LanguageMode } from "../utils/i18n";
 import { debugLog } from "../utils/logger";
 
+declare global {
+  interface Window {
+    __AI_USAGE_FLOATING_MONITOR_CONTENT__?: boolean;
+  }
+}
+
 const platform = detectPlatform(window.location);
 
-if (platform) {
+if (
+  platform &&
+  shouldStartOnThisFrame(platform) &&
+  !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__
+) {
+  window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
   void start(platform);
+}
+
+function shouldStartOnThisFrame(platformId: PlatformId): boolean {
+  if (window.top === window) {
+    return true;
+  }
+  if (platformId !== "perplexity") {
+    return false;
+  }
+  return window.innerWidth >= 640 && window.innerHeight >= 480;
 }
 
 async function start(platformId: PlatformId): Promise<void> {
@@ -66,67 +67,11 @@ async function start(platformId: PlatformId): Promise<void> {
   const bridge = new BridgeClient();
   let currentSnapshot: UsageSnapshot | null = null;
   let refreshing = false;
-  let ipRiskRefreshing = false;
+  let chatGptController: ChatGptUsageController | undefined;
   let pendingEstimatorRefresh = 0;
-  let codexProbeStarted = false;
-  let stopCodexProbe: (() => void) | null = null;
-
-  const refreshIpRisk = async (options: { force: boolean }): Promise<void> => {
-    if (ipRiskRefreshing) {
-      return;
-    }
-
-    const settings = await getIpRiskPublicSettings();
-    widget.setIpRiskSettings(settings);
-
-    if (!settings.enabled) {
-      const state = disabledIpRiskState();
-      widget.setIpRiskState(state);
-      if (options.force) {
-        await setIpRiskState(state);
-      }
-      return;
-    }
-    if (!settings.hasApiKey) {
-      const state = missingKeyIpRiskState();
-      widget.setIpRiskState(state);
-      if (options.force) {
-        await setIpRiskState(state);
-      }
-      return;
-    }
-
-    const cached = await getIpRiskState();
-    if (cached) {
-      widget.setIpRiskState(cached);
-    }
-    if (
-      !options.force &&
-      cached &&
-      cached.status === "ok" &&
-      Date.now() - cached.updatedAt < IP_RISK_AUTO_REFRESH_MS
-    ) {
-      return;
-    }
-
-    ipRiskRefreshing = true;
-    widget.setIpRiskRefreshing(true);
-    try {
-      const state = await requestIpRiskRefresh();
-      widget.setIpRiskState(state);
-    } catch (error) {
-      debugLog("proxycheck refresh failed", error);
-    } finally {
-      ipRiskRefreshing = false;
-      widget.setIpRiskRefreshing(false);
-    }
-  };
-
-  const saveIpRisk = async (update: IpRiskSettingsUpdate): Promise<void> => {
-    const settings = await saveIpRiskSettings(update);
-    widget.setIpRiskSettings(settings);
-    await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
-  };
+  let museSessionVerified = false;
+  let museInitialCheckPending = platformId === "muse";
+  let museSessionGeneration = 0;
 
   const saveLanguage = async (mode: LanguageMode): Promise<void> => {
     widget.setLanguageMode(await saveLanguageMode(mode));
@@ -138,14 +83,6 @@ async function start(platformId: PlatformId): Promise<void> {
       void refreshUsage({ force: true });
     },
     {
-      onIpRiskRefresh: () => {
-        void refreshIpRisk({ force: true });
-      },
-      onIpRiskSettingsSave: (update) => {
-        void saveIpRisk(update).catch((error: unknown) => {
-          debugLog("failed to save IP risk settings", error);
-        });
-      },
       onLanguageModeSave: (mode) => {
         void saveLanguage(mode).catch((error: unknown) => {
           debugLog("failed to save language settings", error);
@@ -153,52 +90,56 @@ async function start(platformId: PlatformId): Promise<void> {
       }
     }
   );
+  widget.mount();
   widget.setLanguageMode(await getLanguageMode());
-
-  const maybeStartCodexProbe = (snapshot: UsageSnapshot): void => {
-    if (
-      platformId !== "chatgpt" ||
-      codexProbeStarted ||
-      hasCodexMeter(snapshot)
-    ) {
-      return;
-    }
-    codexProbeStarted = true;
-    stopCodexProbe = probeCodexAnalyticsUsage();
-  };
 
   const applySnapshot = async (snapshot: UsageSnapshot): Promise<void> => {
     const shouldReplace =
       platformId === "grok" && snapshot.source === "intercepted";
-    currentSnapshot = mergeUsageSnapshots(
-      shouldReplace ? null : currentSnapshot,
-      snapshot
-    );
+    const previous = shouldReplace ? null : currentSnapshot;
+    const merged = platformId === "muse" ? mergeMuseUsageSnapshots(previous, snapshot) : mergeUsageSnapshots(previous, snapshot);
+    if (platformId === "muse" && previous && sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+    if (platformId === "muse") {
+      if (snapshot.errorCode === "UNAUTHORIZED") {
+        museSessionVerified = false;
+        museSessionGeneration++;
+      } else if (snapshot.status !== "error" && snapshot.meters.length > 0) {
+        museSessionVerified = true;
+        museInitialCheckPending = false;
+      }
+    }
+    currentSnapshot = merged;
     widget.setSnapshot(currentSnapshot);
-    await setCachedSnapshot(currentSnapshot);
+    if (platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED") await clearCachedSnapshot("muse");
+    else if (platformId !== "muse" || museSessionVerified) await setCachedSnapshot(currentSnapshot);
   };
 
   const refreshUsage = async (options: { force: boolean }): Promise<void> => {
+    if (chatGptController) { await chatGptController.refresh(options.force ? "manual" : "poll"); return; }
     if (refreshing) {
       return;
     }
 
     const now = Date.now();
     const backoffUntil = await getBackoffUntil(platformId);
-    widget.setBackoffUntil(backoffUntil);
-    if (backoffUntil > now) {
+    widget.setBackoffUntil(museInitialCheckPending ? 0 : backoffUntil);
+    if (backoffUntil > now && !museInitialCheckPending) {
       return;
     }
 
-    const cached = await getCachedSnapshot(platformId);
-    if (!options.force && cached && now - cached.updatedAt < CACHE_TTL_MS) {
+    const cached = platformId === "muse" && !museSessionVerified ? null : await getCachedSnapshot(platformId);
+    if (
+      !options.force &&
+      cached &&
+      now - (cached.checkedAt ?? cached.updatedAt) < CACHE_TTL_MS
+    ) {
       currentSnapshot = cached;
       widget.setSnapshot(cached);
       return;
     }
 
     const lastRefreshAt = await getLastRefreshAt(platformId);
-    if (lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
+    if (!museInitialCheckPending && !(platformId === "muse" && options.force) && lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
       if (cached) {
         currentSnapshot = cached;
         widget.setSnapshot(cached);
@@ -206,19 +147,24 @@ async function start(platformId: PlatformId): Promise<void> {
       return;
     }
 
+    if (refreshing) return;
     refreshing = true;
+    museInitialCheckPending = false;
+    const museGeneration = museSessionGeneration;
     widget.setLoading(true);
     await setLastRefreshAt(platformId, now);
 
     try {
-      let snapshot = await fetchPlatformUsage(platformId, (endpointKey, payload) =>
-        bridge.fetchUsage(platformId, endpointKey, payload)
-      );
-      snapshot = await withEstimateFallback(platformId, snapshot);
+      const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key, payload) => bridge.fetchUsage(platformId, key, payload)));
+      if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
       await applySnapshot(snapshot);
-      maybeStartCodexProbe(snapshot);
-      await updateFailureState(platformId, snapshot, widget);
+      await updateFailureState(
+        platformId,
+        snapshot,
+        widget
+      );
     } catch (error) {
+      if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
       const snapshot = await withEstimateFallback(platformId, {
         platform: platformId,
         meters: [],
@@ -236,53 +182,26 @@ async function start(platformId: PlatformId): Promise<void> {
     }
   };
 
-  widget.mount();
+  if (platformId === "chatgpt") {
+    chatGptController = new ChatGptUsageController({
+      fetcher: (key) => bridge.fetchUsage(platformId, key),
+      onSnapshot: (snapshot) => { currentSnapshot = snapshot; widget.setSnapshot(snapshot); },
+      onLoading: (loading) => widget.setLoading(loading),
+      readCache: (scope) => getCachedSnapshot("chatgpt", scope),
+      writeCache: setCachedSnapshot
+    });
+    bridge.onContextChanged(() => {
+      chatGptController?.reset();
+      void chatGptController?.refresh("startup");
+    });
+  }
 
-  const cached = await getCachedSnapshot(platformId);
+  const cached = platformId === "muse" ? null : await getCachedSnapshot(platformId);
   if (cached) {
     currentSnapshot = cached;
     widget.setSnapshot(cached);
   }
-  widget.setBackoffUntil(await getBackoffUntil(platformId));
-
-  const ipRiskSettings = await getIpRiskPublicSettings();
-  widget.setIpRiskSettings(ipRiskSettings);
-  const cachedIpRisk = await getIpRiskState();
-  if (cachedIpRisk) {
-    widget.setIpRiskState(cachedIpRisk);
-  } else if (!ipRiskSettings.enabled) {
-    widget.setIpRiskState(disabledIpRiskState());
-  } else if (!ipRiskSettings.hasApiKey) {
-    widget.setIpRiskState(missingKeyIpRiskState());
-  }
-  void refreshIpRisk({ force: false });
-
-  if (platformId === "chatgpt") {
-    const cachedSentinelState = await getChatGptSentinelState();
-    if (cachedSentinelState) {
-      widget.setChatGptSentinelState(cachedSentinelState);
-    }
-  }
-
-  const onSentinelEvent = (event: Event): void => {
-    if (platformId !== "chatgpt") {
-      return;
-    }
-    const observation = sanitizeSentinelObservation(
-      (event as CustomEvent<unknown>).detail
-    );
-    if (!observation) {
-      return;
-    }
-    const state = toChatGPTSentinelState(observation);
-    widget.setChatGptSentinelState(state);
-    void rememberChatGptSentinelObservation(observation, state).catch(
-      (error: unknown) => {
-        debugLog("failed to cache sentinel observation", error);
-      }
-    );
-  };
-  window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+  widget.setBackoffUntil(platformId === "chatgpt" || platformId === "muse" ? 0 : await getBackoffUntil(platformId));
 
   const onStorageChanged = (
     changes: Record<string, chrome.storage.StorageChange>,
@@ -290,19 +209,6 @@ async function start(platformId: PlatformId): Promise<void> {
   ): void => {
     if (areaName !== "local") {
       return;
-    }
-    const settingsChange = changes[IP_RISK_SETTINGS_KEY];
-    if (settingsChange) {
-      widget.setIpRiskSettings(
-        publicSettingsFromStorageValue(settingsChange.newValue)
-      );
-    }
-    const stateChange = changes[IP_RISK_STATE_KEY];
-    if (stateChange) {
-      const state = ipRiskStateFromStorageValue(stateChange.newValue);
-      if (state) {
-        widget.setIpRiskState(state);
-      }
     }
     const languageChange = changes[LANGUAGE_SETTINGS_KEY];
     if (languageChange) {
@@ -317,6 +223,10 @@ async function start(platformId: PlatformId): Promise<void> {
     if (message.platform !== platformId) {
       return;
     }
+    if (chatGptController && message.endpointKey) {
+      void chatGptController.acceptIntercept(message.endpointKey, message.json, message.ts, message.requestStartedAt, message.scopeKey);
+      return;
+    }
     const snapshot = normalizeInterceptedUsage({
       platform: platformId,
       url: message.url,
@@ -324,30 +234,28 @@ async function start(platformId: PlatformId): Promise<void> {
       text: message.text,
       ts: message.ts,
       endpointKey: message.endpointKey,
-      usageContext: message.usageContext
+      requestStartedAt: message.requestStartedAt
     });
-    if (snapshot.meters.length === 0) {
+    if (snapshot.meters.length === 0 && !(platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED")) {
       return;
-    }
-    if (hasCodexMeter(snapshot)) {
-      stopCodexProbe?.();
-      stopCodexProbe = null;
     }
     void applySnapshot(snapshot).catch((error: unknown) => {
       debugLog("failed to cache intercepted usage", error);
     });
+    if (platformId === "muse") void updateFailureState(platformId, snapshot, widget).catch((error: unknown) => debugLog("failed to update Muse retry state", error));
   });
 
-  installSendEstimator(platformId, (snapshot) => {
-    if (!currentSnapshot || currentSnapshot.meters.length === 0) {
+  const stopEstimator = installSendEstimator(platformId, (snapshot) => {
+    if (platformId !== "chatgpt" && platformId !== "muse" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
       currentSnapshot = snapshot;
       widget.setSnapshot(snapshot);
     }
     window.clearTimeout(pendingEstimatorRefresh);
     pendingEstimatorRefresh = window.setTimeout(() => {
-      void refreshUsage({ force: false });
+      if (chatGptController) void chatGptController.refresh("operation");
+      else void refreshUsage({ force: false });
     }, 1_500);
-  });
+  }, { recordCounts: platformId !== "chatgpt" && platformId !== "muse" });
 
   try {
     await injectMainWorld();
@@ -358,9 +266,30 @@ async function start(platformId: PlatformId): Promise<void> {
 
   await refreshUsage({ force: false });
 
-  window.addEventListener("pagehide", () => {
-    stopCodexProbe?.();
-    window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+  const stopUsagePolling = platformId === "chatgpt" || platformId === "muse"
+    ? startVisibleUsagePolling({
+        intervalMs: platformId === "muse" ? 60_000 : undefined,
+        isVisible: () => document.visibilityState === "visible",
+        onVisibilityChange: (callback) => {
+          document.addEventListener("visibilitychange", callback);
+          return () => document.removeEventListener("visibilitychange", callback);
+        },
+        setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+        clearInterval: (id) => window.clearInterval(id),
+        refresh: () => {
+          void refreshUsage({ force: false });
+        }
+      })
+    : null;
+
+  window.addEventListener("pagehide", (event) => {
+    if (event.persisted) return;
+    stopEstimator();
+    widget.destroy();
+    stopUsagePolling?.();
+    chatGptController?.destroy();
+    bridge.destroy();
+    window.clearTimeout(pendingEstimatorRefresh);
     chrome.storage.onChanged.removeListener(onStorageChanged);
   });
 }
@@ -387,39 +316,11 @@ async function injectMainWorld(): Promise<void> {
   }
 }
 
-async function requestIpRiskRefresh(): Promise<IpRiskState> {
-  const response = await new Promise<{
-    ok: boolean;
-    error?: string;
-    state?: IpRiskState;
-  }>((resolve, reject) => {
-    chrome.runtime.sendMessage(
-      { type: "AI_USAGE_IP_RISK_REFRESH" },
-      (
-        value:
-          | { ok: boolean; error?: string; state?: IpRiskState }
-          | undefined
-      ) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(value ?? { ok: false, error: "No IP risk response" });
-      }
-    );
-  });
-
-  if (response.state) {
-    return response.state;
-  }
-  throw new Error(response.error ?? "IP 风险检测失败");
-}
-
 async function withEstimateFallback(
   platform: PlatformId,
   snapshot: UsageSnapshot
 ): Promise<UsageSnapshot> {
+  if (platform === "muse") return snapshot;
   if (snapshot.meters.length > 0 && snapshot.status !== "error") {
     return snapshot;
   }
@@ -440,9 +341,10 @@ async function withEstimateFallback(
 async function updateFailureState(
   platform: PlatformId,
   snapshot: UsageSnapshot,
-  widget: UsageWidget
+  widget: UsageWidget,
+  retryableEndpointFailure = false
 ): Promise<void> {
-  if (snapshot.status !== "error") {
+  if (snapshot.status !== "error" && !retryableEndpointFailure) {
     await setFailureCount(platform, 0);
     await setBackoffUntil(platform, 0);
     widget.setBackoffUntil(0);
@@ -459,12 +361,4 @@ async function updateFailureState(
   await setFailureCount(platform, nextFailures);
   await setBackoffUntil(platform, backoffUntil);
   widget.setBackoffUntil(backoffUntil);
-}
-
-function hasCodexMeter(snapshot: UsageSnapshot): boolean {
-  return snapshot.meters.some(
-    (meter) =>
-      meter.rawKind === "codex.settings.usage" ||
-      meter.key.toLowerCase().includes("codex")
-  );
 }

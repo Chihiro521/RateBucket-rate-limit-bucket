@@ -9,7 +9,8 @@ type EstimateCallback = (snapshot: UsageSnapshot) => void;
 
 export function installSendEstimator(
   platform: PlatformId,
-  onEstimate: EstimateCallback
+  onEstimate: EstimateCallback,
+  options: { recordCounts?: boolean } = {}
 ): () => void {
   let lastIncrementAt = 0;
 
@@ -19,6 +20,10 @@ export function installSendEstimator(
       return;
     }
     lastIncrementAt = now;
+    if (options.recordCounts === false) {
+      onEstimate({ platform, meters: [], source: "unknown", status: "unknown", updatedAt: now });
+      return;
+    }
     void incrementEstimateState(platform).then((state) => {
       onEstimate(snapshotFromEstimate(platform, state));
     });

@@ -22,8 +22,17 @@ type InterceptHandler = (message: InterceptedUsageMessage) => void;
 export class BridgeClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly interceptHandlers = new Set<InterceptHandler>();
+  private readonly contextHandlers = new Set<() => void>();
   private readonly onMessage = (event: MessageEvent<unknown>): void => {
     if (event.origin !== window.location.origin) {
+      return;
+    }
+
+    if (event.source === window && event.data && typeof event.data === "object" &&
+        (event.data as { kind?: string }).kind === "chatgptContextChanged" &&
+        (event.data as { source?: string }).source === SOURCE &&
+        (event.data as { direction?: string }).direction === "main-to-content") {
+      for (const handler of this.contextHandlers) handler();
       return;
     }
 
@@ -62,6 +71,12 @@ export class BridgeClient {
     }
     this.pending.clear();
     this.interceptHandlers.clear();
+    this.contextHandlers.clear();
+  }
+
+  onContextChanged(handler: () => void): () => void {
+    this.contextHandlers.add(handler);
+    return () => this.contextHandlers.delete(handler);
   }
 
   onIntercepted(handler: InterceptHandler): () => void {

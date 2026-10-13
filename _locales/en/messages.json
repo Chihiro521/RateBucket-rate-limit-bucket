@@ -1,0 +1,10 @@
+{
+  "name": {
+    "message": "RateBucket - AI Usage Monitor",
+    "description": "Extension name"
+  },
+  "description": {
+    "message": "Floating quota and reset-time widget for supported AI websites.",
+    "description": "Extension description"
+  }
+}

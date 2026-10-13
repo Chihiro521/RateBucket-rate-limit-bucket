@@ -1,17 +1,14 @@
 import { normalizeClaudeUsage } from "./claude";
-import {
-  grokRateLimitContextFromJson,
-  normalizeGrokRateLimit,
-  rememberGrokRateLimitContext
-} from "./grok";
+import { normalizeGrokCreditsConfig } from "./grok";
 import { normalizeChatGptIntercepted } from "./chatgpt";
 import { normalizeGeminiUsageText } from "./gemini";
 import { normalizeKimiUsage } from "./kimi";
+import { normalizePerplexityRateLimit } from "./perplexity";
+import { museSnapshotFromResult, parseMuseSubscriptionJson, parseMuseSubscriptionText } from "./muse";
 import type {
   EndpointKey,
   PlatformId,
   UsageMeter,
-  UsageRequestContext,
   UsageSnapshot
 } from "./types";
 
@@ -22,8 +19,14 @@ export function normalizeInterceptedUsage(args: {
   text?: string;
   ts: number;
   endpointKey?: EndpointKey;
-  usageContext?: UsageRequestContext;
+  requestStartedAt?: number;
 }): UsageSnapshot {
+  if (args.platform === "muse") {
+    return museSnapshotFromResult(
+      typeof args.text === "string" ? parseMuseSubscriptionText(args.text) : parseMuseSubscriptionJson(args.json),
+      "intercepted", args.ts, args.requestStartedAt
+    );
+  }
   const meters = normalizeInterceptedMeters(args);
   return {
     platform: args.platform,
@@ -44,16 +47,9 @@ function normalizeInterceptedMeters(args: {
   json: unknown;
   text?: string;
   endpointKey?: EndpointKey;
-  usageContext?: UsageRequestContext;
 }): UsageMeter[] {
   if (args.platform === "grok") {
-    const usageContext = args.usageContext ?? grokRateLimitContextFromJson(args.json);
-    rememberGrokRateLimitContext(usageContext);
-    return normalizeGrokRateLimit(args.json, {
-      modelName: usageContext?.modelName,
-      requestKind: usageContext?.requestKind,
-      source: "intercepted"
-    });
+    return normalizeGrokCreditsConfig(args.text, { source: "intercepted" });
   }
   if (args.platform === "claude") {
     return normalizeClaudeUsage(args.json, "intercepted");
@@ -65,6 +61,9 @@ function normalizeInterceptedMeters(args: {
     return typeof args.text === "string"
       ? normalizeGeminiUsageText(args.text, "intercepted").meters
       : [];
+  }
+  if (args.platform === "perplexity") {
+    return normalizePerplexityRateLimit(args.json, "intercepted");
   }
   return normalizeChatGptIntercepted(args.url, args.json);
 }

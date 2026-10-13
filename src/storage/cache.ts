@@ -10,8 +10,8 @@ export type EstimateState = {
   lastSentAt: number;
 };
 
-function snapshotKey(platform: PlatformId): string {
-  return `aiUsage:${platform}:snapshot`;
+function snapshotKey(platform: PlatformId, scope?: string): string {
+  return platform === "chatgpt" && scope ? `aiUsage:chatgpt:${scope}:snapshot` : `aiUsage:${platform}:snapshot`;
 }
 
 function lastRefreshKey(platform: PlatformId): string {
@@ -57,9 +57,11 @@ function storageSet(items: Record<string, unknown>): Promise<void> {
 }
 
 export async function getCachedSnapshot(
-  platform: PlatformId
+  platform: PlatformId,
+  scope?: string
 ): Promise<UsageSnapshot | null> {
-  const key = snapshotKey(platform);
+  if (platform === "chatgpt" && !scope) return null;
+  const key = snapshotKey(platform, scope);
   const items = await storageGet(key);
   const value = items[key];
   if (!isUsageSnapshot(value, platform)) {
@@ -67,13 +69,24 @@ export async function getCachedSnapshot(
   }
   return {
     ...value,
-    cacheAgeMs: Math.max(0, Date.now() - value.updatedAt)
+    cacheAgeMs: Math.max(0, Date.now() - (value.checkedAt ?? value.updatedAt))
   };
 }
 
 export function setCachedSnapshot(snapshot: UsageSnapshot): Promise<void> {
+  if (snapshot.platform === "chatgpt" && !snapshot.scopeKey) return Promise.resolve();
   const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-  return storageSet({ [snapshotKey(snapshot.platform)]: persisted });
+  return storageSet({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
+}
+
+export function clearCachedSnapshot(platform: PlatformId): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.remove(snapshotKey(platform), () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
 }
 
 export async function getLastRefreshAt(platform: PlatformId): Promise<number> {

@@ -1,30 +1,49 @@
 {
   "manifest_version": 3,
-  "name": "AI 用量浮窗",
-  "version": "0.1.0",
-  "description": "用于 Grok、Claude、ChatGPT、Gemini 和 Kimi 的浮动用量监控器。",
-  "permissions": ["storage", "scripting"],
+  "name": "__MSG_name__",
+  "version": "0.1.5",
+  "description": "__MSG_description__",
+  "default_locale": "zh_CN",
+  "icons": {
+    "128": "icon/128x128.png"
+  },
+  "action": {
+    "default_title": "__MSG_name__",
+    "default_icon": {
+      "128": "icon/128x128.png"
+    }
+  },
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
   "host_permissions": [
     "https://grok.com/*",
     "https://claude.ai/*",
     "https://chatgpt.com/*",
     "https://gemini.google.com/*",
     "https://www.kimi.com/*",
-    "https://proxycheck.io/*",
-    "https://api64.ipify.org/*"
+    "https://perplexity.ai/*",
+    "https://www.perplexity.ai/*",
+    "https://muse.ai/*"
   ],
   "background": {
     "service_worker": "serviceWorker.js"
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/nahida/*.png"],
+      "resources": [
+        "assets/little-chihiro/*.png"
+      ],
       "matches": [
         "https://grok.com/*",
         "https://claude.ai/*",
         "https://chatgpt.com/*",
         "https://gemini.google.com/*",
-        "https://www.kimi.com/*"
+        "https://www.kimi.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ]
     }
   ],
@@ -35,11 +54,18 @@
         "https://claude.ai/*",
         "https://chatgpt.com/*",
         "https://gemini.google.com/*",
-        "https://www.kimi.com/*"
+        "https://www.kimi.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ],
-      "js": ["mainWorldBridge.js"],
+      "js": [
+        "mainWorldBridge.js"
+      ],
       "run_at": "document_start",
       "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
       "world": "MAIN"
     },
     {
@@ -48,10 +74,18 @@
         "https://claude.ai/*",
         "https://chatgpt.com/*",
         "https://gemini.google.com/*",
-        "https://www.kimi.com/*"
+        "https://www.kimi.com/*",
+        "https://perplexity.ai/*",
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ],
-      "js": ["content.js"],
-      "run_at": "document_start"
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true
     }
   ]
 }

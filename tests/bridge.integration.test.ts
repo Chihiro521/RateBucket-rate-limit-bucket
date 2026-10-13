@@ -1,0 +1,84 @@
+// @vitest-environment happy-dom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MUSE_ACTION_ID, MUSE_SCRIPT, museRsc } from "./museFixture";
+
+const source = "ai-usage-floating-monitor";
+const nativeFetch = window.fetch;
+beforeEach(() => {
+  vi.resetModules();
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  delete window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__;
+  delete window.__AI_USAGE_FLOATING_MONITOR_FETCH_PATCHED__;
+});
+afterEach(() => {
+  vi.clearAllTimers(); vi.useRealTimers(); vi.restoreAllMocks(); window.fetch = nativeFetch;
+  document.head.replaceChildren();
+  (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL("http://localhost:3000/");
+});
+
+describe("main-world bridge integration", () => {
+  it("returns Muse's original stream immediately and observes only its identified usage action", async () => {
+    (window as unknown as { happyDOM: { setURL(url: string): void } }).happyDOM.setURL("https://muse.ai/");
+    const script = document.createElement("script"); script.type = "application/json"; script.src = "https://muse.ai/_next/static/chunks/usage.js"; document.head.append(script);
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const original = new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
+    const unrelated = new Response("unrelated server action");
+    window.fetch = vi.fn(async (url, init) => {
+      if (String(url).includes("/_next/")) return new Response(MUSE_SCRIPT);
+      if ((init?.headers as Record<string, string>)?.["Next-Action"] === "other-action") return unrelated;
+      if (init?.body === "passive") return original;
+      return new Response(museRsc());
+    });
+    const posted = vi.spyOn(window, "postMessage").mockImplementation(() => undefined);
+    await import("../src/injected/mainWorldBridge");
+    window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, source: window,
+      data: { source, direction: "content-to-main", requestId: "muse", platform: "muse", action: "fetchUsage", endpointKey: "muse:subscription" } }));
+    await vi.waitFor(() => expect(posted.mock.calls.some(([data]) => data.requestId === "muse" && data.ok === true)).toBe(true));
+    expect(await window.fetch("/", { method: "POST", headers: { "Next-Action": "other-action" } })).toBe(unrelated);
+    expect(unrelated.bodyUsed).toBe(false);
+    expect(await window.fetch("/", { method: "POST", headers: { "Next-Action": MUSE_ACTION_ID }, body: "passive" })).toBe(original);
+    expect(original.bodyUsed).toBe(false);
+    expect(posted.mock.calls.filter(([data]) => data.kind === "interceptedUsage")).toHaveLength(0);
+    stream.enqueue(new TextEncoder().encode(museRsc())); stream.close();
+    await vi.waitFor(() => expect(posted.mock.calls.filter(([data]) => data.kind === "interceptedUsage")).toHaveLength(1));
+    expect(await original.text()).toBe(museRsc());
+    expect(JSON.stringify(posted.mock.calls)).not.toContain("synthetic-billing-data");
+  });
+  it("leaves the website's challenge response untouched and unobserved", async () => {
+    const response = new Response('{"proofofwork":{"required":true,"difficulty":"061a80"}}');
+    const clone = vi.spyOn(response, "clone");
+    window.fetch = vi.fn(async () => response);
+    const posted = vi.spyOn(window, "postMessage").mockImplementation(() => undefined);
+    await import("../src/injected/mainWorldBridge");
+    expect(await window.fetch("https://chatgpt.com/backend-api/sentinel/chat-requirements")).toBe(response);
+    expect(clone).not.toHaveBeenCalled();
+    expect(posted).not.toHaveBeenCalled();
+    expect(response.bodyUsed).toBe(false);
+  });
+  it("returns the original response before a passive quota body finishes", async () => {
+    let stream!: ReadableStreamDefaultController<Uint8Array>;
+    const response = new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }));
+    window.fetch = vi.fn(async () => response);
+    const posted = vi.spyOn(window, "postMessage").mockImplementation(() => undefined);
+    await import("../src/injected/mainWorldBridge");
+    const result = await window.fetch("https://chatgpt.com/backend-api/wham/usage");
+    expect(result).toBe(response); expect(result.bodyUsed).toBe(false);
+    expect(posted.mock.calls.filter(([data]) => data.kind === "interceptedUsage")).toHaveLength(0);
+    stream.enqueue(new TextEncoder().encode('{"rate_limit":{"primary_window":{"used_percent":1}}}')); stream.close();
+    await vi.waitFor(() => expect(posted.mock.calls.filter(([data]) => data.kind === "interceptedUsage")).toHaveLength(1));
+  });
+  it("does not re-intercept owned queries and shares their auth lookup", async () => {
+    const fetcher = vi.fn(async (url: RequestInfo | URL) => new Response(JSON.stringify(String(url).endsWith("/api/auth/session") ? { accessToken: "synthetic-token" } : { valid: true })));
+    window.fetch = fetcher;
+    const posted = vi.spyOn(window, "postMessage").mockImplementation(() => undefined);
+    await import("../src/injected/mainWorldBridge");
+    for (const endpointKey of ["chatgpt:conversationInit", "chatgpt:whamUsage", "chatgpt:libraryStorage"]) {
+      window.dispatchEvent(new MessageEvent("message", { origin: window.location.origin, source: window,
+        data: { source, direction: "content-to-main", requestId: endpointKey, platform: "chatgpt", action: "fetchUsage", endpointKey } }));
+    }
+    await vi.waitFor(() => expect(posted.mock.calls.filter(([data]) => data.direction === "main-to-content" && data.ok === true)).toHaveLength(3));
+    expect(fetcher.mock.calls.filter(([url]) => String(url).endsWith("/api/auth/session"))).toHaveLength(1);
+    expect(posted.mock.calls.some(([data]) => data.kind === "interceptedUsage")).toBe(false);
+    expect(JSON.stringify(posted.mock.calls)).not.toContain("synthetic-token");
+  });
+});

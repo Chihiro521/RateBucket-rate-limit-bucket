@@ -19,8 +19,8 @@
     }
     return null;
   }
-  function asBoolean(value) {
-    return typeof value === "boolean" ? value : null;
+  function getRecord(record, key) {
+    return asRecord(record[key]);
   }
   function getNumber(record, key) {
     return asNumber(record[key]);
@@ -28,187 +28,311 @@
   function getString(record, key) {
     return asString(record[key]);
   }
-  const CHATGPT_SENTINEL_EVENT = "__AIQM_SENTINEL_EVENT__";
-  const CHAT_REQUIREMENTS_RE = /(?:^|\/)(?:backend-api|backend-anon|api)\/sentinel\/chat-requirements(?:\/prepare)?(?:\/?$|[?#])/i;
-  function chatRequirementsUrlKind(rawUrl) {
-    const normalized = safeUrlPathWithSearch(rawUrl);
-    if (!CHAT_REQUIREMENTS_RE.test(normalized)) {
-      return null;
+  class ChatGptSession {
+    constructor(fetcher, changed, now = Date.now) {
+      this.fetcher = fetcher;
+      this.changed = changed;
+      this.now = now;
     }
-    return /\/prepare(?:\/?$|[?#])/i.test(normalized) ? "prepare" : "chat-requirements";
+    cached;
+    flight;
+    account;
+    accountKnown = false;
+    user;
+    epoch = 0;
+    observeAccount(value) {
+      if (value === null) return;
+      const account = value.trim() || void 0;
+      if (this.accountKnown && account === this.account) return;
+      this.account = account;
+      this.accountKnown = true;
+      this.invalidate();
+      this.changed();
+    }
+    invalidate() {
+      this.epoch++;
+      this.cached = void 0;
+      this.flight = void 0;
+    }
+    async observeSession(json) {
+      const root = asRecord(json);
+      const user = root ? getRecord(root, "user") : null;
+      const id = user ? getString(user, "id") ?? void 0 : void 0;
+      if (id && this.user && id !== this.user) {
+        this.user = id;
+        this.account = void 0;
+        this.accountKnown = false;
+        this.invalidate();
+        this.changed();
+      }
+    }
+    scope() {
+      return this.cached?.scopeKey;
+    }
+    read() {
+      if (this.cached && this.cached.expires > this.now()) return Promise.resolve(this.cached);
+      if (this.flight) return this.flight;
+      const epoch = this.epoch;
+      const account = this.account;
+      const accountKnown = this.accountKnown;
+      const flight = (async () => {
+        const response = await this.fetcher("https://chatgpt.com/api/auth/session", { credentials: "include", cache: "no-store", signal: AbortSignal.timeout(1e4) });
+        const root = response.ok ? asRecord(await response.json()) : null;
+        const token = root ? getString(root, "accessToken") ?? getString(root, "access_token") : null;
+        if (!token) throw new Error("ChatGPT session unavailable");
+        const userRecord = root ? getRecord(root, "user") : null;
+        const user = userRecord ? getString(userRecord, "id") ?? void 0 : void 0;
+        if (epoch !== this.epoch) throw new Error("Account context changed");
+        if (user && this.user && user !== this.user) {
+          this.user = user;
+          this.account = void 0;
+          this.accountKnown = false;
+          this.invalidate();
+          this.changed();
+          throw new Error("Account context changed");
+        }
+        this.user = user;
+        const scopeKey = user && accountKnown ? Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`${user}|${account ?? "personal"}`)))).map((byte) => byte.toString(16).padStart(2, "0")).join("") : void 0;
+        if (epoch !== this.epoch) throw new Error("Account context changed");
+        const result = { token, user, account, scopeKey, expires: this.now() + 6e4 };
+        this.cached = result;
+        return result;
+      })();
+      this.flight = flight;
+      void flight.finally(() => {
+        if (this.flight === flight) this.flight = void 0;
+      }).catch(() => void 0);
+      return flight;
+    }
   }
-  function sanitizeSentinelResponse(data, rawUrl, now = Date.now()) {
-    const urlKind = chatRequirementsUrlKind(rawUrl);
-    if (!urlKind) {
-      return null;
+  const MUSE_ENDPOINT_KEY = "muse:subscription";
+  function parseMuseSubscriptionJson(value) {
+    const root = asRecord(value);
+    if (!root || typeof root.success !== "boolean") return null;
+    if (!root.success) {
+      const recovery = asRecord(root.sessionRecovery);
+      const unauthorized = root.unauthorized === true || recovery?.scope === "hatch" && (recovery.reason === "authentication" || recovery.reason === "checkpoint");
+      return {
+        success: false,
+        unauthorized,
+        error: unauthorized ? "请登录 Muse 后刷新额度" : "Muse 额度查询失败"
+      };
     }
-    const dataRecord = asRecord(data);
-    if (!dataRecord) {
-      return null;
-    }
-    const root = asRecord(dataRecord.chat_requirements) ?? asRecord(dataRecord.requirements) ?? dataRecord;
-    const pow = asRecord(root.proofofwork) ?? asRecord(root.proof_of_work) ?? asRecord(root.pow);
-    return sanitizeSentinelObservation({
-      source: "chatgpt-sentinel",
-      ts: now,
-      urlKind,
-      powRequired: pow ? asBoolean(pow.required) === true : false,
-      powDifficulty: pow ? getString(pow, "difficulty") : null
-    });
-  }
-  function sanitizeSentinelObservation(value) {
-    const record = asRecord(value);
-    if (!record || record.source !== "chatgpt-sentinel") {
-      return null;
-    }
-    const urlKind = record.urlKind;
-    if (urlKind !== "chat-requirements" && urlKind !== "prepare") {
-      return null;
-    }
-    const ts = getNumber(record, "ts");
-    if (ts === null) {
-      return null;
-    }
-    const powDifficulty = getString(record, "powDifficulty");
+    const subscription = asRecord(root.subscription);
+    if (!subscription) return null;
+    const tier = asRecord(subscription.tier);
+    const usage = asRecord(subscription.usage);
     return {
-      source: "chatgpt-sentinel",
-      ts,
-      urlKind,
-      powRequired: asBoolean(record.powRequired) === true,
-      powDifficulty
+      success: true,
+      subscription: {
+        tier: tier ? {
+          name: getString(tier, "name") ?? void 0,
+          tierId: getString(tier, "tierId") ?? void 0
+        } : void 0,
+        usage: usage ? {
+          state: getString(usage, "state") ?? void 0,
+          percentUsed: getNumber(usage, "percentUsed") ?? void 0,
+          resetsAt: getNumber(usage, "resetsAt") ?? void 0
+        } : void 0,
+        usageRowLabel: getString(subscription, "usageRowLabel") ?? void 0,
+        topupBalance: getNumber(subscription, "topupBalance") ?? void 0,
+        topupTotal: getNumber(subscription, "topupTotal") ?? void 0,
+        topupRowLabel: getString(subscription, "topupRowLabel") ?? void 0,
+        topupRowValueLabel: getString(subscription, "topupRowValueLabel") ?? void 0
+      }
     };
   }
-  function safeUrlPathWithSearch(rawUrl) {
-    try {
-      const url = new URL(rawUrl, "https://chatgpt.com");
-      return `${url.pathname}${url.search}${url.hash}`;
-    } catch {
-      return rawUrl;
-    }
-  }
-  function installChatGptSentinelHook() {
-    if (window.__AI_USAGE_FLOATING_MONITOR_SENTINEL_PATCHED__) {
-      return;
-    }
-    if (!isChatGptHost(window.location.hostname)) {
-      return;
-    }
-    window.__AI_USAGE_FLOATING_MONITOR_SENTINEL_PATCHED__ = true;
-    installFetchHook();
-    installXhrHook();
-  }
-  function installFetchHook() {
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async (input, init) => {
-      const rawUrl = requestUrl$1(input);
-      const shouldObserve = rawUrl ? chatRequirementsUrlKind(rawUrl) !== null : false;
-      const response = await originalFetch(input, init);
-      if (shouldObserve && rawUrl) {
-        observeFetchResponse(rawUrl, response);
+  function parseMuseSubscriptionText(text) {
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^[0-9a-f]+:(\{.*\})$/i.exec(line);
+      if (!match) continue;
+      try {
+        const result = parseMuseSubscriptionJson(JSON.parse(match[1]));
+        if (result) return result;
+      } catch {
       }
-      return response;
-    };
-  }
-  function observeFetchResponse(rawUrl, response) {
-    response.clone().json().then((json) => {
-      dispatchSanitizedObservation(rawUrl, json);
-    }).catch(() => void 0);
-  }
-  function installXhrHook() {
-    const originalOpen = XMLHttpRequest.prototype.open;
-    const originalSend = XMLHttpRequest.prototype.send;
-    const callOriginalOpen = originalOpen;
-    const observedUrls = /* @__PURE__ */ new WeakMap();
-    function patchedOpen(method, url, async, username, password) {
-      const rawUrl = xhrOpenUrl(url);
-      if (rawUrl && chatRequirementsUrlKind(rawUrl)) {
-        observedUrls.set(this, rawUrl);
-      } else {
-        observedUrls.delete(this);
-      }
-      if (async === void 0) {
-        return callOriginalOpen.call(this, method, url);
-      }
-      return callOriginalOpen.call(this, method, url, async, username, password);
-    }
-    XMLHttpRequest.prototype.open = patchedOpen;
-    XMLHttpRequest.prototype.send = function(...args) {
-      const rawUrl = observedUrls.get(this);
-      if (rawUrl) {
-        this.addEventListener(
-          "loadend",
-          () => {
-            observeXhrResponse(rawUrl, this);
-          },
-          { once: true }
-        );
-      }
-      return originalSend.apply(this, args);
-    };
-  }
-  function observeXhrResponse(rawUrl, xhr) {
-    try {
-      if (xhr.responseType === "json") {
-        dispatchSanitizedObservation(rawUrl, xhr.response);
-        return;
-      }
-      if (xhr.responseType !== "" && xhr.responseType !== "text") {
-        return;
-      }
-      const text = xhr.responseText;
-      if (!text) {
-        return;
-      }
-      dispatchSanitizedObservation(rawUrl, JSON.parse(text));
-    } catch {
-    }
-  }
-  function dispatchSanitizedObservation(rawUrl, json) {
-    const observation = sanitizeSentinelResponse(json, rawUrl);
-    if (!observation) {
-      return;
-    }
-    window.dispatchEvent(
-      new CustomEvent(CHATGPT_SENTINEL_EVENT, {
-        detail: observation
-      })
-    );
-  }
-  function requestUrl$1(input) {
-    try {
-      if (typeof input === "string") {
-        return input;
-      }
-      if (input instanceof URL) {
-        return input.href;
-      }
-      return input.url;
-    } catch {
-      return null;
-    }
-  }
-  function xhrOpenUrl(url) {
-    if (typeof url === "string") {
-      return url;
-    }
-    if (url instanceof URL) {
-      return url.href;
     }
     return null;
-  }
-  function isChatGptHost(hostname) {
-    return hostname === "chatgpt.com" || hostname.endsWith(".chatgpt.com");
   }
   const SOURCE = "ai-usage-floating-monitor";
   function isBridgeRequest(value) {
     return isRecord(value) && value.source === SOURCE && value.direction === "content-to-main" && typeof value.requestId === "string" && typeof value.action === "string" && typeof value.platform === "string";
   }
+  function findMuseSubscriptionAction(script) {
+    return /createServerReference\s*\)?\s*\(\s*["']([a-f0-9]{40,64})["'][^;]{0,250}?["']fetchSubscriptionAction["']/i.exec(script)?.[1] ?? null;
+  }
+  class MuseSubscriptionBridge {
+    constructor(fetcher, pageDocument = document, origin = window.location.origin) {
+      this.fetcher = fetcher;
+      this.pageDocument = pageDocument;
+      this.origin = origin;
+    }
+    actionId = null;
+    scannedScripts = /* @__PURE__ */ new Map();
+    inFlight = null;
+    matches(url, method, actionId) {
+      return this.origin === "https://muse.ai" && url.origin === this.origin && url.pathname === "/" && method.toUpperCase() === "POST" && this.actionId !== null && actionId === this.actionId;
+    }
+    async fetchUsage(requestId) {
+      const pending = this.inFlight ?? (this.inFlight = this.queryUsage(requestId));
+      try {
+        return { ...await pending, requestId };
+      } finally {
+        if (this.inFlight === pending) this.inFlight = null;
+      }
+    }
+    async queryUsage(requestId) {
+      const requestedAt = Date.now();
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 1e4);
+      let stage = "discovery";
+      const base = {
+        source: SOURCE,
+        direction: "main-to-content",
+        requestId,
+        platform: "muse",
+        endpointKey: MUSE_ENDPOINT_KEY,
+        requestStartedAt: requestedAt
+      };
+      try {
+        if (this.origin !== "https://muse.ai") throw new Error("Muse 额度只能从 Muse 页面查询");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          stage = "discovery";
+          const actionId = this.actionId ?? await this.discoverAction(controller.signal);
+          stage = "request";
+          const response = await this.fetcher(`${this.origin}/`, {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            signal: controller.signal,
+            headers: { Accept: "text/x-component", "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
+            body: '[{"includeAgreement":false}]'
+          });
+          if (response.redirected && response.url.startsWith("https://auth.muse.ai/")) {
+            return { ...base, ok: false, error: { status: 401, message: "请登录 Muse 后刷新额度" } };
+          }
+          stage = "response";
+          const text = await response.text();
+          const missingAction = response.status === 404 || response.headers.get("x-nextjs-action-not-found") === "1" || /Failed to find Server Action|Server Action[^\n]*not found/i.test(text);
+          if (missingAction) {
+            this.actionId = null;
+            this.scannedScripts.clear();
+            if (attempt === 0) continue;
+            return { ...base, ok: false, error: { message: "Muse 额度接口已更新，请重新加载页面" } };
+          }
+          if (!response.ok) return { ...base, ok: false, error: { status: response.status, message: response.statusText || "Muse 额度接口请求失败" } };
+          const result = parseMuseSubscriptionText(text);
+          if (!result) return { ...base, ok: false, error: { code: "PARSER_ERROR", message: "Muse 额度响应结构变化" } };
+          if (!result.success) return { ...base, ok: false, error: { status: result.unauthorized ? 401 : void 0, message: result.error } };
+          return { ...base, ok: true, json: result, observedAt: Date.now() };
+        }
+        throw new Error("Muse 额度接口已更新，请重新加载页面");
+      } catch (error) {
+        const timeoutMessage = stage === "discovery" ? "识别 Muse 额度接口超时，请刷新页面后重试" : stage === "request" ? "Muse 额度请求超时，请稍后刷新" : "Muse 额度响应读取超时，请稍后刷新";
+        return { ...base, ok: false, error: { code: controller.signal.aborted ? "NETWORK_ERROR" : "UNKNOWN", message: controller.signal.aborted ? timeoutMessage : error instanceof Error ? error.message : "Muse 额度查询失败" } };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+    async discoverAction(signal) {
+      while (!signal.aborted) {
+        const urls = Array.from(new Set(Array.from(this.pageDocument.scripts).map((script) => script.src))).filter((src) => {
+          try {
+            const url = new URL(src);
+            return url.origin === this.origin && /^\/_next\/static\/chunks\/.*\.js$/.test(url.pathname) && !this.scannedScripts.has(src);
+          } catch {
+            return false;
+          }
+        }).reverse();
+        const actionId = await this.scanScripts(urls, signal);
+        if (actionId) return actionId;
+        await new Promise((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error("Muse action discovery timed out"));
+            return;
+          }
+          const observer = new MutationObserver(() => {
+            cleanup();
+            resolve();
+          });
+          const abort = () => {
+            cleanup();
+            reject(new Error("Muse action discovery timed out"));
+          };
+          const cleanup = () => {
+            observer.disconnect();
+            signal.removeEventListener("abort", abort);
+          };
+          observer.observe(this.pageDocument, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+          signal.addEventListener("abort", abort, { once: true });
+          if (Array.from(this.pageDocument.scripts).some((script) => !this.scannedScripts.has(script.src) && urls.includes(script.src) === false && script.src.startsWith(`${this.origin}/_next/static/chunks/`))) {
+            cleanup();
+            resolve();
+          }
+        });
+      }
+      throw new Error("Muse action discovery timed out");
+    }
+    scanScripts(urls, signal) {
+      if (!urls.length) return Promise.resolve(null);
+      const controller = new AbortController();
+      return new Promise((resolve, reject) => {
+        let nextIndex = 0;
+        const workerCount = Math.min(4, urls.length);
+        let activeWorkers = workerCount;
+        let finished = false;
+        const finish = (actionId, error) => {
+          if (finished) return;
+          finished = true;
+          signal.removeEventListener("abort", abort);
+          controller.abort();
+          if (error) reject(error);
+          else resolve(actionId);
+        };
+        const abort = () => finish(null, new Error("Muse action discovery timed out"));
+        const worker = async () => {
+          try {
+            while (!finished && nextIndex < urls.length) {
+              const url = urls[nextIndex++];
+              try {
+                const response = await this.fetcher(url, { credentials: "same-origin", cache: "force-cache", signal: controller.signal });
+                if (!response.ok || finished) continue;
+                const actionId = findMuseSubscriptionAction(await response.text());
+                if (finished) return;
+                this.scannedScripts.set(url, actionId);
+                if (actionId) {
+                  this.actionId = actionId;
+                  finish(actionId);
+                }
+              } catch {
+                if (signal.aborted) abort();
+              }
+            }
+          } finally {
+            if (--activeWorkers === 0) finish(null);
+          }
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener("abort", abort, { once: true });
+        for (let index = 0; index < workerCount; index++) void worker();
+      });
+    }
+  }
   const FETCH_TIMEOUT_MS = 1e4;
+  const ownedFetch = window.fetch.bind(window);
+  const museSubscription = new MuseSubscriptionBridge(ownedFetch);
+  const chatGptControllers = /* @__PURE__ */ new Set();
+  const chatGptSession = new ChatGptSession(ownedFetch, () => {
+    for (const controller of chatGptControllers) controller.abort();
+    window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
+  });
   const GEMINI_USAGE_RPC_ID = "jSf9Qc";
   const geminiBatchExecuteState = {};
   if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
     window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
-    installChatGptSentinelHook();
     installFetchIntercept();
     window.addEventListener("message", (event) => {
       if (event.source !== window || event.origin !== window.location.origin) {
@@ -243,6 +367,10 @@
       });
       return;
     }
+    if (request.platform === "muse" && request.endpointKey === "muse:subscription") {
+      postResponse(await museSubscription.fetchUsage(request.requestId));
+      return;
+    }
     const endpoint = resolveEndpoint(request.platform, request.endpointKey, request.payload);
     if (!endpoint) {
       postResponse({
@@ -263,10 +391,27 @@
   }
   function resolveEndpoint(platform, endpointKey, payload) {
     const endpoints = {
+      "grok:credits-config": {
+        platform: "grok",
+        method: "POST",
+        url: "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig",
+        headers: {
+          accept: "application/grpc-web+proto",
+          "content-type": "application/grpc-web+proto",
+          "x-grpc-web": "1"
+        },
+        body: "\0\0\0\0\0",
+        responseType: "base64"
+      },
       "claude:organizations": {
         platform: "claude",
         method: "GET",
         url: "https://claude.ai/api/organizations"
+      },
+      "chatgpt:libraryStorage": {
+        platform: "chatgpt",
+        method: "GET",
+        url: "https://chatgpt.com/backend-api/files/library/storage/usage"
       },
       "chatgpt:conversationInit": {
         platform: "chatgpt",
@@ -279,43 +424,23 @@
         method: "GET",
         url: "https://chatgpt.com/backend-api/wham/usage"
       },
-      "chatgpt:whamTasksRateLimit": {
+      "chatgpt:accountsCheck": {
         platform: "chatgpt",
         method: "GET",
-        url: "https://chatgpt.com/backend-api/wham/tasks/rate_limit"
-      },
-      "chatgpt:codexSettingsUsage": {
-        platform: "chatgpt",
-        method: "GET",
-        url: "https://chatgpt.com/codex/settings/usage"
+        url: `https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${(/* @__PURE__ */ new Date()).getTimezoneOffset()}`
       },
       "kimi:subscription": {
         platform: "kimi",
         method: "POST",
         url: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription",
         body: {}
+      },
+      "perplexity:rateLimitAll": {
+        platform: "perplexity",
+        method: "GET",
+        url: "https://www.perplexity.ai/rest/rate-limit/all"
       }
     };
-    if (endpointKey === "grok:rate-limits") {
-      if (platform !== "grok") {
-        return null;
-      }
-      const payloadRecord = asRecord(payload);
-      const modelName = payloadRecord ? getString(payloadRecord, "modelName") : null;
-      const requestKind = (payloadRecord ? getString(payloadRecord, "requestKind") : null) ?? "DEFAULT";
-      if (!isSafeGrokModelName(modelName) || !isSafeGrokRequestKind(requestKind)) {
-        return null;
-      }
-      return {
-        platform: "grok",
-        method: "POST",
-        url: "https://grok.com/rest/rate-limits",
-        body: {
-          requestKind,
-          modelName
-        }
-      };
-    }
     if (endpointKey === "claude:usage") {
       const payloadRecord = asRecord(payload);
       const orgId = payloadRecord ? getString(payloadRecord, "orgId") : null;
@@ -433,17 +558,28 @@
     return JSON.stringify(endpoint.body);
   }
   async function fetchEndpoint(endpoint, requestId, endpointKey) {
+    let scopeKey;
     const controller = new AbortController();
+    if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
     const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const response = await fetch(endpoint.url, {
+      const headers = endpointHeaders(endpoint) ?? {};
+      if (endpoint.platform === "chatgpt") {
+        const session = await chatGptSession.read();
+        headers.Authorization = `Bearer ${session.token}`;
+        if (session.account) headers["ChatGPT-Account-ID"] = session.account;
+        scopeKey = session.scopeKey;
+      }
+      const response = await ownedFetch(endpoint.url, {
         method: endpoint.method,
         credentials: "include",
-        headers: endpointHeaders(endpoint),
+        cache: "no-store",
+        headers,
         body: endpointBody(endpoint),
         signal: controller.signal
       });
       if (!response.ok) {
+        if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
         return {
           source: SOURCE,
           direction: "main-to-content",
@@ -455,6 +591,17 @@
             status: response.status,
             message: response.statusText || "Usage endpoint failed"
           }
+        };
+      }
+      if (endpoint.responseType === "base64") {
+        return {
+          source: SOURCE,
+          direction: "main-to-content",
+          requestId,
+          ok: true,
+          platform: endpoint.platform,
+          endpointKey,
+          text: arrayBufferToBase64(await response.arrayBuffer())
         };
       }
       if (endpoint.responseType === "text") {
@@ -519,10 +666,51 @@
     function makePatchedFetch() {
       return async (input, init) => {
         rememberGeminiBatchExecuteRequest(input, init);
+        const requestedAt = Date.now();
+        const rawUrl = requestUrl(input);
+        if (rawUrl.startsWith("https://chatgpt.com/backend-api/") || rawUrl.startsWith("/backend-api/")) {
+          chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
+        }
+        const scopeKey = chatGptSession.scope();
         const usageRequest = getUsageRequest(input, init);
         const response = await originalFetch(input, init);
+        if (usageRequest?.platform === "muse") {
+          if (response.ok) {
+            void response.clone().text().then((text) => {
+              const json = parseMuseSubscriptionText(text);
+              if (json) postInterceptedUsage({ ...usageRequest, json, requestStartedAt: requestedAt });
+            }).catch(() => void 0);
+          } else if (response.status === 401 || response.status === 403) {
+            postInterceptedUsage({ ...usageRequest, json: { success: false, unauthorized: true }, requestStartedAt: requestedAt });
+          }
+          return response;
+        }
+        if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
+          void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => void 0);
+        }
+        if (usageRequest?.platform === "chatgpt") {
+          if (response.ok) {
+            void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => void 0);
+          }
+          return response;
+        }
         try {
           if (usageRequest) {
+            if (usageRequest.responseType === "base64") {
+              const buffer = await response.arrayBuffer();
+              const newResponse2 = new Response(buffer.slice(0), {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers
+              });
+              postInterceptedUsage({
+                platform: usageRequest.platform,
+                endpointKey: usageRequest.endpointKey,
+                url: usageRequest.url,
+                text: arrayBufferToBase64(buffer)
+              });
+              return newResponse2;
+            }
             const text = await response.text();
             const newResponse = new Response(text, {
               status: response.status,
@@ -534,12 +722,10 @@
               json = JSON.parse(text);
             } catch {
             }
-            const usageContext = await usageRequest.usageContext;
             postInterceptedUsage({
               platform: usageRequest.platform,
               endpointKey: usageRequest.endpointKey,
               url: usageRequest.url,
-              usageContext,
               json,
               text: usageRequest.responseType === "text" ? text : void 0
             });
@@ -558,12 +744,6 @@
         window.fetch = currentPatchedFetch;
       }
     }, 2e3);
-  }
-  function isSafeGrokModelName(value) {
-    return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
-  }
-  function isSafeGrokRequestKind(value) {
-    return value !== null && /^[A-Z_]{1,40}$/.test(value);
   }
   function rememberGeminiBatchExecuteRequest(input, init) {
     let rawUrl;
@@ -702,6 +882,14 @@
       return null;
     }
     const info = usageUrlInfo(rawUrl);
+    try {
+      const url = new URL(rawUrl, window.location.origin);
+      if (museSubscription.matches(url, init?.method ?? (input instanceof Request ? input.method : "GET"), requestHeaderValue(input, init, "Next-Action"))) {
+        return { platform: "muse", endpointKey: "muse:subscription", url: sanitizeUrl(rawUrl) };
+      }
+    } catch {
+      return null;
+    }
     if (!info) {
       return null;
     }
@@ -709,68 +897,7 @@
       platform: info.platform,
       endpointKey: info.endpointKey,
       url: sanitizeUrl(rawUrl),
-      responseType: info.responseType,
-      usageContext: info.platform === "grok" ? grokRequestContext(input, init) : void 0
-    };
-  }
-  function grokRequestContext(input, init) {
-    if (init?.body !== void 0) {
-      return usageContextFromBody(init.body);
-    }
-    if (input instanceof Request && !input.bodyUsed) {
-      return input.clone().text().then(usageContextFromText).catch(() => void 0);
-    }
-    return void 0;
-  }
-  function usageContextFromBody(body) {
-    if (typeof body === "string") {
-      return usageContextFromText(body);
-    }
-    if (body instanceof URLSearchParams) {
-      return usageContextFromText(body.toString());
-    }
-    if (body instanceof FormData) {
-      return usageContextFromRecord({
-        modelName: body.get("modelName"),
-        requestKind: body.get("requestKind")
-      });
-    }
-    if (body instanceof Blob) {
-      return body.text().then(usageContextFromText).catch(() => void 0);
-    }
-    return void 0;
-  }
-  function usageContextFromText(text) {
-    if (!text.trim()) {
-      return void 0;
-    }
-    try {
-      return usageContextFromRecord(JSON.parse(text));
-    } catch {
-      try {
-        const params = new URLSearchParams(text);
-        return usageContextFromRecord({
-          modelName: params.get("modelName"),
-          requestKind: params.get("requestKind")
-        });
-      } catch {
-        return void 0;
-      }
-    }
-  }
-  function usageContextFromRecord(value) {
-    const record = asRecord(value);
-    if (!record) {
-      return void 0;
-    }
-    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId");
-    const requestKind = getString(record, "requestKind") ?? getString(record, "kind") ?? getString(record, "mode");
-    if (!modelName && !requestKind) {
-      return void 0;
-    }
-    return {
-      modelName: modelName ?? void 0,
-      requestKind: requestKind ?? void 0
+      responseType: info.responseType
     };
   }
   function postInterceptedUsage(args) {
@@ -781,9 +908,10 @@
       platform: args.platform,
       endpointKey: args.endpointKey,
       url: args.url,
-      usageContext: args.usageContext,
       json: args.json,
       text: args.text,
+      requestStartedAt: args.requestStartedAt,
+      scopeKey: args.scopeKey,
       ts: Date.now()
     };
     window.postMessage(message, window.location.origin);
@@ -807,18 +935,28 @@
     } catch {
       return null;
     }
-    if (url.origin === "https://grok.com" && url.pathname === "/rest/rate-limits") {
-      return { platform: "grok", endpointKey: "grok:rate-limits" };
+    if (url.origin === "https://grok.com" && url.pathname === "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig") {
+      return {
+        platform: "grok",
+        endpointKey: "grok:credits-config",
+        responseType: "base64"
+      };
     }
     if (url.origin === "https://claude.ai" && /^\/api\/organizations\/[^/]+\/usage$/.test(url.pathname)) {
       return { platform: "claude", endpointKey: "claude:usage" };
     }
     if (url.origin === "https://chatgpt.com") {
+      if (url.pathname === "/backend-api/files/library/storage/usage") {
+        return { platform: "chatgpt", endpointKey: "chatgpt:libraryStorage" };
+      }
       if (url.pathname === "/backend-api/conversation/init") {
         return { platform: "chatgpt", endpointKey: "chatgpt:conversationInit" };
       }
       if (url.pathname === "/backend-api/wham/usage") {
         return { platform: "chatgpt", endpointKey: "chatgpt:whamUsage" };
+      }
+      if (url.pathname === "/backend-api/codex/usage") {
+        return { platform: "chatgpt", endpointKey: "chatgpt:codexUsage" };
       }
       if (url.pathname === "/backend-api/wham/tasks/rate_limit") {
         return {
@@ -826,15 +964,18 @@
           endpointKey: "chatgpt:whamTasksRateLimit"
         };
       }
-      if (url.pathname === "/codex/settings/usage") {
+      if (/^\/backend-api\/accounts\/check\//.test(url.pathname)) {
         return {
           platform: "chatgpt",
-          endpointKey: "chatgpt:codexSettingsUsage"
+          endpointKey: "chatgpt:accountsCheck"
         };
       }
     }
     if (url.origin === "https://www.kimi.com" && url.pathname === "/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription") {
       return { platform: "kimi", endpointKey: "kimi:subscription" };
+    }
+    if (url.origin === "https://www.perplexity.ai" && url.pathname === "/rest/rate-limit/all") {
+      return { platform: "perplexity", endpointKey: "perplexity:rateLimitAll" };
     }
     if (isGeminiBatchExecuteUrl(url) && hasGeminiUsageRpcId(url.searchParams.get("rpcids"))) {
       return {
@@ -858,6 +999,16 @@
     } catch {
       return "";
     }
+  }
+  function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 32768;
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+      const chunk = bytes.subarray(offset, offset + chunkSize);
+      binary += String.fromCharCode(...chunk);
+    }
+    return btoa(binary);
   }
   function postResponse(response) {
     window.postMessage(response, window.location.origin);

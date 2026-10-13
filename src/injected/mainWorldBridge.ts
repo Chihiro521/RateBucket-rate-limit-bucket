@@ -1,10 +1,11 @@
 import type {
   BridgeResponse,
   EndpointKey,
-  PlatformId,
-  UsageRequestContext
+  PlatformId
 } from "../platforms/types";
-import { installChatGptSentinelHook } from "./chatgptSentinelHook";
+import { ChatGptSession } from "./chatgptSession";
+import { MuseSubscriptionBridge } from "./museSubscription";
+import { parseMuseSubscriptionText } from "../platforms/muse";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
 import { asRecord, getString } from "../utils/safeJson";
 
@@ -22,15 +23,14 @@ type EndpointDefinition = {
   url: string;
   headers?: Record<string, string>;
   body?: unknown;
-  responseType?: "json" | "text";
+  responseType?: "json" | "text" | "base64";
 };
 
 type UsageRequestInfo = {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   url: string;
-  responseType?: "json" | "text";
-  usageContext?: UsageRequestContext | Promise<UsageRequestContext | undefined>;
+  responseType?: "json" | "text" | "base64";
 };
 
 type GeminiReplayParams = {
@@ -52,12 +52,18 @@ type GeminiWizGlobalData = {
 };
 
 const FETCH_TIMEOUT_MS = 10_000;
+const ownedFetch = window.fetch.bind(window);
+const museSubscription = new MuseSubscriptionBridge(ownedFetch);
+const chatGptControllers = new Set<AbortController>();
+const chatGptSession = new ChatGptSession(ownedFetch, () => {
+  for (const controller of chatGptControllers) controller.abort();
+  window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
+});
 const GEMINI_USAGE_RPC_ID = "jSf9Qc";
 const geminiBatchExecuteState: GeminiBatchExecuteState = {};
 
 if (!window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__) {
   window.__AI_USAGE_FLOATING_MONITOR_BRIDGE__ = true;
-  installChatGptSentinelHook();
   installFetchIntercept();
   window.addEventListener("message", (event: MessageEvent<unknown>) => {
     if (event.source !== window || event.origin !== window.location.origin) {
@@ -101,6 +107,11 @@ async function handleRequest(request: {
     return;
   }
 
+  if (request.platform === "muse" && request.endpointKey === "muse:subscription") {
+    postResponse(await museSubscription.fetchUsage(request.requestId));
+    return;
+  }
+
   const endpoint = resolveEndpoint(request.platform, request.endpointKey, request.payload);
   if (!endpoint) {
     postResponse({
@@ -130,10 +141,25 @@ function resolveEndpoint(
   payload: unknown
 ): EndpointDefinition | null {
   const endpoints: Partial<Record<EndpointKey, EndpointDefinition>> = {
+    "grok:credits-config": {
+      platform: "grok",
+      method: "POST",
+      url: "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig",
+      headers: {
+        accept: "application/grpc-web+proto",
+        "content-type": "application/grpc-web+proto",
+        "x-grpc-web": "1"
+      },
+      body: "\0\0\0\0\0",
+      responseType: "base64"
+    },
     "claude:organizations": {
       platform: "claude",
       method: "GET",
       url: "https://claude.ai/api/organizations"
+    },
+    "chatgpt:libraryStorage": {
+      platform: "chatgpt", method: "GET", url: "https://chatgpt.com/backend-api/files/library/storage/usage"
     },
     "chatgpt:conversationInit": {
       platform: "chatgpt",
@@ -146,45 +172,25 @@ function resolveEndpoint(
       method: "GET",
       url: "https://chatgpt.com/backend-api/wham/usage"
     },
-    "chatgpt:whamTasksRateLimit": {
+
+
+    "chatgpt:accountsCheck": {
       platform: "chatgpt",
       method: "GET",
-      url: "https://chatgpt.com/backend-api/wham/tasks/rate_limit"
-    },
-    "chatgpt:codexSettingsUsage": {
-      platform: "chatgpt",
-      method: "GET",
-      url: "https://chatgpt.com/codex/settings/usage"
+      url: `https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27?timezone_offset_min=${new Date().getTimezoneOffset()}`
     },
     "kimi:subscription": {
       platform: "kimi",
       method: "POST",
       url: "https://www.kimi.com/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription",
       body: {}
+    },
+    "perplexity:rateLimitAll": {
+      platform: "perplexity",
+      method: "GET",
+      url: "https://www.perplexity.ai/rest/rate-limit/all"
     }
   };
-
-  if (endpointKey === "grok:rate-limits") {
-    if (platform !== "grok") {
-      return null;
-    }
-    const payloadRecord = asRecord(payload);
-    const modelName = payloadRecord ? getString(payloadRecord, "modelName") : null;
-    const requestKind =
-      (payloadRecord ? getString(payloadRecord, "requestKind") : null) ?? "DEFAULT";
-    if (!isSafeGrokModelName(modelName) || !isSafeGrokRequestKind(requestKind)) {
-      return null;
-    }
-    return {
-      platform: "grok",
-      method: "POST",
-      url: "https://grok.com/rest/rate-limits",
-      body: {
-        requestKind,
-        modelName
-      }
-    };
-  }
 
   if (endpointKey === "claude:usage") {
     const payloadRecord = asRecord(payload);
@@ -320,18 +326,31 @@ async function fetchEndpoint(
   requestId: string,
   endpointKey: EndpointKey
 ): Promise<BridgeResponse> {
+  const requestedAt = Date.now();
+  let scopeKey: string | undefined;
   const controller = new AbortController();
+  if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
   const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(endpoint.url, {
+    const headers = endpointHeaders(endpoint) ?? {};
+    if (endpoint.platform === "chatgpt") {
+      const session = await chatGptSession.read();
+      headers.Authorization = `Bearer ${session.token}`;
+      if (session.account) headers["ChatGPT-Account-ID"] = session.account;
+      scopeKey = session.scopeKey;
+    }
+
+    const response = await ownedFetch(endpoint.url, {
       method: endpoint.method,
       credentials: "include",
-      headers: endpointHeaders(endpoint),
+      cache: "no-store",
+      headers,
       body: endpointBody(endpoint),
       signal: controller.signal
     });
 
     if (!response.ok) {
+      if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
       return {
         source: SOURCE,
         direction: "main-to-content",
@@ -343,6 +362,18 @@ async function fetchEndpoint(
           status: response.status,
           message: response.statusText || "Usage endpoint failed"
         }
+      };
+    }
+
+    if (endpoint.responseType === "base64") {
+      return {
+        source: SOURCE,
+        direction: "main-to-content",
+        requestId,
+        ok: true,
+        platform: endpoint.platform,
+        endpointKey,
+        text: arrayBufferToBase64(await response.arrayBuffer())
       };
     }
 
@@ -412,10 +443,52 @@ function installFetchIntercept(): void {
   function makePatchedFetch(): typeof window.fetch {
     return async (input: RequestInfo | URL, init?: RequestInit) => {
       rememberGeminiBatchExecuteRequest(input, init);
+      const requestedAt = Date.now();
+      const rawUrl = requestUrl(input);
+      if (rawUrl.startsWith("https://chatgpt.com/backend-api/") || rawUrl.startsWith("/backend-api/")) {
+        chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
+      }
+      const scopeKey = chatGptSession.scope();
       const usageRequest = getUsageRequest(input, init);
       const response = await originalFetch(input, init);
+      if (usageRequest?.platform === "muse") {
+        if (response.ok) {
+          void response.clone().text().then((text) => {
+            const json = parseMuseSubscriptionText(text);
+            if (json) postInterceptedUsage({ ...usageRequest, json, requestStartedAt: requestedAt });
+          }).catch(() => undefined);
+        } else if (response.status === 401 || response.status === 403) {
+          postInterceptedUsage({ ...usageRequest, json: { success: false, unauthorized: true }, requestStartedAt: requestedAt });
+        }
+        return response;
+      }
+      if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
+        void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => undefined);
+      }
+      if (usageRequest?.platform === "chatgpt") {
+        if (response.ok) {
+          void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => undefined);
+        }
+        return response;
+      }
       try {
         if (usageRequest) {
+          if (usageRequest.responseType === "base64") {
+            const buffer = await response.arrayBuffer();
+            const newResponse = new Response(buffer.slice(0), {
+              status: response.status,
+              statusText: response.statusText,
+              headers: response.headers
+            });
+            postInterceptedUsage({
+              platform: usageRequest.platform,
+              endpointKey: usageRequest.endpointKey,
+              url: usageRequest.url,
+              text: arrayBufferToBase64(buffer)
+            });
+            return newResponse;
+          }
+
           const text = await response.text();
           const newResponse = new Response(text, {
             status: response.status,
@@ -428,12 +501,10 @@ function installFetchIntercept(): void {
           } catch {
             // Ignore parse errors.
           }
-          const usageContext = await usageRequest.usageContext;
           postInterceptedUsage({
             platform: usageRequest.platform,
             endpointKey: usageRequest.endpointKey,
             url: usageRequest.url,
-            usageContext,
             json,
             text: usageRequest.responseType === "text" ? text : undefined
           });
@@ -455,14 +526,6 @@ function installFetchIntercept(): void {
       window.fetch = currentPatchedFetch;
     }
   }, 2_000);
-}
-
-function isSafeGrokModelName(value: string | null): value is string {
-  return value !== null && /^[A-Za-z0-9._:-]{1,120}$/.test(value);
-}
-
-function isSafeGrokRequestKind(value: string | null): value is string {
-  return value !== null && /^[A-Z_]{1,40}$/.test(value);
 }
 
 function rememberGeminiBatchExecuteRequest(
@@ -657,6 +720,14 @@ function getUsageRequest(
   }
 
   const info = usageUrlInfo(rawUrl);
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    if (museSubscription.matches(url, init?.method ?? (input instanceof Request ? input.method : "GET"), requestHeaderValue(input, init, "Next-Action"))) {
+      return { platform: "muse", endpointKey: "muse:subscription", url: sanitizeUrl(rawUrl) };
+    }
+  } catch {
+    return null;
+  }
   if (!info) {
     return null;
   }
@@ -665,91 +736,7 @@ function getUsageRequest(
     platform: info.platform,
     endpointKey: info.endpointKey,
     url: sanitizeUrl(rawUrl),
-    responseType: info.responseType,
-    usageContext:
-      info.platform === "grok" ? grokRequestContext(input, init) : undefined
-  };
-}
-
-function grokRequestContext(
-  input: RequestInfo | URL,
-  init?: RequestInit
-): UsageRequestContext | Promise<UsageRequestContext | undefined> | undefined {
-  if (init?.body !== undefined) {
-    return usageContextFromBody(init.body);
-  }
-  if (input instanceof Request && !input.bodyUsed) {
-    return input
-      .clone()
-      .text()
-      .then(usageContextFromText)
-      .catch(() => undefined);
-  }
-  return undefined;
-}
-
-function usageContextFromBody(
-  body: BodyInit | null
-): UsageRequestContext | Promise<UsageRequestContext | undefined> | undefined {
-  if (typeof body === "string") {
-    return usageContextFromText(body);
-  }
-  if (body instanceof URLSearchParams) {
-    return usageContextFromText(body.toString());
-  }
-  if (body instanceof FormData) {
-    return usageContextFromRecord({
-      modelName: body.get("modelName"),
-      requestKind: body.get("requestKind")
-    });
-  }
-  if (body instanceof Blob) {
-    return body
-      .text()
-      .then(usageContextFromText)
-      .catch(() => undefined);
-  }
-  return undefined;
-}
-
-function usageContextFromText(text: string): UsageRequestContext | undefined {
-  if (!text.trim()) {
-    return undefined;
-  }
-  try {
-    return usageContextFromRecord(JSON.parse(text));
-  } catch {
-    try {
-      const params = new URLSearchParams(text);
-      return usageContextFromRecord({
-        modelName: params.get("modelName"),
-        requestKind: params.get("requestKind")
-      });
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-function usageContextFromRecord(value: unknown): UsageRequestContext | undefined {
-  const record = asRecord(value);
-  if (!record) {
-    return undefined;
-  }
-  const modelName =
-    getString(record, "modelName") ??
-    getString(record, "model") ??
-    getString(record, "modelId");
-  const requestKind =
-    getString(record, "requestKind") ??
-    getString(record, "kind") ??
-    getString(record, "mode");
-  if (!modelName && !requestKind) {
-    return undefined;
-  }
-  return {
-    modelName: modelName ?? undefined,
-    requestKind: requestKind ?? undefined
+    responseType: info.responseType
   };
 }
 
@@ -757,9 +744,10 @@ function postInterceptedUsage(args: {
   platform: PlatformId;
   endpointKey?: EndpointKey;
   url: string;
-  usageContext?: UsageRequestContext;
-  json: unknown;
+  json?: unknown;
   text?: string;
+  scopeKey?: string;
+  requestStartedAt?: number;
 }): void {
   const message = {
     source: SOURCE,
@@ -768,9 +756,10 @@ function postInterceptedUsage(args: {
     platform: args.platform,
     endpointKey: args.endpointKey,
     url: args.url,
-    usageContext: args.usageContext,
     json: args.json,
     text: args.text,
+    requestStartedAt: args.requestStartedAt,
+    scopeKey: args.scopeKey,
     ts: Date.now()
   } as const;
 
@@ -795,7 +784,7 @@ function usageUrlInfo(
 ): {
   platform: PlatformId;
   endpointKey?: EndpointKey;
-  responseType?: "json" | "text";
+  responseType?: "json" | "text" | "base64";
 } | null {
   let url: URL;
   try {
@@ -804,8 +793,15 @@ function usageUrlInfo(
     return null;
   }
 
-  if (url.origin === "https://grok.com" && url.pathname === "/rest/rate-limits") {
-    return { platform: "grok", endpointKey: "grok:rate-limits" };
+  if (
+    url.origin === "https://grok.com" &&
+    url.pathname === "/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
+  ) {
+    return {
+      platform: "grok",
+      endpointKey: "grok:credits-config",
+      responseType: "base64"
+    };
   }
   if (
     url.origin === "https://claude.ai" &&
@@ -814,11 +810,17 @@ function usageUrlInfo(
     return { platform: "claude", endpointKey: "claude:usage" };
   }
   if (url.origin === "https://chatgpt.com") {
+    if (url.pathname === "/backend-api/files/library/storage/usage") {
+      return { platform: "chatgpt", endpointKey: "chatgpt:libraryStorage" };
+    }
     if (url.pathname === "/backend-api/conversation/init") {
       return { platform: "chatgpt", endpointKey: "chatgpt:conversationInit" };
     }
     if (url.pathname === "/backend-api/wham/usage") {
       return { platform: "chatgpt", endpointKey: "chatgpt:whamUsage" };
+    }
+    if (url.pathname === "/backend-api/codex/usage") {
+      return { platform: "chatgpt", endpointKey: "chatgpt:codexUsage" };
     }
     if (url.pathname === "/backend-api/wham/tasks/rate_limit") {
       return {
@@ -826,10 +828,10 @@ function usageUrlInfo(
         endpointKey: "chatgpt:whamTasksRateLimit"
       };
     }
-    if (url.pathname === "/codex/settings/usage") {
+    if (/^\/backend-api\/accounts\/check\//.test(url.pathname)) {
       return {
         platform: "chatgpt",
-        endpointKey: "chatgpt:codexSettingsUsage"
+        endpointKey: "chatgpt:accountsCheck"
       };
     }
   }
@@ -838,6 +840,12 @@ function usageUrlInfo(
     url.pathname === "/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription"
   ) {
     return { platform: "kimi", endpointKey: "kimi:subscription" };
+  }
+  if (
+    url.origin === "https://www.perplexity.ai" &&
+    url.pathname === "/rest/rate-limit/all"
+  ) {
+    return { platform: "perplexity", endpointKey: "perplexity:rateLimitAll" };
   }
   if (
     isGeminiBatchExecuteUrl(url) &&
@@ -870,6 +878,17 @@ function sanitizeUrl(rawUrl: string): string {
   } catch {
     return "";
   }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, offset + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
 }
 
 function postResponse(response: BridgeResponse): void {

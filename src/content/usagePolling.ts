@@ -1,0 +1,89 @@
+import type { UsageMeter, UsageSnapshot } from "../platforms/types";
+
+// The controller checks freshness separately for every endpoint.
+export const CHATGPT_POLL_CHECK_MS = 30_000;
+
+type PollingOptions = {
+  intervalMs?: number;
+  isVisible: () => boolean;
+  onVisibilityChange: (callback: () => void) => () => void;
+  setInterval: (callback: () => void, intervalMs: number) => number;
+  clearInterval: (id: number) => void;
+  refresh: () => void;
+};
+
+export function startVisibleUsagePolling(options: PollingOptions): () => void {
+  const refreshIfVisible = (): void => {
+    if (options.isVisible()) {
+      options.refresh();
+    }
+  };
+  const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
+  const intervalId = options.setInterval(refreshIfVisible, options.intervalMs ?? CHATGPT_POLL_CHECK_MS);
+  return () => {
+    options.clearInterval(intervalId);
+    stopVisibilityListener();
+  };
+}
+
+export function sameUsageValues(
+  previous: UsageSnapshot | null,
+  next: UsageSnapshot
+): boolean {
+  if (!previous || previous.platform !== next.platform) {
+    return false;
+  }
+  if (
+    previous.status !== next.status ||
+    previous.errorMessage !== next.errorMessage ||
+    previous.meters.length !== next.meters.length
+  ) {
+    return false;
+  }
+  const previousValues = new Map(
+    previous.meters.map((meter) => [meter.key, meterValue(meter)])
+  );
+  return next.meters.every(
+    (meter) => previousValues.get(meter.key) === meterValue(meter)
+  );
+}
+
+export function withoutOlderMeters(
+  previous: UsageSnapshot | null,
+  incoming: UsageSnapshot
+): UsageSnapshot {
+  const newestByKey = new Map(
+    previous?.meters.map((meter) => [meter.key, meter.observedAt ?? previous.updatedAt]) ?? []
+  );
+  return {
+    ...incoming,
+    meters: incoming.meters.filter(
+      (meter) =>
+        (meter.observedAt ?? incoming.updatedAt) >=
+        (newestByKey.get(meter.key) ?? 0)
+    )
+  };
+}
+
+function meterValue(meter: UsageMeter): string {
+  return JSON.stringify({
+    label: meter.label,
+    displayValue: meter.displayValue,
+    modelName: meter.modelName,
+    requestKind: meter.requestKind,
+    remaining: meter.remaining,
+    total: meter.total,
+    used: meter.used,
+    usedPercent: meter.usedPercent,
+    remainingPercent: meter.remainingPercent,
+    resetAt: meter.quotaState === "unknown" ? null : meter.resetAt,
+    resetAfterSeconds: meter.quotaState === "unknown" ? null : meter.resetAfterSeconds,
+    windowSeconds: meter.windowSeconds,
+    source: meter.source,
+    confidence: meter.confidence,
+    rawKind: meter.rawKind,
+    metricKind: meter.metricKind,
+    unit: meter.unit,
+    quotaState: meter.quotaState
+  });
+}

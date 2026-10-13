@@ -1,10 +1,10 @@
 import type {
-  BridgeResponse,
   UsageEndpointFetcher,
   UsageMeter,
   UsageSnapshot,
   UsageSource
 } from "./types";
+import { isChatPassPath } from "./presentation";
 import {
   asArray,
   asBoolean,
@@ -16,14 +16,21 @@ import {
   percentFromRatioOrPercent,
   titleFromKey
 } from "../utils/safeJson";
-import { formatUsageError, usageErrorFromBridge } from "./errors";
 
 const FEATURE_LABELS: Record<string, string> = {
   deep_research: "Deep Research",
   image_gen: "Image Generation",
+  computer_control: "Computer Control",
+  computer_use: "Computer Use",
+  computer_use_preview: "Computer Use",
   file_upload: "File Upload",
-  odyssey: "Odyssey"
+  odyssey: "Odyssey",
+  reason: "Reasoning Quota"
 };
+
+function explicitPercent(value: number | null): number | null {
+  return value === null ? null : Math.max(0, Math.min(100, value));
+}
 
 export function normalizeChatGptConversationInit(
   json: unknown,
@@ -46,28 +53,86 @@ export function normalizeChatGptConversationInit(
     }
     const featureName = getString(record, "feature_name") ?? "unknown_feature";
     const remaining = getNumber(record, "remaining");
-    const resetAfter = record.reset_after;
-    const resetAt =
-      typeof resetAfter === "string" || typeof resetAfter === "number"
-        ? resetAfter
-        : null;
+    const resetAfter = resetAfterValue(record.reset_after);
+    const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
     meters.push({
       key: `limits_progress:${featureName}`,
       label: FEATURE_LABELS[featureName] ?? titleFromKey(featureName),
       remaining,
       resetAt,
+      resetAfterSeconds: resetAfter.resetAfterSeconds,
       source,
-      confidence: remaining !== null && resetAt !== null ? "high" : "medium",
+      metricKind: "quota",
+      unit: "count",
+      quotaState: featureName === "image_gen" ? "unknown" : undefined,
+      confidence: featureName === "image_gen" ? "low" :
+        remaining !== null &&
+        (resetAt !== null || resetAfter.resetAfterSeconds !== null)
+          ? "high"
+          : "medium",
       rawKind: "limits_progress"
     });
   }
 
   const defaultModelSlug = getString(root, "default_model_slug") ?? undefined;
-  const blockedFeatures = asArray(root.blocked_features)
-    .map((item) => (typeof item === "string" ? item : null))
-    .filter((item): item is string => item !== null);
+  const blocked = normalizeBlockedFeatures(root, source);
+  for (const meter of blocked.meters) {
+    const index = meters.findIndex((item) => item.key === meter.key);
+    if (index >= 0) meters[index] = meter; else meters.push(meter);
+  }
 
-  return { meters, defaultModelSlug, blockedFeatures };
+  return { meters, defaultModelSlug, blockedFeatures: blocked.names };
+}
+
+function normalizeBlockedFeatures(
+  root: Record<string, unknown>,
+  source: UsageSource
+): { meters: UsageMeter[]; names: string[] } {
+  const meters: UsageMeter[] = [];
+  const names: string[] = [];
+
+  for (const item of asArray(root.blocked_features)) {
+    if (typeof item === "string") {
+      names.push(item);
+      meters.push({ key: `limits_progress:${item}`, label: FEATURE_LABELS[item] ?? titleFromKey(item), source, confidence: "high", metricKind: "quota", unit: "count", quotaState: "blocked", rawKind: "blocked_features" });
+      continue;
+    }
+
+    const record = asRecord(item);
+    if (!record) {
+      continue;
+    }
+
+    const featureName =
+      getString(record, "name") ??
+      getString(record, "feature_name") ??
+      getString(record, "feature");
+    if (!featureName) {
+      continue;
+    }
+
+    names.push(featureName);
+
+    const resetAfter = resetAfterValue(record.reset_after ?? record.resets_after);
+    const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+    const rawTotal = getNumber(record, "limit");
+    meters.push({
+      key: `limits_progress:${featureName}`,
+      label: FEATURE_LABELS[featureName] ?? titleFromKey(featureName),
+      remaining: getNumber(record, "remaining"),
+      metricKind: "quota",
+      unit: "count",
+      quotaState: "blocked",
+      total: rawTotal !== null && rawTotal > 0 ? rawTotal : null,
+      resetAt,
+      resetAfterSeconds: resetAfter.resetAfterSeconds,
+      source,
+      confidence: resetAt !== null || resetAfter.resetAfterSeconds !== null ? "high" : "medium",
+      rawKind: "blocked_features"
+    });
+  }
+
+  return { meters, names };
 }
 
 function normalizeWindowMeter(args: {
@@ -78,7 +143,7 @@ function normalizeWindowMeter(args: {
   rawKind: string;
   displayAsRemaining?: boolean;
 }): UsageMeter | null {
-  const explicitRemainingPercent = percentFromRatioOrPercent(
+  const explicitRemainingPercent = explicitPercent(
     numberFromKeys(args.record, [
       "remaining_percent",
       "remainingPercent",
@@ -90,26 +155,23 @@ function normalizeWindowMeter(args: {
       "remainingPct"
     ])
   );
-  const rawUsedPercent = percentFromRatioOrPercent(
+  const rawUsedPercent = explicitPercent(
     numberFromKeys(args.record, [
       "used_percent",
       "usedPercent",
       "used_percentage",
       "usedPercentage",
       "percent_used",
-      "percentUsed",
-      "utilization"
+      "percentUsed"
     ])
   );
   const remainingPercent =
     explicitRemainingPercent ??
     (args.displayAsRemaining && rawUsedPercent !== null
-      ? percentFromRatioOrPercent(100 - rawUsedPercent)
+      ? explicitPercent(100 - rawUsedPercent)
       : null);
-  const usedPercent =
-    remainingPercent !== null
-      ? percentFromRatioOrPercent(100 - remainingPercent)
-      : rawUsedPercent;
+  const usedPercent = rawUsedPercent ??
+    (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
   const resetValue = resetValueFromRecord(args.record);
   const windowSeconds = numberFromKeys(args.record, [
     "limit_window_seconds",
@@ -138,6 +200,8 @@ function normalizeWindowMeter(args: {
     windowSeconds,
     source: args.source,
     confidence: usedPercent !== null && resetValue !== null ? "high" : "medium",
+    metricKind: "quota",
+    unit: "percent",
     rawKind: args.rawKind
   };
 }
@@ -157,7 +221,7 @@ export function normalizeChatGptWhamUsage(
     if (primary) {
       const meter = normalizeWindowMeter({
         key: "wham:primary_window",
-        label: "Primary window",
+        label: codexWindowLabel(primary, "Primary window"),
         record: primary,
         source,
         rawKind: "rate_limit.primary_window",
@@ -171,7 +235,7 @@ export function normalizeChatGptWhamUsage(
     if (secondary) {
       const meter = normalizeWindowMeter({
         key: "wham:secondary_window",
-        label: "Weekly window",
+        label: codexWindowLabel(secondary, "Secondary window"),
         record: secondary,
         source,
         rawKind: "rate_limit.secondary_window",
@@ -212,11 +276,18 @@ export function normalizeChatGptWhamUsage(
         remaining: balance,
         source,
         confidence: balance !== null || unlimited === true ? "medium" : "low",
+        metricKind: "balance",
+        unit: "credits",
         rawKind: "credits"
       });
     }
   }
 
+  const resets = getRecord(root, "rate_limit_reset_credits");
+  const available = resets ? getNumber(resets, "available_count") : null;
+  if (available !== null && available >= 0 && Number.isInteger(available)) {
+    meters.push({ key: "wham:resetCredits", label: "Available resets", remaining: available, source, confidence: "high", metricKind: "balance", unit: "count", rawKind: "chatgpt.reset_credits" });
+  }
   meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
   meters.push(...normalizeWhamCodexNamedUsage(root, source));
 
@@ -238,13 +309,18 @@ function normalizeAdditionalWhamUsageWindows(
     includeRecord: (path, record) =>
       !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
   })
-    .map((candidate) =>
-      normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: "wham",
-        rawKind: "chatgpt.usage.window",
-        displayAsRemaining: true
-      })
-    )
+    .map((candidate) => {
+      const additionalLabel = codexAdditionalRateLimitLabel(
+        candidate.path,
+        candidate.record
+      );
+      return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
+        keyPrefix: additionalLabel ? "codex" : "wham",
+        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
+        displayAsRemaining: true,
+        label: additionalLabel ?? undefined
+      });
+    })
     .filter((meter): meter is UsageMeter => meter !== null);
 }
 
@@ -293,6 +369,7 @@ function collectCodexNamedSubtrees(
 
     for (const [key, value] of Object.entries(record)) {
       const path = `${item.path}.${key}`;
+      if (isChatPassPath(path)) continue;
       const childRecord = asRecord(value);
       if (childRecord) {
         if (isCodexPath(path)) {
@@ -341,16 +418,60 @@ function normalizeTasksRateLimit(
   return meters;
 }
 
-export function normalizeChatGptCodexSettingsUsage(
+export function normalizeChatGptAccountsCheck(
   json: unknown,
   source: UsageSource = "api"
 ): UsageMeter[] {
   const root = asRecord(json);
-  if (!root) {
+  const accounts = root ? getRecord(root, "accounts") : null;
+  if (!accounts) {
     return [];
   }
 
-  return normalizeCodexUsageRecordTree(root, "codex", source);
+  const account = accountCheckRecord(accounts);
+  const entitlement = account ? getRecord(account, "entitlement") : null;
+  if (!entitlement) {
+    return [];
+  }
+
+  const expiresAt = getString(entitlement, "expires_at");
+  const renewsAt = getString(entitlement, "renews_at");
+  const hasActiveSubscription = asBoolean(entitlement.has_active_subscription);
+  const subscriptionPlan = getString(entitlement, "subscription_plan");
+  const resetAt = expiresAt ?? renewsAt;
+  if (!resetAt && hasActiveSubscription === null && !subscriptionPlan) {
+    return [];
+  }
+
+  return [
+    {
+      key: "chatgpt:subscription",
+      label: "ChatGPT subscription",
+      requestKind: expiresAt ? "expires" : renewsAt ? "renews" : undefined,
+      modelName: subscriptionPlan ?? undefined,
+      resetAt,
+      source,
+      confidence: resetAt ? "high" : "medium",
+      metricKind: "subscription",
+      rawKind: "chatgpt.subscription"
+    }
+  ];
+}
+
+function accountCheckRecord(
+  accounts: Record<string, unknown>
+): Record<string, unknown> | null {
+  const defaultAccount = getRecord(accounts, "default");
+  if (defaultAccount) {
+    return defaultAccount;
+  }
+  for (const value of Object.values(accounts)) {
+    const record = asRecord(value);
+    if (record) {
+      return record;
+    }
+  }
+  return null;
 }
 
 function normalizeCodexUsageRecordTree(
@@ -453,8 +574,7 @@ function isGeneralChatGptUsageLike(
       "used_percentage",
       "usedPercentage",
       "percent_used",
-      "percentUsed",
-      "utilization"
+      "percentUsed"
     ]) !== null ||
     resetValueFromRecord(record) !== null ||
     numberFromKeys(record, [
@@ -491,6 +611,7 @@ function normalizeGenericUsageObject(
     keyPrefix: string;
     rawKind: string;
     displayAsRemaining: boolean;
+    label?: string;
   }
 ): UsageMeter | null {
   const remaining = numberFromKeys(record, [
@@ -508,7 +629,7 @@ function normalizeGenericUsageObject(
   const used =
     numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ??
     (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
-  const explicitRemainingPercent = percentFromRatioOrPercent(
+  const explicitRemainingPercent = explicitPercent(
     numberFromKeys(record, [
       "remaining_percent",
       "remainingPercent",
@@ -520,26 +641,23 @@ function normalizeGenericUsageObject(
       "remainingPct"
     ])
   );
-  const rawUsedPercent = percentFromRatioOrPercent(
+  const rawUsedPercent = explicitPercent(
     numberFromKeys(record, [
       "used_percent",
       "usedPercent",
       "used_percentage",
       "usedPercentage",
       "percent_used",
-      "percentUsed",
-      "utilization"
+      "percentUsed"
     ])
   );
   const remainingPercent =
     explicitRemainingPercent ??
     (options.displayAsRemaining && rawUsedPercent !== null
-      ? percentFromRatioOrPercent(100 - rawUsedPercent)
+      ? explicitPercent(100 - rawUsedPercent)
       : null);
-  const usedPercent =
-    remainingPercent !== null
-      ? percentFromRatioOrPercent(100 - remainingPercent)
-      : rawUsedPercent;
+  const usedPercent = rawUsedPercent ??
+    (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
   const resetAt = resetValueFromRecord(record);
   const resetAfterSeconds = numberFromKeys(record, [
     "reset_after",
@@ -554,7 +672,7 @@ function normalizeGenericUsageObject(
     "window_size_seconds",
     "windowSizeSeconds"
   ]);
-  const label = usageLabel(record, path);
+  const label = options.label ?? usageLabel(record, path);
 
   if (
     remaining === null &&
@@ -600,6 +718,45 @@ function normalizeGenericUsageObject(
   };
 }
 
+function codexWindowLabel(
+  record: Record<string, unknown>,
+  fallback: string
+): string {
+  const duration = numberFromKeys(record, [
+    "limit_window_seconds",
+    "limitWindowSeconds",
+    "window_seconds",
+    "windowSeconds"
+  ]);
+  if (duration === 18_000) {
+    return "5-hour window";
+  }
+  if (duration === 604_800) {
+    return "Weekly window";
+  }
+  return fallback;
+}
+
+function codexAdditionalRateLimitLabel(
+  path: string,
+  record: Record<string, unknown>
+): string | null {
+  const normalized = path.toLowerCase();
+  if (!normalized.includes("additional_rate_limits")) {
+    return null;
+  }
+  const name = getString(record, "model_name") ??
+    getString(record, "model_slug") ??
+    "Additional";
+  if (normalized.endsWith(".primary_window")) {
+    return `${name} Primary window`;
+  }
+  if (normalized.endsWith(".secondary_window")) {
+    return `${name} Weekly window`;
+  }
+  return `${name} usage limit`;
+}
+
 function collectUsageCandidates(
   root: Record<string, unknown>,
   rootPath: string,
@@ -618,6 +775,7 @@ function collectUsageCandidates(
     if (!item || item.depth > options.maxDepth) {
       continue;
     }
+    if (isChatPassPath(item.path)) continue;
     const record = asRecord(item.value);
     if (!record) {
       continue;
@@ -728,6 +886,30 @@ function resetValueFromRecord(record: Record<string, unknown>): string | number 
   ]);
 }
 
+function resetAfterValue(value: unknown): {
+  resetAt: string | number | null;
+  resetAfterSeconds: number | null;
+} {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return { resetAt: null, resetAfterSeconds: value };
+  }
+  if (typeof value !== "string") {
+    return { resetAt: null, resetAfterSeconds: null };
+  }
+
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return { resetAt: null, resetAfterSeconds: null };
+  }
+
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    return { resetAt: null, resetAfterSeconds: numeric };
+  }
+
+  return { resetAt: trimmed, resetAfterSeconds: null };
+}
+
 function dedupeMeters(meters: UsageMeter[]): UsageMeter[] {
   const seen = new Set<string>();
   const result: UsageMeter[] = [];
@@ -767,81 +949,37 @@ function stringOrNumberFromKeys(
   return null;
 }
 
-function responseFailure(response: BridgeResponse): string {
-  return formatUsageError(
-    usageErrorFromBridge(response),
-    response.endpointKey ?? "chatgpt"
-  );
+export const CHATGPT_USAGE_ENDPOINTS = ["chatgpt:conversationInit", "chatgpt:whamUsage", "chatgpt:libraryStorage"] as const;
+
+export function normalizeChatGptLibraryStorage(json: unknown, source: UsageSource = "api"): UsageMeter[] {
+  const root = asRecord(json);
+  if (!root) return [];
+  const used = getNumber(root, "used_bytes"), total = getNumber(root, "allowed_bytes"), remaining = getNumber(root, "remaining_bytes");
+  if (used === null || total === null || remaining === null || used < 0 || total <= 0 || remaining < 0) return [];
+  return [{ key: "chatgpt:libraryStorage", label: "Library storage", used, total, remaining,
+    usedPercent: Math.min(100, used / total * 100), source, confidence: "high", metricKind: "quota", unit: "bytes",
+    quotaState: asBoolean(root.is_over_limit) === true || remaining === 0 ? "blocked" : undefined,
+    rawKind: "chatgpt.library_storage" }];
 }
 
-export async function fetchChatGptUsage(
-  fetcher: UsageEndpointFetcher
-): Promise<UsageSnapshot> {
-  const meters: UsageMeter[] = [];
-  const requiredFailures: string[] = [];
-  const optionalFailures: string[] = [];
-  let defaultModelSlug: string | undefined;
-  let blockedFeatures: string[] = [];
+export function normalizeChatGptEndpoint(key: string, json: unknown, source: UsageSource = "api"): UsageMeter[] {
+  if (key === "chatgpt:conversationInit") return normalizeChatGptConversationInit(json, source).meters;
+  if (key === "chatgpt:libraryStorage") return normalizeChatGptLibraryStorage(json, source);
+  if (key === "chatgpt:accountsCheck") return normalizeChatGptAccountsCheck(json, source);
+  return normalizeChatGptWhamUsage(json, source);
+}
 
-  const conversation = await fetcher("chatgpt:conversationInit");
-  if (conversation.ok) {
-    const normalized = normalizeChatGptConversationInit(conversation.json, "api");
-    meters.push(...normalized.meters);
-    defaultModelSlug = normalized.defaultModelSlug;
-    blockedFeatures = normalized.blockedFeatures;
-  } else {
-    requiredFailures.push(responseFailure(conversation));
-  }
-
-  const wham = await fetcher("chatgpt:whamUsage");
-  if (wham.ok) {
-    meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
-  } else {
-    optionalFailures.push(responseFailure(wham));
-  }
-
-  const tasks = await fetcher("chatgpt:whamTasksRateLimit");
-  if (tasks.ok) {
-    meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
-  } else {
-    optionalFailures.push(responseFailure(tasks));
-  }
-
-  const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
-  if (codexUsage.ok) {
-    meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
-  } else {
-    optionalFailures.push(responseFailure(codexUsage));
-  }
-
-  const hasBlocking = blockedFeatures.length > 0;
-  const hasOptionalFailures = optionalFailures.length > 0;
-  const firstFailure = requiredFailures[0] ?? optionalFailures[0];
-  return {
-    platform: "chatgpt",
-    meters,
-    source: meters.length > 0 ? "api" : "unknown",
-    updatedAt: Date.now(),
-    status:
-      meters.length > 0
-        ? hasOptionalFailures || hasBlocking
-          ? "partial"
-          : "ok"
-        : firstFailure
-          ? "error"
-          : "unknown",
-    errorMessage: hasBlocking
-      ? "部分功能被限制"
-      : meters.length === 0 && firstFailure
-        ? firstFailure
-        : undefined,
-    debug: {
-      endpoint: "chatgpt:conversationInit,chatgpt:whamUsage,chatgpt:codexSettingsUsage",
-      parser: defaultModelSlug
-        ? `chatgpt.default_model=${defaultModelSlug}`
-        : "chatgpt"
-    }
-  };
+export async function fetchChatGptUsage(fetcher: UsageEndpointFetcher): Promise<UsageSnapshot> {
+  const results = await Promise.all(CHATGPT_USAGE_ENDPOINTS.map(async (key) => {
+    const response = await fetcher(key);
+    return { response, meters: response.ok ? normalizeChatGptEndpoint(key, response.json) : [] };
+  }));
+  const meters = results.flatMap((item) => item.meters);
+  const failed = results.some((item) => !item.response.ok);
+  return { platform: "chatgpt", meters: dedupeMeters(meters), source: meters.length ? "api" : "unknown",
+    updatedAt: Date.now(), status: meters.length ? failed || meters.some((m) => m.quotaState === "blocked") ? "partial" : "ok" : "error",
+    errorMessage: failed ? "部分查询失败，保留上次数据" : undefined,
+    debug: { endpoint: CHATGPT_USAGE_ENDPOINTS.join(","), parser: "chatgpt" } };
 }
 
 export function normalizeChatGptIntercepted(
@@ -852,14 +990,20 @@ export function normalizeChatGptIntercepted(
   if (path === "/backend-api/conversation/init") {
     return normalizeChatGptConversationInit(json, "intercepted").meters;
   }
+  if (path === "/backend-api/files/library/storage/usage") {
+    return normalizeChatGptLibraryStorage(json, "intercepted");
+  }
   if (path === "/backend-api/wham/usage") {
+    return normalizeChatGptWhamUsage(json, "intercepted");
+  }
+  if (path === "/backend-api/codex/usage") {
     return normalizeChatGptWhamUsage(json, "intercepted");
   }
   if (path === "/backend-api/wham/tasks/rate_limit") {
     return normalizeTasksRateLimit(json, "intercepted");
   }
-  if (path === "/codex/settings/usage") {
-    return normalizeChatGptCodexSettingsUsage(json, "intercepted");
+  if (/^\/backend-api\/accounts\/check\//.test(path)) {
+    return normalizeChatGptAccountsCheck(json, "intercepted");
   }
   return [];
 }

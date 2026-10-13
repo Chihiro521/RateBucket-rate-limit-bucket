@@ -1,5 +1,35 @@
 (function() {
   "use strict";
+  const STALE_METER_MS = 2 * 6e4;
+  function isChatPassPath(path) {
+    return path.split(/[.:]/).some((part) => part.replaceAll("_", "").toLowerCase().startsWith("chatpass"));
+  }
+  function hasMeaningfulValue(meter) {
+    return Boolean(meter.displayValue?.trim()) || meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription" || [meter.remaining, meter.total, meter.used, meter.remainingPercent, meter.usedPercent].some((value) => typeof value === "number" && Number.isFinite(value)) || meter.label === "Credits (unlimited)";
+  }
+  function isAlertMeter(meter) {
+    if (meter.metricKind === "balance" || meter.metricKind === "subscription" || meter.rawKind === "credits" || meter.rawKind === "chatgpt.subscription" || meter.source === "estimate") {
+      return false;
+    }
+    if (meter.quotaState === "blocked") return true;
+    if (meter.quotaState === "unknown") return false;
+    return typeof meter.remaining === "number" && meter.remaining <= 0 || typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5 || typeof meter.usedPercent === "number" && meter.usedPercent >= 95;
+  }
+  function meterProgress(meter) {
+    if (meter.metricKind === "balance" || meter.metricKind === "subscription" || meter.rawKind === "credits" || meter.rawKind === "chatgpt.subscription") return null;
+    const clamp2 = (value) => Math.max(0, Math.min(100, value));
+    if (typeof meter.remainingPercent === "number") return clamp2(meter.remainingPercent);
+    if (typeof meter.usedPercent === "number") return clamp2(meter.usedPercent);
+    if (typeof meter.total === "number" && meter.total > 0) {
+      if (typeof meter.used === "number") return clamp2(meter.used / meter.total * 100);
+      if (typeof meter.remaining === "number") return clamp2((meter.total - meter.remaining) / meter.total * 100);
+    }
+    return null;
+  }
+  function chatGptPrimaryMeter(meters) {
+    const quotas = meters.filter((meter) => hasMeaningfulValue(meter) && !isChatPassPath(meter.key) && meter.metricKind !== "balance" && meter.metricKind !== "subscription" && meter.unit !== "bytes" && meter.rawKind !== "credits" && meter.rawKind !== "chatgpt.subscription" && meter.source !== "estimate");
+    return quotas.find((meter) => meter.quotaState === "blocked") ?? quotas.find((meter) => meter.key === "wham:primary_window") ?? quotas.find((meter) => meter.key === "wham:secondary_window") ?? quotas.find((meter) => meter.quotaState !== "unknown") ?? quotas[0];
+  }
   function isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
   }
@@ -25,17 +55,17 @@
   function asBoolean(value) {
     return typeof value === "boolean" ? value : null;
   }
-  function getRecord(record, key) {
-    return asRecord(record[key]);
+  function getRecord(record, key2) {
+    return asRecord(record[key2]);
   }
-  function getArray(record, key) {
-    return asArray(record[key]);
+  function getArray(record, key2) {
+    return asArray(record[key2]);
   }
-  function getNumber(record, key) {
-    return asNumber(record[key]);
+  function getNumber(record, key2) {
+    return asNumber(record[key2]);
   }
-  function getString(record, key) {
-    return asString(record[key]);
+  function getString(record, key2) {
+    return asString(record[key2]);
   }
   function percentFromRatioOrPercent(value) {
     if (value === null) {
@@ -44,8 +74,1104 @@
     const percent = value >= 0 && value <= 1 ? value * 100 : value;
     return Math.max(0, Math.min(100, percent));
   }
-  function titleFromKey(key) {
-    return key.replace(/[_-]+/g, " ").trim().replace(/\w\S*/g, (word) => word[0].toUpperCase() + word.slice(1));
+  function titleFromKey(key2) {
+    return key2.replace(/[_-]+/g, " ").trim().replace(/\w\S*/g, (word) => word[0].toUpperCase() + word.slice(1));
+  }
+  const FEATURE_LABELS$1 = {
+    deep_research: "Deep Research",
+    image_gen: "Image Generation",
+    computer_control: "Computer Control",
+    computer_use: "Computer Use",
+    computer_use_preview: "Computer Use",
+    file_upload: "File Upload",
+    odyssey: "Odyssey",
+    reason: "Reasoning Quota"
+  };
+  function explicitPercent(value) {
+    return value === null ? null : Math.max(0, Math.min(100, value));
+  }
+  function normalizeChatGptConversationInit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return { meters: [], blockedFeatures: [] };
+    }
+    const meters = [];
+    for (const item of getArray(root, "limits_progress")) {
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const featureName = getString(record, "feature_name") ?? "unknown_feature";
+      const remaining = getNumber(record, "remaining");
+      const resetAfter = resetAfterValue(record.reset_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+      meters.push({
+        key: `limits_progress:${featureName}`,
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
+        remaining,
+        resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
+        source,
+        metricKind: "quota",
+        unit: "count",
+        quotaState: featureName === "image_gen" ? "unknown" : void 0,
+        confidence: featureName === "image_gen" ? "low" : remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
+        rawKind: "limits_progress"
+      });
+    }
+    const defaultModelSlug = getString(root, "default_model_slug") ?? void 0;
+    const blocked = normalizeBlockedFeatures(root, source);
+    for (const meter of blocked.meters) {
+      const index = meters.findIndex((item) => item.key === meter.key);
+      if (index >= 0) meters[index] = meter;
+      else meters.push(meter);
+    }
+    return { meters, defaultModelSlug, blockedFeatures: blocked.names };
+  }
+  function normalizeBlockedFeatures(root, source) {
+    const meters = [];
+    const names = [];
+    for (const item of asArray(root.blocked_features)) {
+      if (typeof item === "string") {
+        names.push(item);
+        meters.push({ key: `limits_progress:${item}`, label: FEATURE_LABELS$1[item] ?? titleFromKey(item), source, confidence: "high", metricKind: "quota", unit: "count", quotaState: "blocked", rawKind: "blocked_features" });
+        continue;
+      }
+      const record = asRecord(item);
+      if (!record) {
+        continue;
+      }
+      const featureName = getString(record, "name") ?? getString(record, "feature_name") ?? getString(record, "feature");
+      if (!featureName) {
+        continue;
+      }
+      names.push(featureName);
+      const resetAfter = resetAfterValue(record.reset_after ?? record.resets_after);
+      const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
+      const rawTotal = getNumber(record, "limit");
+      meters.push({
+        key: `limits_progress:${featureName}`,
+        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
+        remaining: getNumber(record, "remaining"),
+        metricKind: "quota",
+        unit: "count",
+        quotaState: "blocked",
+        total: rawTotal !== null && rawTotal > 0 ? rawTotal : null,
+        resetAt,
+        resetAfterSeconds: resetAfter.resetAfterSeconds,
+        source,
+        confidence: resetAt !== null || resetAfter.resetAfterSeconds !== null ? "high" : "medium",
+        rawKind: "blocked_features"
+      });
+    }
+    return { meters, names };
+  }
+  function normalizeWindowMeter(args) {
+    const explicitRemainingPercent = explicitPercent(
+      numberFromKeys(args.record, [
+        "remaining_percent",
+        "remainingPercent",
+        "percent_remaining",
+        "percentRemaining",
+        "remaining_percentage",
+        "remainingPercentage",
+        "remaining_pct",
+        "remainingPct"
+      ])
+    );
+    const rawUsedPercent = explicitPercent(
+      numberFromKeys(args.record, [
+        "used_percent",
+        "usedPercent",
+        "used_percentage",
+        "usedPercentage",
+        "percent_used",
+        "percentUsed"
+      ])
+    );
+    const remainingPercent = explicitRemainingPercent ?? (args.displayAsRemaining && rawUsedPercent !== null ? explicitPercent(100 - rawUsedPercent) : null);
+    const usedPercent = rawUsedPercent ?? (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
+    const resetValue = resetValueFromRecord(args.record);
+    const windowSeconds = numberFromKeys(args.record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]);
+    if (usedPercent === null && remainingPercent === null && resetValue === null && windowSeconds === null) {
+      return null;
+    }
+    return {
+      key: args.key,
+      label: args.label,
+      usedPercent,
+      remainingPercent,
+      resetAt: resetValue,
+      windowSeconds,
+      source: args.source,
+      confidence: usedPercent !== null && resetValue !== null ? "high" : "medium",
+      metricKind: "quota",
+      unit: "percent",
+      rawKind: args.rawKind
+    };
+  }
+  function normalizeChatGptWhamUsage(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = [];
+    const rateLimit = getRecord(root, "rate_limit");
+    if (rateLimit) {
+      const primary = getRecord(rateLimit, "primary_window");
+      if (primary) {
+        const meter = normalizeWindowMeter({
+          key: "wham:primary_window",
+          label: codexWindowLabel(primary, "Primary window"),
+          record: primary,
+          source,
+          rawKind: "rate_limit.primary_window",
+          displayAsRemaining: true
+        });
+        if (meter) {
+          meters.push(meter);
+        }
+      }
+      const secondary = getRecord(rateLimit, "secondary_window");
+      if (secondary) {
+        const meter = normalizeWindowMeter({
+          key: "wham:secondary_window",
+          label: codexWindowLabel(secondary, "Secondary window"),
+          record: secondary,
+          source,
+          rawKind: "rate_limit.secondary_window",
+          displayAsRemaining: true
+        });
+        if (meter) {
+          meters.push(meter);
+        }
+      }
+    }
+    const codeReviewRateLimit = getRecord(root, "code_review_rate_limit");
+    const codeReviewPrimary = codeReviewRateLimit ? getRecord(codeReviewRateLimit, "primary_window") : null;
+    if (codeReviewPrimary) {
+      const meter = normalizeWindowMeter({
+        key: "wham:code_review",
+        label: "Code Review",
+        record: codeReviewPrimary,
+        source,
+        rawKind: "code_review_rate_limit.primary_window",
+        displayAsRemaining: true
+      });
+      if (meter) {
+        meters.push(meter);
+      }
+    }
+    const credits = getRecord(root, "credits");
+    if (credits) {
+      const unlimited = asBoolean(credits.unlimited);
+      const balance = getNumber(credits, "balance");
+      if (unlimited !== null || balance !== null || asBoolean(credits.has_credits) !== null) {
+        meters.push({
+          key: "wham:credits",
+          label: unlimited ? "Credits (unlimited)" : "Credits",
+          remaining: balance,
+          source,
+          confidence: balance !== null || unlimited === true ? "medium" : "low",
+          metricKind: "balance",
+          unit: "credits",
+          rawKind: "credits"
+        });
+      }
+    }
+    const resets = getRecord(root, "rate_limit_reset_credits");
+    const available = resets ? getNumber(resets, "available_count") : null;
+    if (available !== null && available >= 0 && Number.isInteger(available)) {
+      meters.push({ key: "wham:resetCredits", label: "Available resets", remaining: available, source, confidence: "high", metricKind: "balance", unit: "count", rawKind: "chatgpt.reset_credits" });
+    }
+    meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
+    meters.push(...normalizeWhamCodexNamedUsage(root, source));
+    return dedupeMeters(meters);
+  }
+  function normalizeAdditionalWhamUsageWindows(root, source) {
+    const knownPaths = /* @__PURE__ */ new Set([
+      "root.rate_limit.primary_window",
+      "root.rate_limit.secondary_window",
+      "root.code_review_rate_limit.primary_window",
+      "root.credits"
+    ]);
+    return collectUsageCandidates(root, "root", {
+      maxDepth: 7,
+      includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
+    }).map((candidate) => {
+      const additionalLabel = codexAdditionalRateLimitLabel(
+        candidate.path,
+        candidate.record
+      );
+      return normalizeGenericUsageObject(candidate.path, candidate.record, source, {
+        keyPrefix: additionalLabel ? "codex" : "wham",
+        rawKind: additionalLabel ? "codex.additional_rate_limit" : "chatgpt.usage.window",
+        displayAsRemaining: true,
+        label: additionalLabel ?? void 0
+      });
+    }).filter((meter) => meter !== null);
+  }
+  function normalizeWhamCodexNamedUsage(root, source) {
+    const codexRoots = collectCodexNamedSubtrees(root);
+    const meters = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const item of codexRoots) {
+      for (const meter of normalizeCodexUsageRecordTree(
+        item.record,
+        `wham.${item.path}`,
+        source
+      )) {
+        if (seen.has(meter.key)) {
+          continue;
+        }
+        seen.add(meter.key);
+        meters.push(meter);
+      }
+    }
+    return meters;
+  }
+  function collectCodexNamedSubtrees(root) {
+    const queue = [
+      { path: "root", value: root, depth: 0 }
+    ];
+    const matches = [];
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item || item.depth > 4) {
+        continue;
+      }
+      const record = asRecord(item.value);
+      if (!record) {
+        continue;
+      }
+      for (const [key2, value] of Object.entries(record)) {
+        const path = `${item.path}.${key2}`;
+        if (isChatPassPath(path)) continue;
+        const childRecord = asRecord(value);
+        if (childRecord) {
+          if (isCodexPath(path)) {
+            matches.push({ path, record: childRecord });
+          }
+          queue.push({ path, value, depth: item.depth + 1 });
+        } else if (Array.isArray(value)) {
+          value.forEach((entry, index) => {
+            queue.push({
+              path: `${path}.${index}`,
+              value: entry,
+              depth: item.depth + 1
+            });
+          });
+        }
+      }
+    }
+    return matches;
+  }
+  function isCodexPath(path) {
+    const normalized = path.toLowerCase();
+    return normalized.includes("codex") && !normalized.includes("code_review");
+  }
+  function normalizeTasksRateLimit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = [];
+    const direct = normalizeWindowMeter({
+      key: "tasks:rate_limit",
+      label: "Tasks rate limit",
+      record: root,
+      source,
+      rawKind: "tasks.rate_limit"
+    });
+    if (direct) {
+      meters.push(direct);
+    }
+    return meters;
+  }
+  function normalizeChatGptAccountsCheck(json, source = "api") {
+    const root = asRecord(json);
+    const accounts = root ? getRecord(root, "accounts") : null;
+    if (!accounts) {
+      return [];
+    }
+    const account = accountCheckRecord(accounts);
+    const entitlement = account ? getRecord(account, "entitlement") : null;
+    if (!entitlement) {
+      return [];
+    }
+    const expiresAt = getString(entitlement, "expires_at");
+    const renewsAt = getString(entitlement, "renews_at");
+    const hasActiveSubscription = asBoolean(entitlement.has_active_subscription);
+    const subscriptionPlan = getString(entitlement, "subscription_plan");
+    const resetAt = expiresAt ?? renewsAt;
+    if (!resetAt && hasActiveSubscription === null && !subscriptionPlan) {
+      return [];
+    }
+    return [
+      {
+        key: "chatgpt:subscription",
+        label: "ChatGPT subscription",
+        requestKind: expiresAt ? "expires" : renewsAt ? "renews" : void 0,
+        modelName: subscriptionPlan ?? void 0,
+        resetAt,
+        source,
+        confidence: resetAt ? "high" : "medium",
+        metricKind: "subscription",
+        rawKind: "chatgpt.subscription"
+      }
+    ];
+  }
+  function accountCheckRecord(accounts) {
+    const defaultAccount = getRecord(accounts, "default");
+    if (defaultAccount) {
+      return defaultAccount;
+    }
+    for (const value of Object.values(accounts)) {
+      const record = asRecord(value);
+      if (record) {
+        return record;
+      }
+    }
+    return null;
+  }
+  function normalizeCodexUsageRecordTree(root, rootPath, source) {
+    const candidates = collectCodexUsageCandidates(root, rootPath);
+    const meters = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const candidate of candidates) {
+      const meter = normalizeCodexUsageObject(candidate.path, candidate.record, source);
+      if (!meter || seen.has(meter.key)) {
+        continue;
+      }
+      seen.add(meter.key);
+      meters.push(meter);
+    }
+    return meters;
+  }
+  function collectCodexUsageCandidates(root, rootPath) {
+    return collectUsageCandidates(root, rootPath, {
+      maxDepth: 7,
+      includeRecord: (_path, record) => isCodexUsageLike(record)
+    });
+  }
+  function isCodexUsageLike(record) {
+    return numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null || numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !== null || numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null || numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null || numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage"
+    ]) !== null || numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null || stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null;
+  }
+  function isGeneralChatGptUsageLike(path, record) {
+    if (isCodexPath(path)) {
+      return false;
+    }
+    if (!isCodexUsageLike(record)) {
+      return false;
+    }
+    const normalizedPath = path.toLowerCase();
+    const label = usageLabel(record, path).toLowerCase();
+    const hasUsageNameSignal = normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
+    const hasCountQuotaSignal = numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null && numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]) !== null;
+    const hasCurrentWindowSignal = hasCountQuotaSignal || numberFromKeys(record, [
+      "remaining_percent",
+      "remainingPercent",
+      "percent_remaining",
+      "percentRemaining",
+      "remaining_percentage",
+      "remainingPercentage",
+      "remaining_pct",
+      "remainingPct",
+      "used_percent",
+      "usedPercent",
+      "used_percentage",
+      "usedPercentage",
+      "percent_used",
+      "percentUsed"
+    ]) !== null || resetValueFromRecord(record) !== null || numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds",
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]) !== null;
+    return hasUsageNameSignal && hasCurrentWindowSignal;
+  }
+  function normalizeCodexUsageObject(path, record, source) {
+    return normalizeGenericUsageObject(path, record, source, {
+      keyPrefix: "codex",
+      rawKind: "codex.settings.usage",
+      displayAsRemaining: true
+    });
+  }
+  function normalizeGenericUsageObject(path, record, source, options) {
+    const remaining = numberFromKeys(record, [
+      "remaining",
+      "remaining_credits",
+      "remainingCredits"
+    ]);
+    const total = numberFromKeys(record, [
+      "total",
+      "limit",
+      "quota",
+      "total_credits",
+      "totalCredits"
+    ]);
+    const used = numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ?? (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
+    const explicitRemainingPercent = explicitPercent(
+      numberFromKeys(record, [
+        "remaining_percent",
+        "remainingPercent",
+        "percent_remaining",
+        "percentRemaining",
+        "remaining_percentage",
+        "remainingPercentage",
+        "remaining_pct",
+        "remainingPct"
+      ])
+    );
+    const rawUsedPercent = explicitPercent(
+      numberFromKeys(record, [
+        "used_percent",
+        "usedPercent",
+        "used_percentage",
+        "usedPercentage",
+        "percent_used",
+        "percentUsed"
+      ])
+    );
+    const remainingPercent = explicitRemainingPercent ?? (options.displayAsRemaining && rawUsedPercent !== null ? explicitPercent(100 - rawUsedPercent) : null);
+    const usedPercent = rawUsedPercent ?? (remainingPercent !== null ? explicitPercent(100 - remainingPercent) : null);
+    const resetAt = resetValueFromRecord(record);
+    const resetAfterSeconds = numberFromKeys(record, [
+      "reset_after",
+      "resetAfter",
+      "reset_after_seconds"
+    ]);
+    const windowSeconds = numberFromKeys(record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds",
+      "window_size_seconds",
+      "windowSizeSeconds"
+    ]);
+    const label = options.label ?? usageLabel(record, path);
+    if (remaining === null && total === null && used === null && usedPercent === null && remainingPercent === null && resetAt === null && resetAfterSeconds === null && windowSeconds === null) {
+      return null;
+    }
+    return {
+      key: `${options.keyPrefix}:${path}`,
+      label,
+      remaining,
+      total,
+      used,
+      usedPercent: usedPercent ?? (used !== null && total !== null && total > 0 ? percentFromRatioOrPercent(used / total) : null),
+      remainingPercent: remainingPercent ?? (remaining !== null && total !== null && total > 0 ? percentFromRatioOrPercent(remaining / total) : null),
+      resetAt,
+      resetAfterSeconds,
+      windowSeconds,
+      source,
+      confidence: remaining !== null || total !== null || usedPercent !== null || remainingPercent !== null ? "medium" : "low",
+      rawKind: options.rawKind
+    };
+  }
+  function codexWindowLabel(record, fallback) {
+    const duration = numberFromKeys(record, [
+      "limit_window_seconds",
+      "limitWindowSeconds",
+      "window_seconds",
+      "windowSeconds"
+    ]);
+    if (duration === 18e3) {
+      return "5-hour window";
+    }
+    if (duration === 604800) {
+      return "Weekly window";
+    }
+    return fallback;
+  }
+  function codexAdditionalRateLimitLabel(path, record) {
+    const normalized = path.toLowerCase();
+    if (!normalized.includes("additional_rate_limits")) {
+      return null;
+    }
+    const name = getString(record, "model_name") ?? getString(record, "model_slug") ?? "Additional";
+    if (normalized.endsWith(".primary_window")) {
+      return `${name} Primary window`;
+    }
+    if (normalized.endsWith(".secondary_window")) {
+      return `${name} Weekly window`;
+    }
+    return `${name} usage limit`;
+  }
+  function collectUsageCandidates(root, rootPath, options) {
+    const queue = [
+      { path: rootPath, value: root, depth: 0 }
+    ];
+    const candidates = [];
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item || item.depth > options.maxDepth) {
+        continue;
+      }
+      if (isChatPassPath(item.path)) continue;
+      const record = asRecord(item.value);
+      if (!record) {
+        continue;
+      }
+      if (options.includeRecord(item.path, record)) {
+        candidates.push({ path: item.path, record });
+      }
+      for (const [key2, value] of Object.entries(record)) {
+        if (Array.isArray(value)) {
+          value.forEach((entry, index) => {
+            queue.push({
+              path: `${item.path}.${key2}.${index}`,
+              value: entry,
+              depth: item.depth + 1
+            });
+          });
+        } else if (asRecord(value)) {
+          queue.push({
+            path: `${item.path}.${key2}`,
+            value,
+            depth: item.depth + 1
+          });
+        }
+      }
+    }
+    return candidates;
+  }
+  function usageLabel(record, path) {
+    const direct = getString(record, "label") ?? getString(record, "title") ?? getString(record, "name") ?? getString(record, "display_name") ?? getString(record, "displayName") ?? getString(record, "feature_name") ?? getString(record, "bucket_name") ?? getString(record, "bucketName") ?? getString(record, "limit_name") ?? getString(record, "limitName");
+    if (direct) {
+      const titled = displayUsageLabel(direct);
+      if (path.toLowerCase().includes("codex") && isSimpleUsageKey(direct) && !/codex|gpt/i.test(titled)) {
+        return `Codex ${titled}`;
+      }
+      return titled;
+    }
+    const model = getString(record, "model") ?? getString(record, "model_name") ?? getString(record, "modelName") ?? getString(record, "model_slug") ?? getString(record, "modelSlug");
+    const windowName = getString(record, "window") ?? getString(record, "window_name") ?? getString(record, "windowName") ?? getString(record, "period") ?? getString(record, "period_name") ?? getString(record, "periodName");
+    if (model && windowName) {
+      return `${model} ${titleFromKey(windowName)} 使用限额`;
+    }
+    if (model) {
+      return `${model} 使用限额`;
+    }
+    const normalizedPath = path.toLowerCase();
+    if (normalizedPath === "codex" || normalizedPath.includes("codex_usage")) {
+      return "Codex usage";
+    }
+    const pathLabel = path.split(".").filter((part) => part !== "root" && !/^\d+$/.test(part)).slice(-3).join(" ");
+    return pathLabel ? titleFromKey(pathLabel) : "Codex usage";
+  }
+  function displayUsageLabel(value) {
+    const trimmed = value.trim();
+    if (!isSimpleUsageKey(trimmed)) {
+      return trimmed;
+    }
+    return titleFromKey(trimmed);
+  }
+  function isSimpleUsageKey(value) {
+    return /^[A-Za-z0-9_]+$/.test(value.trim());
+  }
+  function resetValueFromRecord(record) {
+    return stringOrNumberFromKeys(record, [
+      "reset_at",
+      "resetAt",
+      "resets_at",
+      "resetsAt",
+      "reset_time",
+      "resetTime",
+      "resets"
+    ]);
+  }
+  function resetAfterValue(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { resetAt: null, resetAfterSeconds: value };
+    }
+    if (typeof value !== "string") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return { resetAt: null, resetAfterSeconds: null };
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return { resetAt: null, resetAfterSeconds: numeric };
+    }
+    return { resetAt: trimmed, resetAfterSeconds: null };
+  }
+  function dedupeMeters(meters) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const meter of meters) {
+      if (seen.has(meter.key)) {
+        continue;
+      }
+      seen.add(meter.key);
+      result.push(meter);
+    }
+    return result;
+  }
+  function numberFromKeys(record, keys) {
+    for (const key2 of keys) {
+      const value = getNumber(record, key2);
+      if (value !== null) {
+        return value;
+      }
+    }
+    return null;
+  }
+  function stringOrNumberFromKeys(record, keys) {
+    for (const key2 of keys) {
+      const value = record[key2];
+      if (typeof value === "string" || typeof value === "number") {
+        return value;
+      }
+    }
+    return null;
+  }
+  const CHATGPT_USAGE_ENDPOINTS = ["chatgpt:conversationInit", "chatgpt:whamUsage", "chatgpt:libraryStorage"];
+  function normalizeChatGptLibraryStorage(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) return [];
+    const used = getNumber(root, "used_bytes"), total = getNumber(root, "allowed_bytes"), remaining = getNumber(root, "remaining_bytes");
+    if (used === null || total === null || remaining === null || used < 0 || total <= 0 || remaining < 0) return [];
+    return [{
+      key: "chatgpt:libraryStorage",
+      label: "Library storage",
+      used,
+      total,
+      remaining,
+      usedPercent: Math.min(100, used / total * 100),
+      source,
+      confidence: "high",
+      metricKind: "quota",
+      unit: "bytes",
+      quotaState: asBoolean(root.is_over_limit) === true || remaining === 0 ? "blocked" : void 0,
+      rawKind: "chatgpt.library_storage"
+    }];
+  }
+  function normalizeChatGptEndpoint(key2, json, source = "api") {
+    if (key2 === "chatgpt:conversationInit") return normalizeChatGptConversationInit(json, source).meters;
+    if (key2 === "chatgpt:libraryStorage") return normalizeChatGptLibraryStorage(json, source);
+    if (key2 === "chatgpt:accountsCheck") return normalizeChatGptAccountsCheck(json, source);
+    return normalizeChatGptWhamUsage(json, source);
+  }
+  async function fetchChatGptUsage(fetcher) {
+    const results = await Promise.all(CHATGPT_USAGE_ENDPOINTS.map(async (key2) => {
+      const response = await fetcher(key2);
+      return { response, meters: response.ok ? normalizeChatGptEndpoint(key2, response.json) : [] };
+    }));
+    const meters = results.flatMap((item) => item.meters);
+    const failed = results.some((item) => !item.response.ok);
+    return {
+      platform: "chatgpt",
+      meters: dedupeMeters(meters),
+      source: meters.length ? "api" : "unknown",
+      updatedAt: Date.now(),
+      status: meters.length ? failed || meters.some((m) => m.quotaState === "blocked") ? "partial" : "ok" : "error",
+      errorMessage: failed ? "部分查询失败，保留上次数据" : void 0,
+      debug: { endpoint: CHATGPT_USAGE_ENDPOINTS.join(","), parser: "chatgpt" }
+    };
+  }
+  function normalizeChatGptIntercepted(url, json) {
+    const path = safePathname(url);
+    if (path === "/backend-api/conversation/init") {
+      return normalizeChatGptConversationInit(json, "intercepted").meters;
+    }
+    if (path === "/backend-api/files/library/storage/usage") {
+      return normalizeChatGptLibraryStorage(json, "intercepted");
+    }
+    if (path === "/backend-api/wham/usage") {
+      return normalizeChatGptWhamUsage(json, "intercepted");
+    }
+    if (path === "/backend-api/codex/usage") {
+      return normalizeChatGptWhamUsage(json, "intercepted");
+    }
+    if (path === "/backend-api/wham/tasks/rate_limit") {
+      return normalizeTasksRateLimit(json, "intercepted");
+    }
+    if (/^\/backend-api\/accounts\/check\//.test(path)) {
+      return normalizeChatGptAccountsCheck(json, "intercepted");
+    }
+    return [];
+  }
+  function safePathname(url) {
+    try {
+      return new URL(url).pathname;
+    } catch {
+      return "";
+    }
+  }
+  const MERGED_METER_TTL_MS = 30 * 6e4;
+  function shouldRetainMeter(meter, now = Date.now(), fallbackObservedAt = now) {
+    if (meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription") {
+      return true;
+    }
+    return now - (meter.observedAt ?? fallbackObservedAt) <= MERGED_METER_TTL_MS;
+  }
+  function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
+    const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
+    if (!existing || existing.platform !== incoming.platform || existing.scopeKey !== incoming.scopeKey) {
+      return {
+        ...normalizedIncoming,
+        cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
+      };
+    }
+    const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+    normalizedIncoming.meters = normalizedIncoming.meters.map((meter) => {
+      const previous = normalizedExisting.meters.find((item) => item.key === meter.key);
+      if (!previous) return meter;
+      if ((meter.requestStartedAt ?? meter.observedAt ?? 0) < (previous.requestStartedAt ?? previous.observedAt ?? 0)) return previous;
+      if (previous.quotaState === "blocked" && meter.quotaState === "unknown") {
+        return now - (previous.observedAt ?? 0) <= MERGED_METER_TTL_MS ? previous : { ...meter, remaining: null };
+      }
+      return meter;
+    });
+    const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
+    const incomingHasAuthoritativeMeter = normalizedIncoming.meters.some(
+      (meter) => meter.source !== "estimate"
+    );
+    const retainedExisting = normalizedExisting.meters.filter((meter) => {
+      if (incomingKeys.has(meter.key)) {
+        return false;
+      }
+      if (incomingHasAuthoritativeMeter && isLocalEstimateMeter(meter)) {
+        return false;
+      }
+      return shouldRetainMeter(meter, now, normalizedExisting.updatedAt);
+    });
+    const meters = [...retainedExisting, ...normalizedIncoming.meters];
+    const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
+    return {
+      platform: incoming.platform,
+      scopeKey: incoming.scopeKey,
+      checkedAt: incoming.checkedAt ?? existing.checkedAt,
+      meters,
+      source: normalizedIncoming.source,
+      updatedAt,
+      cacheAgeMs: Math.max(0, now - updatedAt),
+      status: mergedStatus(normalizedExisting, normalizedIncoming, meters.length),
+      errorMessage: mergedErrorMessage(normalizedExisting, normalizedIncoming, meters.length),
+      debug: {
+        endpoint: joinDebugField(
+          normalizedExisting.debug?.endpoint,
+          normalizedIncoming.debug?.endpoint
+        ),
+        parser: joinDebugField(
+          normalizedExisting.debug?.parser,
+          normalizedIncoming.debug?.parser
+        )
+      }
+    };
+  }
+  function isLocalEstimateMeter(meter) {
+    return meter.rawKind === "localEstimate" || meter.key === "local:sent-count";
+  }
+  function withObservedAt(snapshot, fallbackObservedAt) {
+    return {
+      ...snapshot,
+      meters: snapshot.meters.filter((meter) => snapshot.platform !== "chatgpt" || !isChatPassPath(meter.key)).map((meter) => ({
+        ...meter,
+        observedAt: meter.observedAt ?? fallbackObservedAt
+      }))
+    };
+  }
+  function mergedStatus(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.status !== "unknown" ? incoming.status : existing.status;
+    }
+    if (incoming.status === "error") {
+      return "partial";
+    }
+    if (incoming.status === "partial" || existing.status === "partial") {
+      return "partial";
+    }
+    return "ok";
+  }
+  function mergedErrorMessage(existing, incoming, meterCount) {
+    if (meterCount === 0) {
+      return incoming.errorMessage ?? existing.errorMessage;
+    }
+    if (incoming.errorMessage === "部分功能被限制") {
+      return incoming.errorMessage;
+    }
+    return void 0;
+  }
+  function joinDebugField(existing, incoming) {
+    const values = [existing, incoming].filter(
+      (value) => Boolean(value)
+    );
+    if (values.length === 0) {
+      return void 0;
+    }
+    return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
+  }
+  const CHATGPT_POLL_CHECK_MS = 3e4;
+  function startVisibleUsagePolling(options) {
+    const refreshIfVisible = () => {
+      if (options.isVisible()) {
+        options.refresh();
+      }
+    };
+    const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
+    const intervalId = options.setInterval(refreshIfVisible, options.intervalMs ?? CHATGPT_POLL_CHECK_MS);
+    return () => {
+      options.clearInterval(intervalId);
+      stopVisibilityListener();
+    };
+  }
+  function sameUsageValues(previous, next) {
+    if (!previous || previous.platform !== next.platform) {
+      return false;
+    }
+    if (previous.status !== next.status || previous.errorMessage !== next.errorMessage || previous.meters.length !== next.meters.length) {
+      return false;
+    }
+    const previousValues = new Map(
+      previous.meters.map((meter) => [meter.key, meterValue(meter)])
+    );
+    return next.meters.every(
+      (meter) => previousValues.get(meter.key) === meterValue(meter)
+    );
+  }
+  function meterValue(meter) {
+    return JSON.stringify({
+      label: meter.label,
+      displayValue: meter.displayValue,
+      modelName: meter.modelName,
+      requestKind: meter.requestKind,
+      remaining: meter.remaining,
+      total: meter.total,
+      used: meter.used,
+      usedPercent: meter.usedPercent,
+      remainingPercent: meter.remainingPercent,
+      resetAt: meter.quotaState === "unknown" ? null : meter.resetAt,
+      resetAfterSeconds: meter.quotaState === "unknown" ? null : meter.resetAfterSeconds,
+      windowSeconds: meter.windowSeconds,
+      source: meter.source,
+      confidence: meter.confidence,
+      rawKind: meter.rawKind,
+      metricKind: meter.metricKind,
+      unit: meter.unit,
+      quotaState: meter.quotaState
+    });
+  }
+  const CHATGPT_REFRESH_MS = 3e4;
+  const CHATGPT_OPERATION_INTERVAL_MS = 5e3;
+  class ChatGptUsageController {
+    constructor(options) {
+      this.options = options;
+      this.now = options.now ?? Date.now;
+    }
+    snapshot = null;
+    scope;
+    epoch = 0;
+    states = /* @__PURE__ */ new Map();
+    lastOperation = -Infinity;
+    loading = 0;
+    scopeLoad;
+    writes = Promise.resolve();
+    disposed = false;
+    now;
+    reset() {
+      this.epoch++;
+      this.scope = void 0;
+      this.scopeLoad = void 0;
+      this.snapshot = null;
+      this.states.clear();
+      this.loading = 0;
+      this.options.onLoading(false);
+      this.lastOperation = -Infinity;
+      this.options.onSnapshot(null);
+    }
+    destroy() {
+      this.disposed = true;
+      this.epoch++;
+    }
+    async refresh(reason = "poll") {
+      if (this.disposed) return;
+      if (this.loading > 0 && (reason === "manual" || reason === "operation")) {
+        await Promise.all([...this.states.values()].flatMap((state) => state.flight ? [state.flight] : []));
+        return;
+      }
+      const now = this.now();
+      if (reason === "operation" || reason === "manual") {
+        if (now - this.lastOperation < CHATGPT_OPERATION_INTERVAL_MS) return;
+        this.lastOperation = now;
+      }
+      const epoch = this.epoch;
+      const queries = [];
+      for (const key2 of CHATGPT_USAGE_ENDPOINTS) {
+        const state = this.state(key2);
+        if (state.flight) {
+          queries.push(state.flight);
+          continue;
+        }
+        if (state.retryAt > now) continue;
+        if (reason === "poll" && state.lastSuccess > 0 && now - state.lastSuccess < CHATGPT_REFRESH_MS) continue;
+        const flight = this.query(key2, state, epoch);
+        state.flight = flight;
+        void flight.finally(() => {
+          if (state.flight === flight) state.flight = void 0;
+        });
+        queries.push(flight);
+      }
+      if (!queries.length) {
+        this.publish();
+        return;
+      }
+      this.loading++;
+      this.options.onLoading(true);
+      try {
+        await Promise.all(queries);
+        if (epoch === this.epoch && !this.disposed) {
+          if (!this.snapshot) this.snapshot = this.empty();
+          this.snapshot = { ...this.snapshot, checkedAt: this.now() };
+          this.publish();
+        }
+      } finally {
+        if (epoch === this.epoch && !this.disposed) {
+          this.loading--;
+          this.options.onLoading(this.loading > 0);
+        }
+      }
+    }
+    async acceptIntercept(key2, json, observedAt, requestedAt = observedAt, scope) {
+      const epoch = this.epoch;
+      if (this.scope && !scope) return;
+      await this.adoptScope(scope);
+      if (this.disposed || epoch !== this.epoch) return;
+      const meters = this.stamp(normalizeChatGptEndpoint(key2, json, "intercepted"), observedAt, requestedAt);
+      if (!meters.length) return;
+      const state = this.state(key2);
+      state.lastSuccess = Math.max(state.lastSuccess, observedAt);
+      state.retryAt = 0;
+      state.failures = 0;
+      this.accept(meters, observedAt);
+    }
+    state(key2) {
+      let state = this.states.get(key2);
+      if (!state) {
+        state = { lastSuccess: 0, retryAt: 0, failures: 0 };
+        this.states.set(key2, state);
+      }
+      return state;
+    }
+    async adoptScope(scope) {
+      if (!scope) return;
+      if (this.scope === scope) {
+        await this.scopeLoad;
+        return;
+      }
+      const epoch = this.epoch;
+      this.scope = scope;
+      this.snapshot = null;
+      this.scopeLoad = this.options.readCache(scope).then((cached) => {
+        if (epoch !== this.epoch || this.scope !== scope || this.disposed) return;
+        if (cached?.scopeKey === scope) {
+          this.snapshot = cached;
+          this.publish();
+        }
+      }).catch(() => void 0);
+      await this.scopeLoad;
+    }
+    async query(key2, state, epoch) {
+      const started = this.now();
+      let response;
+      try {
+        response = await this.options.fetcher(key2);
+      } catch {
+        response = { source: "ai-usage-floating-monitor", direction: "main-to-content", requestId: "failed", platform: "chatgpt", ok: false };
+      }
+      if (epoch !== this.epoch || this.disposed) return;
+      if (response.ok) {
+        await this.adoptScope(response.scopeKey);
+        if (epoch !== this.epoch || this.disposed) return;
+        const observedAt = response.observedAt ?? this.now();
+        const meters = this.stamp(normalizeChatGptEndpoint(key2, response.json), observedAt, response.requestStartedAt ?? started);
+        if (meters.length) {
+          state.lastSuccess = observedAt;
+          state.retryAt = 0;
+          state.failures = 0;
+          this.accept(meters, observedAt);
+          return;
+        }
+      }
+      if (state.lastSuccess > started) return;
+      state.failures++;
+      const status = response.error?.status;
+      state.retryAt = this.now() + (status === 403 || status === 404 ? 3e5 : [6e4, 12e4, 3e5][Math.min(state.failures - 1, 2)]);
+      this.publish();
+    }
+    stamp(meters, observedAt, requestStartedAt) {
+      return meters.filter(hasMeaningfulValue).map((meter) => ({
+        ...meter,
+        observedAt,
+        requestStartedAt,
+        resetAt: meter.resetAfterSeconds !== null && meter.resetAfterSeconds !== void 0 ? observedAt + meter.resetAfterSeconds * 1e3 : meter.resetAt
+      }));
+    }
+    accept(meters, time) {
+      const previous = this.snapshot;
+      const incoming = {
+        platform: "chatgpt",
+        scopeKey: this.scope,
+        meters,
+        source: meters[0]?.source ?? "api",
+        updatedAt: time,
+        status: "ok"
+      };
+      const merged = mergeUsageSnapshots(previous, incoming, this.now());
+      if (sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+      this.snapshot = merged;
+      this.publish();
+    }
+    empty() {
+      return { platform: "chatgpt", scopeKey: this.scope, meters: [], source: "unknown", updatedAt: this.now(), status: "unknown" };
+    }
+    publish() {
+      if (this.disposed) return;
+      if (!this.snapshot) this.snapshot = this.empty();
+      const now = this.now();
+      const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) && shouldRetainMeter(meter, now, this.snapshot.updatedAt));
+      const failed = [...this.states.values()].some((state) => state.failures > 0);
+      this.snapshot = {
+        ...this.snapshot,
+        meters,
+        status: meters.length ? failed || meters.some((meter) => meter.quotaState === "blocked") ? "partial" : "ok" : failed ? "error" : "unknown",
+        errorMessage: failed ? meters.length ? "部分查询失败，保留上次数据" : "暂时无法获取额度" : void 0
+      };
+      this.options.onSnapshot(this.snapshot);
+      if (this.scope && meters.length) {
+        const value = this.snapshot;
+        this.writes = this.writes.then(() => this.options.writeCache(value)).catch(() => void 0);
+      }
+    }
   }
   const SOURCE = "ai-usage-floating-monitor";
   function isBridgeResponse(value) {
@@ -57,8 +1183,13 @@
   class BridgeClient {
     pending = /* @__PURE__ */ new Map();
     interceptHandlers = /* @__PURE__ */ new Set();
+    contextHandlers = /* @__PURE__ */ new Set();
     onMessage = (event) => {
       if (event.origin !== window.location.origin) {
+        return;
+      }
+      if (event.source === window && event.data && typeof event.data === "object" && event.data.kind === "chatgptContextChanged" && event.data.source === SOURCE && event.data.direction === "main-to-content") {
+        for (const handler of this.contextHandlers) handler();
         return;
       }
       if (isInterceptedUsageMessage(event.data)) {
@@ -91,6 +1222,11 @@
       }
       this.pending.clear();
       this.interceptHandlers.clear();
+      this.contextHandlers.clear();
+    }
+    onContextChanged(handler) {
+      this.contextHandlers.add(handler);
+      return () => this.contextHandlers.delete(handler);
     }
     onIntercepted(handler) {
       this.interceptHandlers.add(handler);
@@ -146,34 +1282,11 @@
     }
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   }
-  const CODEX_ANALYTICS_URL = "https://chatgpt.com/codex/cloud/settings/analytics#usage";
-  function probeCodexAnalyticsUsage() {
-    const iframe = document.createElement("iframe");
-    iframe.src = CODEX_ANALYTICS_URL;
-    iframe.title = "Codex usage probe";
-    iframe.setAttribute("aria-hidden", "true");
-    iframe.style.position = "fixed";
-    iframe.style.width = "1px";
-    iframe.style.height = "1px";
-    iframe.style.opacity = "0";
-    iframe.style.pointerEvents = "none";
-    iframe.style.border = "0";
-    iframe.style.left = "-9999px";
-    iframe.style.top = "-9999px";
-    document.documentElement.append(iframe);
-    const timeoutId = window.setTimeout(() => {
-      iframe.remove();
-    }, 15e3);
-    return () => {
-      window.clearTimeout(timeoutId);
-      iframe.remove();
-    };
-  }
   const CACHE_TTL_MS = 6e4;
   const MIN_REFRESH_INTERVAL_MS = 3e4;
   const FAILED_BACKOFF_STEPS_MS = [6e4, 12e4, 3e5];
-  function snapshotKey(platform2) {
-    return `aiUsage:${platform2}:snapshot`;
+  function snapshotKey(platform2, scope) {
+    return platform2 === "chatgpt" && scope ? `aiUsage:chatgpt:${scope}:snapshot` : `aiUsage:${platform2}:snapshot`;
   }
   function lastRefreshKey(platform2) {
     return `aiUsage:${platform2}:lastRefreshAt`;
@@ -187,7 +1300,7 @@
   function estimateKey(platform2) {
     return `aiUsage:${platform2}:estimate`;
   }
-  function storageGet$3(keys) {
+  function storageGet$1(keys) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.get(keys, (items) => {
         const error = chrome.runtime.lastError;
@@ -199,7 +1312,7 @@
       });
     });
   }
-  function storageSet$3(items) {
+  function storageSet$1(items) {
     return new Promise((resolve, reject) => {
       chrome.storage.local.set(items, () => {
         const error = chrome.runtime.lastError;
@@ -211,50 +1324,61 @@
       });
     });
   }
-  async function getCachedSnapshot(platform2) {
-    const key = snapshotKey(platform2);
-    const items = await storageGet$3(key);
-    const value = items[key];
+  async function getCachedSnapshot(platform2, scope) {
+    if (platform2 === "chatgpt" && !scope) return null;
+    const key2 = snapshotKey(platform2, scope);
+    const items = await storageGet$1(key2);
+    const value = items[key2];
     if (!isUsageSnapshot(value, platform2)) {
       return null;
     }
     return {
       ...value,
-      cacheAgeMs: Math.max(0, Date.now() - value.updatedAt)
+      cacheAgeMs: Math.max(0, Date.now() - (value.checkedAt ?? value.updatedAt))
     };
   }
   function setCachedSnapshot(snapshot) {
+    if (snapshot.platform === "chatgpt" && !snapshot.scopeKey) return Promise.resolve();
     const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
-    return storageSet$3({ [snapshotKey(snapshot.platform)]: persisted });
+    return storageSet$1({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
+  }
+  function clearCachedSnapshot(platform2) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.remove(snapshotKey(platform2), () => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve();
+      });
+    });
   }
   async function getLastRefreshAt(platform2) {
-    const key = lastRefreshKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = lastRefreshKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setLastRefreshAt(platform2, value) {
-    return storageSet$3({ [lastRefreshKey(platform2)]: value });
+    return storageSet$1({ [lastRefreshKey(platform2)]: value });
   }
   async function getBackoffUntil(platform2) {
-    const key = backoffKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = backoffKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setBackoffUntil(platform2, value) {
-    return storageSet$3({ [backoffKey(platform2)]: value });
+    return storageSet$1({ [backoffKey(platform2)]: value });
   }
   async function getFailureCount(platform2) {
-    const key = failureCountKey(platform2);
-    const items = await storageGet$3(key);
-    return typeof items[key] === "number" ? items[key] : 0;
+    const key2 = failureCountKey(platform2);
+    const items = await storageGet$1(key2);
+    return typeof items[key2] === "number" ? items[key2] : 0;
   }
   function setFailureCount(platform2, value) {
-    return storageSet$3({ [failureCountKey(platform2)]: value });
+    return storageSet$1({ [failureCountKey(platform2)]: value });
   }
   async function getEstimateState(platform2) {
-    const key = estimateKey(platform2);
-    const items = await storageGet$3(key);
-    const value = items[key];
+    const key2 = estimateKey(platform2);
+    const items = await storageGet$1(key2);
+    const value = items[key2];
     if (!isEstimateState(value)) {
       return null;
     }
@@ -268,7 +1392,7 @@
       firstSentAt: existing?.firstSentAt ?? now,
       lastSentAt: now
     };
-    await storageSet$3({ [estimateKey(platform2)]: next });
+    await storageSet$1({ [estimateKey(platform2)]: next });
     return next;
   }
   function isUsageSnapshot(value, platform2) {
@@ -277,7 +1401,7 @@
   function isEstimateState(value) {
     return typeof value === "object" && value !== null && typeof value.sentCount === "number" && typeof value.firstSentAt === "number" && typeof value.lastSentAt === "number";
   }
-  function installSendEstimator(platform2, onEstimate) {
+  function installSendEstimator(platform2, onEstimate, options = {}) {
     let lastIncrementAt = 0;
     const increment = () => {
       const now = Date.now();
@@ -285,6 +1409,10 @@
         return;
       }
       lastIncrementAt = now;
+      if (options.recordCounts === false) {
+        onEstimate({ platform: platform2, meters: [], source: "unknown", status: "unknown", updatedAt: now });
+        return;
+      }
       void incrementEstimateState(platform2).then((state) => {
         onEstimate(snapshotFromEstimate(platform2, state));
       });
@@ -347,8 +1475,9 @@
     return /\bsend\b|发送|submit|composer-submit|send-button/.test(label);
   }
   function resolveResetMs(meter, now = Date.now()) {
-    if (typeof meter.resetAfterSeconds === "number") {
-      return now + meter.resetAfterSeconds * 1e3;
+    const anchor = meter.observedAt ?? now;
+    if (typeof meter.resetAfterSeconds === "number" && !meter.resetAt) {
+      return anchor + meter.resetAfterSeconds * 1e3;
     }
     if (typeof meter.resetAt === "number") {
       if (meter.resetAt > 1e10) {
@@ -358,130 +1487,94 @@
         return meter.resetAt * 1e3;
       }
       if (meter.resetAt > 0) {
-        return now + meter.resetAt * 1e3;
+        return anchor + meter.resetAt * 1e3;
       }
     }
     if (typeof meter.resetAt === "string") {
+      const numeric = Number(meter.resetAt.trim());
+      if (Number.isFinite(numeric)) {
+        return resolveNumericResetMs(numeric, anchor);
+      }
       const parsed = Date.parse(meter.resetAt);
       return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+  function resolveNumericResetMs(value, now) {
+    if (value > 1e10) {
+      return value;
+    }
+    if (value > 1e9) {
+      return value * 1e3;
+    }
+    if (value > 0) {
+      return now + value * 1e3;
     }
     return null;
   }
   const DEFAULT_LANGUAGE_MODE = "auto";
   const ZH_TEXT = {
     "action.closeSettings": "关闭设置",
-    "action.collapsePanel": "折叠用量面板",
     "action.collapseWidget": "收起用量组件",
-    "action.expandPanel": "展开用量面板",
     "action.hidePanel": "隐藏用量面板",
     "action.openUsage": "打开 {platform} 用量",
     "action.refreshUsage": "刷新用量",
     "action.restoreGptPanel": "恢复 GPT 用量面板",
     "action.settings": "设置",
-    "action.toggleSecret": "显示或隐藏密钥",
     "gpt.alertCount": "{count} 项预警",
     "gpt.title": "GPT 用量",
-    "ip.apiKeyLabel": "proxycheck.io API 密钥",
-    "ip.check": "IP 检测",
-    "ip.deleteKey": "删除密钥",
-    "ip.enableProxycheck": "启用 proxycheck.io",
-    "ip.enabledHelp": "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。",
-    "ip.errorFallback": "检测失败",
-    "ip.help": "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。",
-    "ip.keyPlaceholder": "输入 proxycheck.io API 密钥",
-    "ip.newKeyPlaceholder": "输入新的 proxycheck.io API 密钥",
-    "ip.noProxySignals": "未见明显代理信号",
-    "ip.querying": "正在查询 proxycheck.io。",
-    "ip.savedKeyPlaceholder": "已保存密钥，留空则不修改",
-    "ip.source": "来源",
-    "ip.disabledHelp": "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。",
-    "ip.signal": "信号",
-    "ip.status.checking": "检测中",
-    "ip.status.disabled": "未启用",
-    "ip.status.failed": "检测失败",
-    "ip.status.missingKey": "未配置密钥",
-    "ip.status.waiting": "等待检测",
     "language.auto": "跟随浏览器",
     "language.en": "English",
     "language.label": "语言",
     "language.zhCN": "简体中文",
     "meta.cacheSeconds": "缓存 {seconds}秒",
+    "meta.checkedAt": "最近查询 {age}",
     "meta.loading": "加载中",
     "meta.neverUpdated": "尚未更新",
     "meta.updatedAt": "更新于 {age}",
     "meta.waitSeconds": "等待 {seconds}秒",
     "meter.unknown": "未知",
+    "meter.neverExpires": "从不过期",
     "meter.used": "已用 {used}/{total}",
     "meter.usedPercent": "{percent}% 已用",
     "meter.remaining": "剩余 {remaining}",
     "meter.remainingPercent": "{percent}% 剩余",
     "model.label": "模型",
-    "settings.checkNow": "立即检测",
     "settings.save": "保存",
     "settings.title": "设置",
-    "sentinel.accountStatus": "账号状态",
-    "sentinel.explanation": "说明：当前仅验证 PoW 难度，不判断模型 fallback。",
-    "sentinel.gate": "发送门禁",
     "usage.empty": "暂无用量数据",
-    "usage.networkRisk": "网络风险",
     "usage.title": "{platform} 用量"
   };
   const EN_TEXT = {
     "action.closeSettings": "Close settings",
-    "action.collapsePanel": "Collapse usage panel",
     "action.collapseWidget": "Collapse usage widget",
-    "action.expandPanel": "Expand usage panel",
     "action.hidePanel": "Hide usage panel",
     "action.openUsage": "Open {platform} usage",
     "action.refreshUsage": "Refresh usage",
     "action.restoreGptPanel": "Restore GPT usage panel",
     "action.settings": "Settings",
-    "action.toggleSecret": "Show or hide key",
     "gpt.alertCount": "{count} alerts",
     "gpt.title": "GPT Usage",
-    "ip.apiKeyLabel": "proxycheck.io API key",
-    "ip.check": "IP check",
-    "ip.deleteKey": "Delete key",
-    "ip.enableProxycheck": "Enable proxycheck.io",
-    "ip.enabledHelp": "The proxycheck.io key is stored locally only. Results do not represent official OpenAI account status.",
-    "ip.errorFallback": "Check failed",
-    "ip.help": "The key is stored in chrome.storage.local. Checks temporarily fetch the current public IP, query proxycheck.io, and do not keep IP history.",
-    "ip.keyPlaceholder": "Enter proxycheck.io API key",
-    "ip.newKeyPlaceholder": "Enter a new proxycheck.io API key",
-    "ip.noProxySignals": "No clear proxy signals",
-    "ip.querying": "Querying proxycheck.io.",
-    "ip.savedKeyPlaceholder": "Key saved. Leave blank to keep it",
-    "ip.source": "Source",
-    "ip.disabledHelp": "Enable proxycheck.io in settings as a third-party IP reputation source.",
-    "ip.signal": "Signals",
-    "ip.status.checking": "Checking",
-    "ip.status.disabled": "Disabled",
-    "ip.status.failed": "Check failed",
-    "ip.status.missingKey": "Missing key",
-    "ip.status.waiting": "Waiting to check",
     "language.auto": "Follow browser",
     "language.en": "English",
     "language.label": "Language",
     "language.zhCN": "Simplified Chinese",
     "meta.cacheSeconds": "Cached {seconds}s",
+    "meta.checkedAt": "Queried {age}",
     "meta.loading": "Loading",
     "meta.neverUpdated": "Not updated yet",
     "meta.updatedAt": "Updated {age}",
     "meta.waitSeconds": "Wait {seconds}s",
     "meter.unknown": "Unknown",
+    "meter.neverExpires": "Never expires",
     "meter.used": "Used {used}/{total}",
     "meter.usedPercent": "{percent}% used",
     "meter.remaining": "Remaining {remaining}",
     "meter.remainingPercent": "{percent}% remaining",
     "model.label": "Model",
-    "settings.checkNow": "Check now",
     "settings.save": "Save",
     "settings.title": "Settings",
-    "sentinel.accountStatus": "Account status",
-    "sentinel.explanation": "Note: currently only validates PoW difficulty, not model fallback.",
-    "sentinel.gate": "Send gate",
     "usage.empty": "No usage data yet",
-    "usage.networkRisk": "Network risk",
     "usage.title": "{platform} Usage"
   };
   const TEXT = {
@@ -490,6 +1583,7 @@
   };
   const GPT_SECTION_LABELS = {
     "zh-CN": {
+      subscription: "订阅",
       input: "输入与附件",
       features: "GPT 功能额度",
       windows: "用量窗口",
@@ -497,6 +1591,7 @@
       other: "其他"
     },
     en: {
+      subscription: "Subscription",
       input: "Input and attachments",
       features: "GPT feature limits",
       windows: "Usage windows",
@@ -530,50 +1625,44 @@
       low: "Low"
     }
   };
-  const STATUS_LABELS = {
-    "zh-CN": {
-      ok: "正常",
-      partial: "部分可用",
-      unknown: "未知",
-      error: "错误"
-    },
-    en: {
-      ok: "OK",
-      partial: "Partial",
-      unknown: "Unknown",
-      error: "Error"
-    }
-  };
-  const RISK_LABELS = {
-    "zh-CN": {
-      正常: "正常",
-      偏高: "偏高",
-      高: "高",
-      严重: "严重",
-      未知: "未知"
-    },
-    en: {
-      正常: "Normal",
-      偏高: "Elevated",
-      高: "High",
-      严重: "Severe",
-      未知: "Unknown"
-    }
-  };
   const METER_LABELS_ZH = {
+    "Library storage": "文件库空间",
+    "Available resets": "可用重置次数",
     "File Upload": "文件上传",
     "Paste Text To File": "粘贴文本转文件",
     Dictation: "听写",
     "Deep Research": "深度研究",
     "Image Generation": "图像生成",
+    "Computer Control": "电脑操控",
+    "Computer Use": "电脑操控",
+    "Reasoning Quota": "思考额度",
     "Primary window": "主窗口",
+    "Secondary window": "次窗口",
+    "5-hour window": "5 小时窗口",
     "Weekly window": "每周窗口",
+    "Additional Primary window": "额外主窗口",
+    "Additional Weekly window": "额外每周窗口",
+    "ChatGPT subscription": "ChatGPT 订阅",
+    "Current Grok limit": "当前 Grok 限额",
+    "Weekly Grok limit": "每周 Grok 限额",
+    "Monthly Grok limit": "每月 Grok 限额",
+    Chat: "聊天",
+    "Grok Build": "Grok Build",
+    API: "API",
+    Build: "Build",
+    Voice: "Voice",
     "Tasks rate limit": "任务限额",
     "Code Review": "代码审查",
     Credits: "余额",
     "Credits (unlimited)": "余额（无限）",
     "Gemini 5h": "Gemini 5 小时",
-    "Gemini weekly": "Gemini 每周"
+    "Gemini weekly": "Gemini 每周",
+    Pro: "Pro",
+    Labs: "Labs",
+    "Agentic Research": "智能体研究",
+    "Free queries": "免费查询",
+    "Muse weekly": "Muse 每周额度",
+    "Additional usage": "额外的使用额度"
   };
   function isLanguageMode(value) {
     return value === "auto" || value === "zh-CN" || value === "en";
@@ -596,8 +1685,8 @@
     }
     return "en";
   }
-  function t(language, key, params = {}) {
-    return TEXT[language][key].replace(
+  function t(language, key2, params = {}) {
+    return TEXT[language][key2].replace(
       /\{(\w+)\}/g,
       (_, name) => params[name] === void 0 ? "" : String(params[name])
     );
@@ -635,13 +1724,48 @@
       return language === "zh-CN" ? `${minutes}分钟` : `${minutes}m`;
     }
     const hours = Math.floor(minutes / 60);
-    if (hours < 48) {
+    if (hours < 24) {
+      const remainingMinutes = minutes % 60;
+      if (remainingMinutes > 0) {
+        return language === "zh-CN" ? `${hours}小时 ${remainingMinutes}分钟` : `${hours}h ${remainingMinutes}m`;
+      }
       return language === "zh-CN" ? `${hours}小时` : `${hours}h`;
     }
     const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    if (remainingHours > 0) {
+      return language === "zh-CN" ? `${days}天 ${remainingHours}小时` : `${days}d ${remainingHours}h`;
+    }
     return language === "zh-CN" ? `${days}天` : `${days}d`;
   }
+  function formatSubscriptionExpiryLocalized(language, meter) {
+    const resetMs = resolveResetMs(meter);
+    if (resetMs === null) {
+      return "";
+    }
+    const date = new Date(resetMs);
+    const exact = [
+      date.getFullYear(),
+      pad2(date.getMonth() + 1),
+      pad2(date.getDate())
+    ].join("-") + ` ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(
+      date.getSeconds()
+    )}`;
+    const verb = meter.requestKind === "renews" ? language === "zh-CN" ? "续订" : "Renews" : language === "zh-CN" ? "到期" : "Expires";
+    return `${verb} ${exact}`;
+  }
   function formatMeterValueLocalized(language, meter) {
+    if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+    if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
+    if (meter.displayValue?.trim()) return meter.displayValue;
+    if (meter.unit === "bytes") {
+      const gib = (n) => (n / 1073741824).toLocaleString(language, { maximumFractionDigits: 2 });
+      return typeof meter.remaining === "number" ? (language === "zh-CN" ? "剩余 " : "Remaining ") + gib(meter.remaining) + " GiB" : t(language, "meter.unknown");
+    }
+    if (meter.label === "Credits (unlimited)") return language === "zh-CN" ? "无限" : "Unlimited";
+    if (meter.rawKind === "chatgpt.subscription") {
+      return formatSubscriptionRemainingLocalized(language, meter);
+    }
     if (typeof meter.remainingPercent === "number") {
       return t(language, "meter.remainingPercent", {
         percent: Math.round(meter.remainingPercent)
@@ -666,6 +1790,36 @@
     }
     return t(language, "meter.unknown");
   }
+  function formatSubscriptionRemainingLocalized(language, meter, now = Date.now()) {
+    const resetMs = resolveResetMs(meter, now);
+    if (resetMs === null) {
+      return t(language, "meter.unknown");
+    }
+    const seconds = Math.max(0, Math.floor((resetMs - now) / 1e3));
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor(seconds % 86400 / 3600);
+    const minutes = Math.floor(seconds % 3600 / 60);
+    const remainingSeconds = seconds % 60;
+    if (language === "zh-CN") {
+      if (days > 0) {
+        return `剩余 ${days}天 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
+      }
+      if (hours > 0) {
+        return `剩余 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
+      }
+      return minutes > 0 ? `剩余 ${minutes}分钟 ${remainingSeconds}秒` : `剩余 ${remainingSeconds}秒`;
+    }
+    if (days > 0) {
+      return `${days}d ${hours}h ${minutes}m ${remainingSeconds}s left`;
+    }
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${remainingSeconds}s left`;
+    }
+    return minutes > 0 ? `${minutes}m ${remainingSeconds}s left` : `${remainingSeconds}s left`;
+  }
+  function pad2(value) {
+    return String(value).padStart(2, "0");
+  }
   function formatMeterLabelLocalized(language, meter) {
     if (language === "en") {
       return meter.label;
@@ -685,12 +1839,6 @@
   function formatConfidenceLabelLocalized(language, confidence) {
     return CONFIDENCE_LABELS[language][confidence] ?? confidence;
   }
-  function formatStatusLabelLocalized(language, status) {
-    return STATUS_LABELS[language][status] ?? status;
-  }
-  function formatRiskLabelLocalized(language, label) {
-    return RISK_LABELS[language][label] ?? label;
-  }
   function browserLanguageCandidates() {
     if (typeof navigator === "undefined") {
       return [];
@@ -699,6 +1847,38 @@
       return [...navigator.languages];
     }
     return navigator.language ? [navigator.language] : [];
+  }
+  function key(node2) {
+    return node2 instanceof Element ? node2.getAttribute("data-node-key") : null;
+  }
+  function compatible(a, b) {
+    return a.nodeType === b.nodeType && (!(a instanceof Element) || b instanceof Element && a.tagName === b.tagName && key(a) === key(b));
+  }
+  function reconcileChildren(parent, desired) {
+    const old = Array.from(parent.childNodes);
+    const claimed = /* @__PURE__ */ new Set();
+    let cursor = parent.firstChild;
+    for (const next of desired) {
+      const nodeKey = key(next);
+      const previous = nodeKey !== null ? old.find((node22) => !claimed.has(node22) && key(node22) === nodeKey && compatible(node22, next)) : cursor && !claimed.has(cursor) && compatible(cursor, next) ? cursor : void 0;
+      const node2 = previous ?? next;
+      claimed.add(node2);
+      if (previous) patch(previous, next);
+      if (node2 !== cursor) parent.insertBefore(node2, cursor);
+      cursor = node2.nextSibling;
+    }
+    for (const node2 of old) if (!claimed.has(node2) && node2.parentNode === parent) parent.removeChild(node2);
+  }
+  function patch(current, next) {
+    if (!(current instanceof Element) || !(next instanceof Element)) {
+      if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+      return;
+    }
+    for (const attr of Array.from(current.attributes)) if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+    for (const attr of Array.from(next.attributes)) if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+    const selected = next instanceof HTMLSelectElement ? next.value : void 0;
+    reconcileChildren(current, Array.from(next.childNodes));
+    if (current instanceof HTMLSelectElement && selected !== void 0) current.value = selected;
   }
   const WIDGET_CSS = `
 :host {
@@ -773,7 +1953,7 @@ button {
 }
 
 .status-ok {
-  background: #10b981;
+  background: #315d86;
 }
 
 .status-partial {
@@ -826,21 +2006,6 @@ button {
   flex-direction: column;
 }
 
-.gpt-collapsed-panel {
-  width: min(400px, calc(100vw - 20px));
-  min-height: 48px;
-  border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
-  color: CanvasText;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
-  display: grid;
-  grid-template-columns: minmax(88px, 1fr) minmax(84px, auto) auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
 .header {
   display: flex;
   align-items: center;
@@ -879,17 +2044,6 @@ button {
   letter-spacing: 0;
   min-width: 0;
   white-space: nowrap;
-}
-
-.gpt-collapsed-summary {
-  min-width: 0;
-  color: color-mix(in srgb, CanvasText 76%, transparent);
-  font-size: 13px;
-  font-weight: 650;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: right;
 }
 
 .actions {
@@ -1064,53 +2218,51 @@ button {
 }
 
 .bar-fill.remaining-fill {
-  background: #22c55e;
+  background: #3f5874;
 }
 
-.sentinel-block {
-  padding: 7px 0 4px;
+.grok-stack-bar {
+  overflow: visible;
 }
 
-.sentinel-row {
+.grok-stack-fill {
   display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: baseline;
-  color: color-mix(in srgb, CanvasText 78%, transparent);
-  font-size: 12px;
-  padding: 2px 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
 }
 
-.sentinel-label {
-  color: color-mix(in srgb, CanvasText 60%, transparent);
-  font-weight: 650;
+.grok-stack-segment {
+  display: block;
+  height: 100%;
 }
 
-.sentinel-bar {
-  margin: 6px 0 7px;
-}
-
-.sentinel-risk-normal {
-  background: #22c55e;
-}
-
-.sentinel-risk-elevated {
-  background: #f59e0b;
-}
-
-.sentinel-risk-high {
-  background: #f97316;
-}
-
-.sentinel-risk-severe {
-  background: #ef4444;
-}
-
-.sentinel-explanation {
-  margin-top: 5px;
-  color: color-mix(in srgb, CanvasText 64%, transparent);
+.grok-contribution-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: color-mix(in srgb, CanvasText 70%, transparent);
   font-size: 11px;
-  line-height: 1.4;
+}
+
+.grok-contribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.grok-contribution-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, Canvas 35%, transparent);
+}
+
+.grok-contribution-value {
+  color: color-mix(in srgb, CanvasText 82%, transparent);
+  font-weight: 700;
 }
 
 .error-text {
@@ -1275,503 +2427,95 @@ button {
   color: #ef4444;
 }
 
-/* Botanical ivory theme, inspired by a green fantasy dashboard without copying source art. */
+/* Cold blue capsule shell. Keeps the widget DOM stable while replacing the visual skin. */
 :host {
   color-scheme: light;
-  --aiqm-paper: #fffdf3;
-  --aiqm-paper-soft: #f8f3dc;
-  --aiqm-paper-warm: #fff8df;
-  --aiqm-ink: #31461f;
-  --aiqm-muted: #7b7a64;
-  --aiqm-leaf: #6f9c37;
-  --aiqm-leaf-dark: #3c661d;
-  --aiqm-leaf-soft: #dbeaba;
-  --aiqm-gold: #c8a94f;
-  --aiqm-gold-soft: #efe2a7;
-  --aiqm-line: rgba(139, 157, 79, 0.34);
-  --aiqm-shadow: 0 18px 42px rgba(56, 71, 36, 0.24);
-  --aiqm-glow: 0 0 18px rgba(157, 206, 89, 0.18);
-  color: var(--aiqm-ink);
+  --rb-ink: #253244;
+  --rb-ink-soft: #405063;
+  --rb-blue: #25364d;
+  --rb-blue-deep: #1d2b3f;
+  --rb-blue-soft: #3f5874;
+  --rb-blue-pale: #8fa8c4;
+  --rb-paper: #fbf5eb;
+  --rb-paper-soft: #f4ebdd;
+  --rb-paper-warm: #fffaf1;
+  --rb-brown: #70675d;
+  --rb-brown-soft: #b7aa99;
+  --rb-line: rgba(111, 101, 89, 0.38);
+  --rb-line-strong: rgba(35, 50, 70, 0.72);
+  --rb-mustard: #d4a644;
+  --rb-mustard-deep: #b98225;
+  --rb-red: #b85a4a;
+  --rb-shadow: 0 18px 42px rgba(25, 34, 46, 0.24);
+  --rb-soft-shadow: 0 9px 22px rgba(37, 45, 56, 0.16);
+  --rb-inner: inset 0 0 0 1px rgba(255, 255, 255, 0.76);
+  color: var(--rb-ink);
 }
 
 .panel,
 .gpt-panel,
-.gpt-collapsed-panel,
 .settings-popover {
-  border: 1px solid rgba(151, 132, 62, 0.58);
+  border: 1px solid var(--rb-line);
   background:
-    radial-gradient(circle at 18% 0%, rgba(205, 234, 148, 0.24), transparent 34%),
-    radial-gradient(circle at 100% 16%, rgba(235, 210, 112, 0.18), transparent 28%),
-    linear-gradient(135deg, rgba(255, 255, 248, 0.96), rgba(252, 247, 224, 0.96)),
-    repeating-linear-gradient(45deg, rgba(126, 154, 58, 0.045) 0 1px, transparent 1px 12px);
-  color: var(--aiqm-ink);
-  box-shadow: var(--aiqm-shadow), var(--aiqm-glow), inset 0 0 0 1px rgba(255, 255, 255, 0.78);
+    linear-gradient(180deg, rgba(255, 252, 246, 0.98), rgba(246, 238, 225, 0.96)),
+    repeating-linear-gradient(90deg, rgba(63, 88, 116, 0.03) 0 1px, transparent 1px 28px);
+  color: var(--rb-ink);
+  box-shadow: var(--rb-shadow), var(--rb-inner);
 }
 
-.gpt-panel::before,
+.panel,
+.gpt-panel {
+  position: relative;
+  overflow: hidden;
+}
+
+.panel,
+.gpt-panel {
+  border-radius: 18px;
+}
+
+.panel {
+  width: min(314px, calc(100vw - 24px));
+  padding-bottom: 18px;
+}
+
+.gpt-panel {
+  width: min(390px, calc(100vw - 16px));
+  height: min(552px, calc(100vh - 16px));
+  min-height: 380px;
+}
+
+.settings-popover {
+  border-radius: 16px;
+  padding: 0 12px 12px;
+}
+
 .panel::before,
-.gpt-collapsed-panel::before,
+.gpt-panel::before,
 .settings-popover::before {
   content: "";
   display: block;
   height: 4px;
-  background: linear-gradient(90deg, transparent, var(--aiqm-leaf-soft), var(--aiqm-gold-soft), var(--aiqm-leaf-soft), transparent);
+  background: linear-gradient(90deg, transparent, rgba(143, 168, 196, 0.7), rgba(212, 166, 68, 0.78), rgba(143, 168, 196, 0.7), transparent);
 }
 
-.gpt-panel::before,
-.panel::before {
-  flex: 0 0 auto;
-}
-
-.gpt-collapsed-panel::before {
-  display: none;
-}
-
-.collapsed,
-.gpt-restore-chip {
-  border: 1px solid rgba(151, 132, 62, 0.54);
-  background: linear-gradient(145deg, #fffdf4, #f1f7df);
-  color: var(--aiqm-ink);
-  box-shadow: 0 12px 30px rgba(54, 74, 34, 0.22);
-}
-
-.collapsed:hover,
-.gpt-restore-chip:hover {
-  border-color: rgba(111, 156, 55, 0.7);
-  background: linear-gradient(145deg, #fffffa, #e8f4cf);
-}
-
-.status-dot {
-  background: #9ca67f;
-  box-shadow: 0 0 0 2px rgba(255, 250, 224, 0.9);
-}
-
-.status-ok {
-  background: #70a742;
-}
-
-.status-partial {
-  background: #c99a2c;
-}
-
-.status-error {
-  background: #d65a3f;
-}
-
-.header {
-  background:
-    linear-gradient(180deg, rgba(255, 253, 243, 0.98), rgba(246, 242, 217, 0.92)),
-    linear-gradient(90deg, rgba(118, 154, 60, 0.08), transparent 35%, rgba(200, 169, 79, 0.12));
-  border-bottom: 1px solid var(--aiqm-line);
-  position: relative;
-}
-
-.header::after {
+.panel::after,
+.gpt-panel::after {
   content: "";
   position: absolute;
-  left: 14px;
-  right: 14px;
-  bottom: -1px;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(111, 156, 55, 0.58), rgba(200, 169, 79, 0.62), transparent);
-}
-
-.title,
-.gpt-title,
-.settings-title {
-  color: var(--aiqm-leaf-dark);
-  font-family: Georgia, "Times New Roman", ui-serif, serif;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
-}
-
-.title::before,
-.gpt-title::before,
-.settings-title::before {
-  content: "✥";
-  color: var(--aiqm-leaf);
-  margin-right: 7px;
-  font-family: Georgia, "Times New Roman", ui-serif, serif;
-}
-
-.gpt-alerts,
-.gpt-collapsed-summary,
-.meta,
-.model-meta,
-.sentinel-row,
-.meter-bottom,
-.settings-help {
-  color: var(--aiqm-muted);
-}
-
-.gpt-alerts {
-  border: 1px solid rgba(151, 132, 62, 0.28);
-  border-radius: 999px;
-  background: rgba(255, 252, 234, 0.72);
-  padding: 4px 8px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.54);
-}
-
-.icon-button,
-.settings-button {
-  border: 1px solid rgba(151, 132, 62, 0.45);
-  background: linear-gradient(145deg, #fffdf5, #eff6dc);
-  color: var(--aiqm-leaf-dark);
-  box-shadow: 0 2px 8px rgba(70, 87, 45, 0.14), inset 0 0 0 1px rgba(255, 255, 255, 0.62);
-}
-
-.icon-button:hover,
-.settings-button:hover {
-  border-color: rgba(111, 156, 55, 0.72);
-  background: linear-gradient(145deg, #fffef8, #e9f3cf);
-  transform: translateY(-1px);
-}
-
-.icon-button:active,
-.settings-button:active {
-  transform: translateY(0);
-  box-shadow: inset 0 2px 5px rgba(54, 74, 34, 0.16);
-}
-
-.icon-button:disabled,
-.settings-button:disabled {
-  color: rgba(49, 70, 31, 0.46);
-  box-shadow: none;
-}
-
-.primary-button {
-  border-color: rgba(92, 126, 38, 0.74);
-  background: linear-gradient(145deg, #83b747, #4f8127);
-  color: #fffdf3;
-}
-
-.danger-button {
-  color: #c94432;
-}
-
-.gpt-panel > .meta,
-.model-meta {
-  border-color: var(--aiqm-line);
-  background: rgba(255, 252, 234, 0.62);
-}
-
-.gpt-content {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 20px;
+  border-top: 1px solid rgba(255, 250, 241, 0.24);
   background:
-    radial-gradient(circle at 50% 0%, rgba(230, 243, 190, 0.26), transparent 36%),
-    linear-gradient(180deg, rgba(255, 253, 243, 0.78), rgba(251, 246, 224, 0.78)),
-    repeating-linear-gradient(90deg, transparent 0 28px, rgba(111, 156, 55, 0.035) 28px 29px);
-}
-
-.gpt-content::-webkit-scrollbar-thumb {
-  background: rgba(95, 122, 54, 0.32);
-}
-
-.meter-section {
-  border: 1px solid rgba(151, 132, 62, 0.28);
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(255, 254, 248, 0.86), rgba(251, 247, 224, 0.74)),
-    radial-gradient(circle at 100% 0%, rgba(204, 229, 145, 0.16), transparent 30%);
-  margin-top: 10px;
-  padding: 9px 12px 8px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
-  position: relative;
-}
-
-.meter-section::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: -5px;
-  width: 18px;
-  height: 9px;
-  border: 1px solid rgba(151, 132, 62, 0.28);
-  border-bottom: 0;
-  border-radius: 14px 14px 0 0;
-  background: linear-gradient(180deg, #fffdf4, #edf5d6);
-  transform: translateX(-50%);
-}
-
-.meter-section:first-child {
-  border-top: 1px solid rgba(151, 132, 62, 0.28);
-}
-
-.meter-section-title {
-  color: var(--aiqm-leaf-dark);
-  font-size: 13px;
-  font-family: Georgia, "Times New Roman", ui-serif, serif;
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.meter-section-title::before {
-  content: "✦";
-  color: var(--aiqm-leaf);
-  margin-right: 1px;
-}
-
-.meter-section-title::after {
-  content: "";
-  height: 1px;
-  flex: 1 1 auto;
-  background: linear-gradient(90deg, rgba(111, 156, 55, 0.34), transparent);
-}
-
-.meter,
-.gpt-content .meter {
-  border-top: 1px solid rgba(151, 132, 62, 0.18);
-  border-radius: 7px;
-}
-
-.meter:hover {
-  background: rgba(236, 246, 207, 0.34);
-}
-
-.meter-label {
-  color: #263c18;
-  font-weight: 760;
-}
-
-.meter-value {
-  color: var(--aiqm-leaf-dark);
-  font-weight: 740;
-}
-
-.bar {
-  height: 7px;
-  background: #e6ecd4;
-  border: 1px solid rgba(120, 141, 70, 0.22);
-  box-shadow: inset 0 1px 2px rgba(66, 82, 43, 0.12);
-  overflow: visible;
-}
-
-.bar-fill {
-  position: relative;
-  background: linear-gradient(90deg, #8cbf49, #d3bd55);
-  box-shadow: 0 0 8px rgba(132, 181, 73, 0.22);
-}
-
-.bar-fill.remaining-fill {
-  background: linear-gradient(90deg, #79ad3f, #bddc68);
-}
-
-.bar-fill::after {
-  content: "";
-  position: absolute;
-  top: 50%;
-  right: -4px;
-  width: 8px;
-  height: 8px;
-  border-radius: 2px 8px 2px 8px;
-  background: linear-gradient(135deg, #f8ed9b, #76a93e);
-  border: 1px solid rgba(90, 110, 42, 0.38);
-  transform: translateY(-50%) rotate(18deg);
-  box-shadow: 0 0 6px rgba(146, 194, 76, 0.35);
-}
-
-.sentinel-risk-normal {
-  background: linear-gradient(90deg, #77ad3f, #bdda65);
-}
-
-.sentinel-risk-elevated {
-  background: linear-gradient(90deg, #d8b83d, #f0d56c);
-}
-
-.sentinel-risk-high {
-  background: linear-gradient(90deg, #df8b2d, #f2c15c);
-}
-
-.sentinel-risk-severe {
-  background: linear-gradient(90deg, #cf4e3a, #ed8f68);
-}
-
-.sentinel-label {
-  color: #667747;
-}
-
-.sentinel-explanation {
-  color: #81745f;
-}
-
-.badge {
-  border-color: rgba(151, 132, 62, 0.3);
-  background: linear-gradient(180deg, #fffdf2, #eef5d8);
-  color: #60743f;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.58);
-}
-
-.settings-popover {
-  padding: 0 12px 12px;
-}
-
-.settings-header {
-  border-bottom: 1px solid var(--aiqm-line);
-  padding: 10px 0 9px;
-}
-
-.settings-check {
-  color: var(--aiqm-leaf-dark);
-}
-
-.settings-input-wrap,
-.settings-input {
-  border-color: rgba(151, 132, 62, 0.34);
-  background: rgba(255, 253, 244, 0.86);
-  color: var(--aiqm-ink);
-}
-
-.settings-input::placeholder {
-  color: rgba(92, 105, 63, 0.58);
-}
-
-.settings-actions {
-  justify-content: flex-start;
-}
-
-.settings-input-wrap:focus-within,
-.settings-input:focus {
-  border-color: rgba(111, 156, 55, 0.78);
-}
-
-.settings-eye-button {
-  box-shadow: none;
-}
-
-.empty {
-  color: var(--aiqm-muted);
-}
-
-.error,
-.error-text {
-  color: #c94432;
-}
-
-@media (max-width: 480px) {
-  .gpt-panel {
-    width: min(380px, calc(100vw - 16px));
-    height: min(540px, calc(100vh - 18px));
-  }
-
-  .gpt-title {
-    font-size: 16px;
-  }
-
-  .gpt-alerts {
-    display: none;
-  }
-
-  .meter-section {
-    padding-inline: 10px;
-  }
-}
-
-/* Compact Nahida asset skin. Small functional ornaments, no oversized hero art. */
-:host {
-  --nahida-green: #3e7a35;
-  --nahida-green-dark: #2f5f27;
-  --nahida-gold: #c9a24a;
-  --nahida-gold-soft: #e5cf86;
-  --nahida-cream: #fffaf0;
-  --nahida-paper: #fbf6df;
-  --nahida-border: rgba(190, 153, 58, 0.52);
-  --nahida-shadow: 0 14px 34px rgba(47, 74, 30, 0.2);
-  --nahida-muted: #746d5a;
-  --nahida-text: #3f4b2d;
-}
-
-.panel,
-.gpt-panel,
-.gpt-collapsed-panel,
-.settings-popover {
-  border-color: var(--nahida-border);
-  background:
-    radial-gradient(circle at 18% 0%, rgba(207, 232, 154, 0.28), transparent 32%),
-    radial-gradient(circle at 100% 14%, rgba(229, 207, 134, 0.18), transparent 28%),
-    linear-gradient(180deg, rgba(255, 253, 244, 0.97), rgba(251, 246, 223, 0.96));
-  color: var(--nahida-text);
-  box-shadow: var(--nahida-shadow), inset 0 0 0 1px rgba(255, 255, 255, 0.72);
-}
-
-.panel,
-.gpt-panel,
-.gpt-collapsed-panel {
-  position: relative;
-}
-
-.gpt-panel {
-  width: min(380px, calc(100vw - 16px));
-  height: min(540px, calc(100vh - 16px));
-  min-height: 380px;
-  border-radius: 14px;
-}
-
-.panel {
-  width: min(300px, calc(100vw - 24px));
-  border-radius: 12px;
-}
-
-.settings-popover {
-  position: fixed;
-  width: min(330px, calc(100vw - 20px));
-  border-radius: 12px;
-}
-
-.panel-corners,
-.card-corners {
-  position: absolute;
-  inset: 0;
+    radial-gradient(circle at 22px 50%, var(--rb-mustard) 0 5px, transparent 6px),
+    radial-gradient(circle at 46px 50%, #f0d78a 0 4px, transparent 5px),
+    radial-gradient(circle at 70px 50%, var(--rb-blue-pale) 0 4px, transparent 5px),
+    linear-gradient(180deg, var(--rb-blue), var(--rb-blue-deep));
   pointer-events: none;
   z-index: 0;
 }
-
-.corner,
-.card-corner,
-.title-icon,
-.section-title-icon,
-.inline-icon,
-.section-badge,
-.progress-leaf,
-.chip-icon,
-.vine-divider-image {
-  display: block;
-  object-fit: contain;
-  user-select: none;
-  -webkit-user-select: none;
-}
-
-.corner {
-  position: absolute;
-  width: 38px;
-  height: 34px;
-  opacity: 0.72;
-}
-
-.compact-corners .corner {
-  width: 30px;
-  height: 27px;
-  opacity: 0.62;
-}
-
-.corner-top-left {
-  top: 3px;
-  left: 3px;
-}
-
-.corner-top-right {
-  top: 3px;
-  right: 3px;
-}
-
-.corner-bottom-left {
-  bottom: 3px;
-  left: 3px;
-}
-
-.corner-bottom-right {
-  right: 3px;
-  bottom: 3px;
-}
-
 .header,
 .meta,
 .model-meta,
@@ -1783,22 +2527,30 @@ button {
 .settings-label,
 .settings-input-wrap,
 .settings-help,
-.settings-actions {
+.settings-actions,
+.meter,
+.meter-section {
   position: relative;
   z-index: 1;
 }
 
 .header {
-  min-height: 48px;
-  padding: 10px 12px 8px;
+  min-height: 52px;
+  padding: 10px 12px 9px;
+  border-bottom-color: rgba(112, 103, 93, 0.22);
   background:
-    linear-gradient(180deg, rgba(255, 253, 242, 0.94), rgba(247, 242, 217, 0.88)),
-    linear-gradient(90deg, rgba(159, 207, 90, 0.12), transparent 48%, rgba(229, 207, 134, 0.12));
+    linear-gradient(180deg, rgba(255, 250, 241, 0.9), rgba(244, 235, 221, 0.72)),
+    linear-gradient(90deg, rgba(63, 88, 116, 0.12), transparent 52%, rgba(212, 166, 68, 0.12));
 }
 
-.gpt-header {
-  min-height: 54px;
-  padding: 10px 12px 9px;
+.header::after {
+  content: "";
+  position: absolute;
+  right: 14px;
+  bottom: -1px;
+  left: 14px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(112, 103, 93, 0.58), rgba(212, 166, 68, 0.56), transparent);
 }
 
 .title,
@@ -1809,6 +2561,10 @@ button {
   align-items: center;
   gap: 7px;
   min-width: 0;
+  color: var(--rb-ink);
+  font-weight: 780;
+  letter-spacing: 0;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .title::before,
@@ -1816,7 +2572,6 @@ button {
 .settings-title::before,
 .meter-section-title::before {
   content: none;
-  margin: 0;
 }
 
 .title-text,
@@ -1827,60 +2582,308 @@ button {
   white-space: nowrap;
 }
 
+.title-icon,
+.section-title-icon,
+.inline-icon,
+.section-badge,
+.progress-leaf,
+.chip-icon,
+.vine-divider-image,
+.corner,
+.card-corner {
+  display: block;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .title-icon {
   width: 22px;
   height: 22px;
   flex: 0 0 22px;
-  filter: drop-shadow(0 2px 4px rgba(61, 84, 36, 0.18));
+  filter: drop-shadow(0 2px 4px rgba(31, 43, 59, 0.18));
 }
 
 .gpt-title .title-icon {
-  width: 24px;
-  height: 24px;
-  flex-basis: 24px;
+  width: 25px;
+  height: 25px;
+  flex-basis: 25px;
 }
 
-.gpt-title {
-  font-size: 18px;
+.settings-title .title-icon {
+  width: 20px;
+  height: 20px;
+  flex-basis: 20px;
 }
-
-.title {
-  font-size: 14px;
+.gpt-alerts,
+.meta,
+.model-meta,
+.meter-bottom,
+.settings-help {
+  color: var(--rb-brown);
 }
 
 .gpt-alerts {
   padding: 3px 8px;
+  border: 1px solid rgba(112, 103, 93, 0.28);
+  border-radius: 999px;
+  background: rgba(255, 250, 241, 0.7);
   font-size: 11px;
-  color: #667747;
-  background: linear-gradient(180deg, rgba(255, 253, 241, 0.86), rgba(239, 246, 214, 0.82));
+  box-shadow: var(--rb-inner);
 }
 
-.actions,
-.gpt-actions {
-  gap: 6px;
+.icon-button,
+.settings-button {
+  border: 1px solid rgba(112, 103, 93, 0.38);
+  background: linear-gradient(145deg, rgba(255, 250, 241, 0.98), rgba(239, 230, 215, 0.9));
+  color: var(--rb-blue);
+  box-shadow: 0 2px 8px rgba(38, 48, 62, 0.13), var(--rb-inner);
 }
 
 .icon-button {
   width: 28px;
   height: 28px;
-  border-radius: 8px;
-  border-color: rgba(169, 140, 55, 0.5);
-  background: linear-gradient(145deg, #fffdf5, #eef5d8);
-  color: var(--nahida-green-dark);
+  border-radius: 10px;
 }
 
-.icon-button:hover {
-  border-color: rgba(62, 122, 53, 0.62);
-  background: linear-gradient(145deg, #fffef8, #e8f3ce);
+.icon-button:hover,
+.settings-button:hover {
+  border-color: rgba(63, 88, 116, 0.62);
+  background: linear-gradient(145deg, #fffdf7, #e9edf1);
+  transform: translateY(-1px);
+}
+
+.icon-button:active,
+.settings-button:active {
+  transform: translateY(0);
+  box-shadow: inset 0 2px 5px rgba(38, 48, 62, 0.16);
+}
+
+.icon-button:disabled,
+.settings-button:disabled {
+  color: rgba(64, 80, 99, 0.44);
+  box-shadow: none;
+}
+
+.primary-button {
+  border-color: rgba(37, 54, 77, 0.72);
+  background: linear-gradient(145deg, var(--rb-blue-soft), var(--rb-blue));
+  color: var(--rb-paper-warm);
+}
+
+.danger-button,
+.error,
+.error-text {
+  color: var(--rb-red);
+}
+
+.collapsed,
+.gpt-restore-chip {
+  position: relative;
+  width: min(172px, calc(100vw - 14px));
+  min-width: 160px;
+  height: 44px;
+  min-height: 44px;
+  grid-template-columns: 78px 7px minmax(0, 1fr);
+  gap: 3px;
+  align-items: center;
+  overflow: visible;
+  border: 1.5px solid var(--rb-line-strong);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, var(--rb-blue) 0 46px, transparent 46px),
+    linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
+  color: var(--rb-ink);
+  box-shadow: var(--rb-soft-shadow), var(--rb-inner);
+  padding: 0 7px 0 6px;
+}
+
+.collapsed::before,
+.gpt-restore-chip::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 5px;
+  width: 36px;
+  border-radius: 999px 7px 7px 999px;
+  background: linear-gradient(145deg, #344963, var(--rb-blue-deep));
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 249, 237, 0.28),
+    inset -8px 0 14px rgba(8, 17, 30, 0.18);
+  pointer-events: none;
+}
+
+.collapsed::after,
+.gpt-restore-chip::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 11px;
+  z-index: 1;
+  width: 30px;
+  height: 28px;
+  border-radius: 999px;
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpolygon fill='%23fffaf1' points='8,0 10.3,5.3 16,6 11.7,9.8 12.9,16 8,12.8 3.1,16 4.3,9.8 0,6 5.7,5.3'/%3E%3C/svg%3E") 3px 18px / 9px 9px no-repeat,
+    radial-gradient(circle at 8px 7px, var(--rb-paper-warm) 0 4px, transparent 5px),
+    radial-gradient(circle at 19px 20px, var(--rb-mustard) 0 3px, transparent 4px),
+    radial-gradient(circle at 27px 8px, #c5cbd0 0 3px, transparent 4px);
+  pointer-events: none;
+}
+
+.collapsed:hover,
+.gpt-restore-chip:hover {
+  border-color: rgba(35, 50, 70, 0.86);
+  background:
+    linear-gradient(90deg, #2d405a 0 46px, transparent 46px),
+    linear-gradient(180deg, #fffdf7, #f1e9db);
+  transform: translateY(-1px);
+}
+
+.chip-icon {
+  position: absolute;
+  top: 50%;
+  left: 32px;
+  z-index: 2;
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+  transform: translateY(-50%);
+  filter: drop-shadow(0 1px 2px rgba(10, 18, 30, 0.34));
+}
+
+.status-dot {
+  position: relative;
+  z-index: 3;
+  grid-column: 2;
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 1.5px rgba(255, 250, 241, 0.88);
+}
+
+.status-ok {
+  background: var(--rb-blue-soft);
+}
+
+.status-partial {
+  background: var(--rb-mustard);
+}
+
+.status-error {
+  background: var(--rb-red);
+}
+
+.collapsed-main {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-column: 3;
+  grid-template-columns: minmax(0, 1fr) 1px auto;
+  column-gap: 4px;
+  align-items: center;
+  min-width: 0;
+  padding-left: 0;
+}
+
+.collapsed-main::before {
+  content: "";
+  grid-column: 2;
+  grid-row: 1;
+  position: relative;
+  z-index: 3;
+  width: 1px;
+  height: 22px;
+  background: rgba(125, 114, 99, 0.34);
+}
+
+.platform {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+  color: var(--rb-ink-soft);
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.primary {
+  grid-column: 3;
+  grid-row: 1;
+  position: relative;
+  z-index: 4;
+  color: var(--rb-ink);
+  font-size: 11px;
+  font-weight: 780;
+  line-height: 1;
+  padding-left: 5px;
+  background: linear-gradient(90deg, rgba(255, 250, 241, 0.08), var(--rb-paper-warm) 7px);
+  text-align: right;
+}
+
+.platform-overflow .platform {
+  position: absolute;
+  left: -42px;
+  right: 46px;
+  z-index: 1;
+  box-sizing: border-box;
+  padding-left: 14px;
+}
+
+.platform-overflow .platform::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--rb-blue-soft);
+  box-shadow: 0 0 0 1.5px rgba(255, 250, 241, 0.88);
+  transform: translateY(-50%);
+}
+
+.platform-overflow .status-dot {
+  opacity: 0;
+}
+
+.platform-overflow .status-partial + .collapsed-main .platform::before {
+  background: var(--rb-mustard);
+}
+
+.platform-overflow .status-error + .collapsed-main .platform::before {
+  background: var(--rb-red);
+}
+
+.capsule-mascot {
+  position: absolute;
+  left: 72px;
+  bottom: -22px;
+  z-index: 5;
+  width: 166px;
+  height: auto;
+  max-width: none;
+  object-fit: contain;
+  object-position: center bottom;
+  pointer-events: none;
+  transform: translateX(-50%);
+  filter: drop-shadow(0 6px 9px rgba(24, 33, 44, 0.24));
+}
+
+.meta,
+.gpt-panel > .meta,
+.model-meta {
+  border-color: rgba(112, 103, 93, 0.2);
+  background: rgba(255, 250, 241, 0.58);
 }
 
 .meta {
-  padding: 7px 12px;
+  padding: 8px 12px;
   font-size: 11px;
-}
-
-.gpt-panel > .meta {
-  padding: 7px 12px 5px;
 }
 
 .meta-item {
@@ -1912,17 +2915,20 @@ button {
 .vine-divider-image {
   width: 100%;
   height: 100%;
-  opacity: 0.62;
-}
-
-.gpt-content {
-  padding: 0 10px 10px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(95, 122, 54, 0.32) transparent;
+  opacity: 0.68;
 }
 
 .content {
-  padding: 4px 10px 10px;
+  padding: 6px 10px 20px;
+}
+
+.gpt-content {
+  padding: 0 10px 28px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(143, 168, 196, 0.2), transparent 34%),
+    linear-gradient(180deg, rgba(255, 250, 241, 0.58), rgba(246, 238, 225, 0.62));
+  scrollbar-width: thin;
+  scrollbar-color: rgba(63, 88, 116, 0.32) transparent;
 }
 
 .gpt-content::-webkit-scrollbar,
@@ -1931,44 +2937,129 @@ button {
   width: 6px;
 }
 
+.gpt-content::-webkit-scrollbar-thumb {
+  background: rgba(63, 88, 116, 0.32);
+}
+
+.panel-corners,
+.card-corners {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.corner {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  opacity: 0.48;
+}
+
+.compact-corners .corner {
+  width: 26px;
+  height: 26px;
+  opacity: 0.34;
+}
+
+.corner-top-left {
+  top: 3px;
+  left: 3px;
+}
+
+.corner-top-right {
+  top: 3px;
+  right: 3px;
+}
+
+.corner-bottom-left {
+  bottom: 21px;
+  left: 3px;
+}
+
+.corner-bottom-right {
+  right: 3px;
+  bottom: 21px;
+}
+
 .meter-section {
-  margin-top: 8px;
-  padding: 10px 12px 9px;
-  border-color: rgba(190, 153, 58, 0.3);
-  border-radius: 9px;
-  box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.68),
-    0 7px 16px rgba(73, 84, 47, 0.08);
+  margin-top: 9px;
+  padding: 10px 12px 10px;
+  border: 1px solid rgba(112, 103, 93, 0.28);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 247, 0.92), rgba(247, 239, 225, 0.82)),
+    radial-gradient(circle at 100% 0%, rgba(143, 168, 196, 0.16), transparent 32%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62), 0 7px 16px rgba(37, 45, 56, 0.08);
   overflow: hidden;
 }
 
-.gpt-content .meter-section {
-  margin-top: 9px;
+.meter-section::before {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  border: 1px solid rgba(112, 103, 93, 0.12);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .meter-section::after {
   content: none;
 }
 
-.meter-section::before {
+.meter-section-title {
+  position: relative;
+  z-index: 1;
+  padding: 1px 30px 7px 0;
+  color: var(--rb-ink);
+  font-size: 13px;
+}
+
+.meter-section-title::after {
   content: "";
+  height: 1px;
+  min-width: 24px;
+  flex: 1 1 auto;
+  background: linear-gradient(90deg, rgba(63, 88, 116, 0.35), rgba(212, 166, 68, 0.24), transparent);
+}
+
+.section-title-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+}
+
+.section-badge {
   position: absolute;
-  inset: 4px;
-  border: 1px solid rgba(190, 153, 58, 0.14);
-  border-radius: 6px;
-  pointer-events: none;
-  z-index: 0;
+  top: 9px;
+  right: 10px;
+  width: 24px;
+  height: 24px;
+  z-index: 1;
+  opacity: 0.9;
+  filter: drop-shadow(0 3px 5px rgba(31, 43, 59, 0.16));
+}
+
+.shield-badge {
+  top: 27px;
+  width: 36px;
+  height: 36px;
+}
+
+.ip-risk-block {
+  padding-right: 48px;
 }
 
 .card-corners {
-  opacity: 0.42;
+  opacity: 0.34;
 }
 
 .card-corner {
   position: absolute;
   width: 18px;
-  height: 16px;
-  opacity: 0.5;
+  height: 18px;
+  opacity: 0.48;
 }
 
 .card-corner-top-left {
@@ -1980,82 +3071,45 @@ button {
   display: none;
 }
 
-.meter-section-title {
-  position: relative;
-  z-index: 1;
-  padding: 1px 30px 6px 0;
-  color: var(--nahida-green-dark);
-  font-size: 13px;
-  font-weight: 780;
-}
-
-.section-title-icon {
-  width: 15px;
-  height: 15px;
-  flex: 0 0 15px;
-}
-
-.meter-section-title::after {
-  min-width: 24px;
-  background: linear-gradient(90deg, rgba(111, 156, 55, 0.35), rgba(201, 162, 74, 0.24), transparent);
-}
-
-.section-badge {
-  position: absolute;
-  top: 8px;
-  right: 10px;
-  width: 22px;
-  height: 22px;
-  z-index: 1;
-  opacity: 0.86;
-  filter: drop-shadow(0 3px 5px rgba(61, 84, 36, 0.16));
-}
-
-.shield-badge {
-  top: 27px;
-  width: 34px;
-  height: 34px;
-}
-
-.sentinel-block,
-.meter {
-  position: relative;
-  z-index: 1;
-}
-
-.sentinel-block {
-  padding: 3px 0 1px;
-}
-
-.sentinel-row {
-  font-size: 12px;
-  padding: 2px 0;
-}
-
-.sentinel-explanation {
-  font-size: 11px;
-}
-
-.ip-risk-block {
-  padding-right: 42px;
-}
-
 .meter,
 .gpt-content .meter {
-  padding: 8px 0;
-  border-top-color: rgba(151, 132, 62, 0.18);
+  padding: 9px 0;
+  border-top-color: rgba(112, 103, 93, 0.18);
+  border-radius: 8px;
 }
 
-.meter-label,
+.meter:hover {
+  background: rgba(143, 168, 196, 0.12);
+}
+
+.meter-label {
+  color: var(--rb-ink);
+  font-weight: 760;
+}
+
 .meter-value {
-  font-size: 12px;
+  color: var(--rb-blue);
+  font-weight: 760;
 }
 
 .bar {
   position: relative;
-  height: 7px;
-  margin-top: 7px;
+  height: 8px;
+  margin-top: 8px;
   overflow: visible;
+  border: 1px solid rgba(112, 103, 93, 0.2);
+  background: linear-gradient(180deg, #e9dfd0, #f6eee2);
+  box-shadow: inset 0 1px 2px rgba(54, 72, 94, 0.12);
+}
+
+.bar-fill {
+  position: relative;
+  background: linear-gradient(90deg, var(--rb-blue), var(--rb-blue-soft));
+  box-shadow: 0 0 8px rgba(63, 88, 116, 0.24);
+}
+
+.bar-fill.remaining-fill {
+  background: linear-gradient(90deg, var(--rb-blue-soft), var(--rb-mustard));
 }
 
 .bar-fill::after {
@@ -2068,105 +3122,162 @@ button {
   left: clamp(7px, var(--meter-progress), calc(100% - 7px));
   width: 14px;
   height: 14px;
-  transform: translate(-50%, -50%) rotate(-18deg);
-  filter: drop-shadow(0 1px 2px rgba(55, 75, 36, 0.28));
+  transform: translate(-50%, -50%);
+  filter: drop-shadow(0 1px 2px rgba(31, 43, 59, 0.28));
   pointer-events: none;
-}
-
-.meter-bottom {
-  margin-top: 5px;
-  font-size: 10.5px;
 }
 
 .badge {
-  padding: 2px 6px;
-  color: #60743f;
+  border-color: rgba(112, 103, 93, 0.28);
+  background: linear-gradient(180deg, rgba(255, 250, 241, 0.96), rgba(239, 230, 215, 0.86));
+  color: var(--rb-blue);
+  box-shadow: var(--rb-inner);
 }
 
 .badge::before {
-  content: "✤";
+  content: "•";
   margin-right: 4px;
-  color: var(--nahida-green);
+  color: var(--rb-blue-soft);
 }
 
-.collapsed,
-.gpt-restore-chip {
-  grid-template-columns: 18px 8px minmax(0, 1fr);
-  border-radius: 999px;
-  overflow: visible;
-  position: relative;
+.settings-header {
+  padding: 10px 0 9px;
+  border-bottom: 1px solid rgba(112, 103, 93, 0.22);
 }
 
-.chip-icon {
-  width: 18px;
-  height: 18px;
-  opacity: 0.86;
+.settings-check {
+  color: var(--rb-ink);
 }
 
-.capsule-mascot {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% - 5px);
-  z-index: 5;
-  width: 62px;
-  height: auto;
-  max-width: none;
-  object-fit: contain;
-  object-position: center bottom;
-  pointer-events: none;
-  transform: translateX(-50%);
-  filter: drop-shadow(0 4px 7px rgba(43, 61, 28, 0.22));
+.settings-input-wrap,
+.settings-input {
+  border-color: rgba(112, 103, 93, 0.34);
+  background: rgba(255, 250, 241, 0.86);
+  color: var(--rb-ink);
 }
 
-.gpt-collapsed-panel {
-  width: min(360px, calc(100vw - 16px));
-  min-height: 46px;
-  grid-template-columns: minmax(88px, auto) minmax(72px, 1fr) auto;
-  border-radius: 14px;
-  padding: 8px 10px;
-  overflow: visible;
-  position: relative;
+.settings-input::placeholder {
+  color: rgba(112, 103, 93, 0.62);
 }
 
-.gpt-collapsed-panel .capsule-mascot {
-  bottom: calc(100% - 6px);
-  width: 68px;
+.settings-input-wrap:focus-within,
+.settings-input:focus {
+  border-color: rgba(63, 88, 116, 0.76);
 }
 
-.gpt-collapsed-panel .gpt-title {
-  font-size: 15px;
+.settings-eye-button {
+  box-shadow: none;
 }
 
-.gpt-collapsed-panel .title-icon {
-  width: 20px;
-  height: 20px;
-  flex-basis: 20px;
+.empty {
+  color: var(--rb-brown);
 }
 
-.gpt-collapsed-summary {
-  font-size: 12px;
-}
-
-.settings-title .title-icon {
-  width: 20px;
-  height: 20px;
-  flex-basis: 20px;
-}
-
-@media (max-width: 420px) {
-  .gpt-panel {
-    width: min(360px, calc(100vw - 12px));
-    height: min(520px, calc(100vh - 14px));
+@media (max-width: 480px) {
+  .collapsed,
+  .gpt-restore-chip {
+    width: min(160px, calc(100vw - 12px));
+    min-width: 152px;
+    height: 42px;
+    min-height: 42px;
+    grid-template-columns: 72px 7px minmax(0, 1fr);
+    gap: 3px;
+    background:
+      linear-gradient(90deg, var(--rb-blue) 0 42px, transparent 42px),
+      linear-gradient(180deg, var(--rb-paper-warm), var(--rb-paper-soft));
+    padding: 0 6px 0 5px;
   }
 
-  .gpt-collapsed-panel {
-    width: min(340px, calc(100vw - 12px));
-    grid-template-columns: minmax(82px, auto) minmax(48px, 1fr) auto;
+  .collapsed::before,
+  .gpt-restore-chip::before {
+    width: 32px;
+  }
+
+  .collapsed::after,
+  .gpt-restore-chip::after {
+    left: 10px;
+    transform: scale(0.76);
+    transform-origin: left center;
+  }
+
+  .collapsed:hover,
+  .gpt-restore-chip:hover {
+    background:
+      linear-gradient(90deg, #2d405a 0 42px, transparent 42px),
+      linear-gradient(180deg, #fffdf7, #f1e9db);
+  }
+
+  .collapsed-main {
+    column-gap: 3px;
+  }
+
+  .collapsed-main::before {
+    height: 20px;
+  }
+
+  .platform {
+    font-size: 9px;
+  }
+
+  .primary {
+    font-size: 10px;
+  }
+
+  .platform-overflow .platform {
+    left: -36px;
+    right: 40px;
+    padding-left: 13px;
+  }
+
+  .platform-overflow .platform::before {
+    width: 6px;
+    height: 6px;
+  }
+
+  .capsule-mascot {
+    left: 66px;
+    bottom: -20px;
+    width: 154px;
+  }
+
+  .gpt-panel {
+    width: min(370px, calc(100vw - 12px));
+    height: min(536px, calc(100vh - 14px));
   }
 
   .gpt-alerts {
     display: none;
   }
+}
+
+/* Existing theme, with stable controls and viewport-safe content. */
+:host { max-width: calc(100% - 16px); transform: none; }
+.panel { display: flex; flex-direction: column; max-height: calc(100dvh - 16px); }
+.panel { transform: translateY(-50%); }
+.panel, .gpt-panel { max-width: 100%; }
+.gpt-panel { min-height: 0; height: min(552px, calc(100dvh - 16px)); width: min(390px, calc(100vw - 16px)); }
+.header, .meta, .model-meta { flex-shrink: 0; }
+.content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.icon-button { width: 32px; height: 32px; min-width: 32px; min-height: 32px; flex-shrink: 0; }
+.icon-button:disabled { opacity: .55; cursor: wait; transform: none; }
+button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); outline-offset: 2px; }
+.meter-top { align-items: start; gap: 8px; }
+.meter-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
+.meter-value { text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.meter-top-detail { flex-direction: column; gap: 4px; }
+.meter-top-detail .meter-value { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+.meter-bottom { flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
+.badge, .meta, .settings-label, .settings-help, .model-meta { font-size: 12px; }
+.settings-popover { max-height: calc(100dvh - 16px); max-width: calc(100% - 16px); overflow-y: auto; width: min(360px, calc(100vw - 16px)); }
+.panel { width: min(314px, calc(100vw - 16px)); }
+:host([data-platform="muse"]) .collapsed { width: max-content; max-width: calc(100vw - 16px); grid-template-columns: 78px 7px max-content; }
+:host([data-platform="muse"]) .collapsed-main { grid-template-columns: max-content 1px max-content; column-gap: 4px; }
+:host([data-platform="muse"]) .primary { padding-left: 0; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 520px), (max-height: 600px) {
+  :host([data-platform="chatgpt"]) { top: 8px; right: 8px; }
+  :host:not([data-platform="chatgpt"]) { right: 8px; }
+  .settings-popover { top: 8px; right: 8px; }
 }
 `;
   const PLATFORM_LABEL = {
@@ -2174,9 +3285,12 @@ button {
     claude: "Claude",
     chatgpt: "GPT",
     kimi: "Kimi",
-    gemini: "Gemini"
+    gemini: "Gemini",
+    perplexity: "Perplexity",
+    muse: "Muse"
   };
   const GPT_SECTION_ORDER = [
+    "subscription",
     "input",
     "features",
     "windows",
@@ -2190,11 +3304,25 @@ button {
       this.handlers = handlers;
       this.expanded = false;
       this.hidden = platform2 === "chatgpt";
+      this.host.id = "ai-usage-floating-monitor";
       this.host.dataset.platform = platform2;
       const style = document.createElement("style");
       style.textContent = WIDGET_CSS;
       this.shadow.append(style, this.root);
-      this.timerId = window.setInterval(() => this.render(), 15e3);
+      this.timerId = window.setInterval(() => this.tickTimes(), 1e3);
+      this.mountWatchId = window.setInterval(() => this.ensureMounted(), 2e3);
+      document.addEventListener("visibilitychange", this.onVisibilityChange);
+      window.addEventListener("resize", this.onResize);
+      this.root.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        if (this.settingsOpen) this.closeSettings();
+        else {
+          if (this.platform === "chatgpt") this.hidden = true;
+          else this.expanded = false;
+          this.render();
+        }
+      });
     }
     host = document.createElement("div");
     shadow = this.host.attachShadow({ mode: "open" });
@@ -2203,28 +3331,37 @@ button {
     hidden = false;
     chipPosition = { edge: "right", offset: 96 };
     loading = false;
-    snapshot = null;
-    chatGptSentinelState = null;
-    ipRiskState = null;
-    ipRiskSettings = {
-      provider: "proxycheck",
-      enabled: false,
-      hasApiKey: false,
-      apiKeyPreview: null
+    settingsOpen = false;
+    renderFrame = 0;
+    destroyed = false;
+    onResize = () => {
+      if (!this.hidden && this.expanded) return;
+      const chip = this.root.querySelector(".collapsed,.gpt-restore-chip");
+      if (!chip) return;
+      const bounds = chip.getBoundingClientRect();
+      const vertical = this.chipPosition.edge === "left" || this.chipPosition.edge === "right";
+      const maximum = (vertical ? window.innerHeight - bounds.height : window.innerWidth - bounds.width) - 8;
+      this.chipPosition.offset = Math.max(8, Math.min(this.chipPosition.offset, maximum));
+      this.applyChipPosition();
     };
-    ipRiskRefreshing = false;
-    ipRiskSettingsOpen = false;
-    ipRiskSettingsDraft = null;
+    snapshot = null;
     backoffUntil = 0;
     languageMode = DEFAULT_LANGUAGE_MODE;
     resolvedLanguage = resolveLanguage(DEFAULT_LANGUAGE_MODE);
     timerId;
+    mountWatchId;
+    onVisibilityChange = () => this.tickTimes();
     mount() {
-      document.documentElement.append(this.host);
+      this.ensureMounted();
       this.render();
     }
     destroy() {
       window.clearInterval(this.timerId);
+      window.clearInterval(this.mountWatchId);
+      document.removeEventListener("visibilitychange", this.onVisibilityChange);
+      this.destroyed = true;
+      window.removeEventListener("resize", this.onResize);
+      cancelAnimationFrame(this.renderFrame);
       this.host.remove();
     }
     setSnapshot(snapshot) {
@@ -2233,22 +3370,6 @@ button {
     }
     setLoading(value) {
       this.loading = value;
-      this.render();
-    }
-    setChatGptSentinelState(value) {
-      this.chatGptSentinelState = value;
-      this.render();
-    }
-    setIpRiskSettings(value) {
-      this.ipRiskSettings = value;
-      this.render();
-    }
-    setIpRiskState(value) {
-      this.ipRiskState = value;
-      this.render();
-    }
-    setIpRiskRefreshing(value) {
-      this.ipRiskRefreshing = value;
       this.render();
     }
     setBackoffUntil(value) {
@@ -2260,38 +3381,42 @@ button {
       this.resolvedLanguage = resolveLanguage(value);
       this.render();
     }
-    text(key, params) {
-      return t(this.resolvedLanguage, key, params);
-    }
-    createIpRiskSettingsDraft() {
-      return {
-        enabled: this.ipRiskSettings.enabled,
-        apiKeyValue: this.ipRiskSettings.apiKeyPreview ?? "",
-        keyDirty: false,
-        revealKey: false
-      };
-    }
-    closeIpRiskSettingsDialog() {
-      this.ipRiskSettingsOpen = false;
-      this.ipRiskSettingsDraft = null;
-      this.render();
+    text(key2, params) {
+      return t(this.resolvedLanguage, key2, params);
     }
     render() {
+      if (this.destroyed || this.renderFrame) return;
+      this.renderFrame = requestAnimationFrame(() => {
+        this.renderFrame = 0;
+        if (!this.destroyed) this.renderNow();
+      });
+    }
+    tickTimes() {
+      if (document.visibilityState === "hidden" || this.hidden || this.platform !== "chatgpt" && !this.expanded) return;
+      for (const node2 of this.root.querySelectorAll("[data-time]")) {
+        let value = node2.textContent ?? "";
+        if (node2.dataset.time === "updated" && this.snapshot) value = this.text("meta.updatedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt) });
+        if (node2.dataset.time === "checked" && this.snapshot?.checkedAt) value = this.text("meta.checkedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt) });
+        if (node2.dataset.time === "backoff") value = this.text("meta.waitSeconds", { seconds: Math.max(0, Math.ceil(this.backoffRemainingMs() / 1e3)) });
+        const meter = this.snapshot?.meters.find((item) => item.key === node2.dataset.meterKey);
+        if (meter && node2.dataset.time === "reset") value = this.formatMeterTimePreview(meter);
+        if (meter && node2.dataset.time === "badge") value = this.meterBadge(meter);
+        if (meter && node2.dataset.time === "subscription") value = formatMeterValueLocalized(this.resolvedLanguage, meter);
+        if (node2.textContent !== value) node2.textContent = value;
+      }
+    }
+    renderNow() {
+      this.ensureMounted();
       if (this.hidden) {
-        this.ipRiskSettingsOpen = false;
-        this.ipRiskSettingsDraft = null;
-        this.root.replaceChildren(
-          this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()
-        );
+        this.settingsOpen = false;
+        reconcileChildren(this.root, [this.platform === "chatgpt" ? this.renderChatGptRestoreChip() : emptyNode()]);
         return;
       }
       if (this.platform === "chatgpt") {
         if (!this.hidden) {
           this.resetPanelPosition();
         }
-        this.replaceRootWith(
-          this.expanded ? this.renderChatGptPanel() : this.renderChatGptCollapsed()
-        );
+        this.replaceRootWith(this.renderChatGptPanel());
         return;
       }
       if (this.expanded) {
@@ -2299,15 +3424,37 @@ button {
       }
       this.replaceRootWith(this.expanded ? this.renderPanel() : this.renderCollapsed());
     }
+    ensureMounted() {
+      if (!this.host.isConnected) {
+        document.documentElement.append(this.host);
+      }
+    }
     replaceRootWith(main) {
-      if (this.ipRiskSettingsOpen) {
-        this.root.replaceChildren(main, this.renderIpRiskSettingsDialog());
+      if (this.settingsOpen) {
+        reconcileChildren(this.root, [main, this.renderSettingsDialog()]);
         return;
       }
-      this.root.replaceChildren(main);
+      reconcileChildren(this.root, [main]);
+    }
+    schedulePlatformOverflowCheck(button) {
+      const platformLabel = button.querySelector(".platform");
+      if (!platformLabel) {
+        return;
+      }
+      requestAnimationFrame(() => {
+        if (!button.isConnected) {
+          return;
+        }
+        button.classList.remove("platform-overflow");
+        const platformName = platformLabel.textContent?.trim() ?? "";
+        const overflows = platformLabel.scrollWidth > platformLabel.clientWidth + 1;
+        const shouldSitBehindMascot = overflows || platformName.length >= 6;
+        button.classList.toggle("platform-overflow", shouldSitBehindMascot);
+      });
     }
     renderChatGptRestoreChip() {
       const button = el("button", "gpt-restore-chip");
+      button.dataset.nodeKey = "chip";
       button.type = "button";
       this.applyChipPosition();
       button.setAttribute("aria-label", this.text("action.restoreGptPanel"));
@@ -2326,6 +3473,7 @@ button {
           textEl("span", "primary", this.chatGptPrimaryValue())
         ])
       );
+      this.schedulePlatformOverflowCheck(button);
       return button;
     }
     applyChipPosition() {
@@ -2422,40 +3570,18 @@ button {
       if (edge === "left" || edge === "right") {
         this.chipPosition = {
           edge,
-          offset: clamp$1(clientY - 24, margin, viewportHeight - 56)
+          offset: clamp(clientY - 24, margin, viewportHeight - 56)
         };
         return;
       }
       this.chipPosition = {
         edge,
-        offset: clamp$1(clientX - 44, margin, viewportWidth - 96)
+        offset: clamp(clientX - 44, margin, viewportWidth - 96)
       };
-    }
-    renderChatGptCollapsed() {
-      const panel = el("section", "gpt-collapsed-panel");
-      const title = titleNode("gpt-title", this.text("gpt.title"), "clover-medallion.png");
-      const summary = textEl("div", "gpt-collapsed-summary", this.criticalSummary());
-      const actions = el("div", "gpt-actions");
-      const refresh = this.renderActionButton(
-        this.loading ? "..." : "↻",
-        this.text("action.refreshUsage"),
-        () => this.onRefresh()
-      );
-      refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const expand = this.renderActionButton("+", this.text("action.expandPanel"), () => {
-        this.expanded = true;
-        this.render();
-      });
-      const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
-        this.hidden = true;
-        this.render();
-      });
-      actions.append(this.renderSettingsButton(), refresh, expand, close);
-      panel.append(decorativeAsset("capsule-mascot.png", "capsule-mascot"), title, summary, actions);
-      return panel;
     }
     renderChatGptPanel() {
       const panel = el("section", "gpt-panel");
+      panel.dataset.nodeKey = "panel";
       panel.append(
         panelCorners("panel-corners"),
         this.renderChatGptHeader(),
@@ -2479,15 +3605,12 @@ button {
         () => this.onRefresh()
       );
       refresh.disabled = this.loading || this.backoffRemainingMs() > 0;
-      const collapse = this.renderActionButton("−", this.text("action.collapsePanel"), () => {
-        this.expanded = false;
-        this.render();
-      });
+      refresh.setAttribute("aria-busy", String(this.loading));
       const close = this.renderActionButton("×", this.text("action.hidePanel"), () => {
         this.hidden = true;
         this.render();
       });
-      actions.append(this.renderSettingsButton(), refresh, collapse, close);
+      actions.append(this.renderSettingsButton(), refresh, close);
       right.append(actions);
       header.append(title, right);
       return header;
@@ -2495,278 +3618,55 @@ button {
     renderChatGptContent() {
       const content = el("div", "content gpt-content");
       if (this.snapshot?.errorMessage) {
-        content.append(textEl("div", "error", this.snapshot.errorMessage));
+        content.append(textEl("div", "error", this.snapshot.meters.length ? this.resolvedLanguage === "zh-CN" ? "部分查询失败，显示上次读数" : "Some queries failed. Showing saved readings." : this.resolvedLanguage === "zh-CN" ? "暂时无法获取额度，请稍后刷新" : "Usage unavailable. Try refreshing later."));
       }
-      const sentinelSection = this.renderChatGptSentinelSection();
-      if (sentinelSection) {
-        content.append(sentinelSection);
-      }
-      content.append(this.renderIpRiskSection());
       const meters = this.chatGptMeters();
       if (meters.length === 0) {
-        if (!sentinelSection && !this.ipRiskSettings.enabled) {
-          content.append(textEl("div", "empty", this.text("usage.empty")));
-        }
+        content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
         return content;
       }
       for (const section of groupChatGptMeters(meters, this.resolvedLanguage)) {
-        content.append(this.renderMeterSection(section.label, section.meters));
+        content.append(this.renderMeterSection(section.label, section.meters, section.key));
       }
       return content;
     }
-    renderChatGptSentinelSection() {
-      const state = this.chatGptSentinelState;
-      if (!state) {
-        return null;
-      }
-      const section = el("section", "meter-section sentinel-section");
-      section.append(cardCorners(), decorativeAsset("gem-square.png", "section-badge"));
-      section.append(sectionTitle(this.text("sentinel.accountStatus"), "leaf-small.png"));
-      const gate = el("div", "sentinel-block");
-      gate.append(
-        this.renderSentinelRow(
-          this.text("sentinel.gate"),
-          `${formatRiskLabelLocalized(
-            this.resolvedLanguage,
-            state.sentinelRisk.label
-          )} ${state.sentinelRisk.score}/100`
-        ),
-        this.renderSentinelBar(state.sentinelRisk.score),
-        this.renderSentinelRow(
-          "PoW",
-          `${state.pow.raw ?? "-"} / ${state.pow.level} / ${state.pow.risk}`
-        ),
-        textEl("div", "sentinel-explanation", this.text("sentinel.explanation"))
-      );
-      section.append(gate);
-      return section;
+    closeSettings() {
+      this.settingsOpen = false;
+      this.render();
+      requestAnimationFrame(() => this.root.querySelector('[data-action="settings"]')?.focus());
     }
-    renderIpRiskSection() {
-      const section = el("section", "meter-section ip-risk-section");
-      section.append(cardCorners(), decorativeAsset("shield.png", "section-badge shield-badge"));
-      section.append(sectionTitle(this.text("usage.networkRisk"), "leaf-small.png"));
-      const block = el("div", "sentinel-block ip-risk-block");
-      block.append(this.renderSentinelRow(this.text("ip.check"), this.ipRiskStatusText()));
-      const freshIpRisk = this.freshIpRiskState();
-      if (freshIpRisk) {
-        block.append(
-          this.renderSentinelBar(freshIpRisk.score),
-          this.renderSentinelRow(
-            this.text("ip.signal"),
-            formatIpRiskSignals(freshIpRisk, this.resolvedLanguage)
-          ),
-          this.renderSentinelRow(this.text("ip.source"), freshIpRisk.source)
-        );
-      } else if (this.ipRiskRefreshing) {
-        block.append(textEl("div", "sentinel-explanation", this.text("ip.querying")));
-      } else if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
-        block.append(
-          textEl(
-            "div",
-            "sentinel-explanation error-text",
-            this.ipRiskState.errorMessage ?? this.text("ip.errorFallback")
-          )
-        );
-      } else {
-        block.append(
-          textEl(
-            "div",
-            "sentinel-explanation",
-            this.ipRiskSettings.enabled ? this.text("ip.enabledHelp") : this.text("ip.disabledHelp")
-          )
-        );
-      }
-      section.append(block);
-      return section;
-    }
-    renderIpRiskSettingsDialog() {
+    renderSettingsDialog() {
       const panel = el("section", "settings-popover");
+      panel.dataset.nodeKey = "settings";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", this.text("settings.title"));
       const header = el("div", "settings-header");
-      const draft = this.ipRiskSettingsDraft ?? this.createIpRiskSettingsDraft();
-      this.ipRiskSettingsDraft = draft;
       header.append(
-        titleNode("settings-title", this.text("settings.title"), "shield.png"),
-        this.renderActionButton("×", this.text("action.closeSettings"), () => {
-          this.closeIpRiskSettingsDialog();
-        })
+        titleNode("settings-title", this.text("settings.title"), "clover-medallion.png"),
+        this.renderActionButton("×", this.text("action.closeSettings"), () => this.closeSettings())
       );
-      const languageSelect = document.createElement("select");
-      languageSelect.className = "settings-input";
-      for (const [value, label] of [
-        ["auto", this.text("language.auto")],
-        ["zh-CN", this.text("language.zhCN")],
-        ["en", this.text("language.en")]
-      ]) {
+      const select = document.createElement("select");
+      select.className = "settings-input";
+      select.dataset.nodeKey = "language";
+      select.setAttribute("aria-label", this.text("language.label"));
+      for (const [value, label] of [["auto", "language.auto"], ["zh-CN", "language.zhCN"], ["en", "language.en"]]) {
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = label;
-        languageSelect.append(option);
+        option.textContent = this.text(label);
+        select.append(option);
       }
-      languageSelect.value = this.languageMode;
-      const enabledInput = document.createElement("input");
-      enabledInput.type = "checkbox";
-      enabledInput.checked = draft.enabled;
-      enabledInput.addEventListener("change", () => {
-        draft.enabled = enabledInput.checked;
+      select.value = this.languageMode;
+      select.addEventListener("change", () => {
+        const mode = languageModeFromValue(select.value);
+        this.setLanguageMode(mode);
+        this.handlers.onLanguageModeSave?.(mode);
       });
-      const enabledLabel = el("label", "settings-check");
-      enabledLabel.append(
-        enabledInput,
-        textEl("span", "", this.text("ip.enableProxycheck"))
-      );
-      const keyInputWrap = el("div", "settings-input-wrap");
-      const keyInput = document.createElement("input");
-      keyInput.className = "settings-input";
-      keyInput.type = draft.revealKey ? "text" : "password";
-      keyInput.autocomplete = "off";
-      keyInput.spellcheck = false;
-      keyInput.value = draft.apiKeyValue;
-      keyInput.placeholder = draft.keyDirty && this.ipRiskSettings.hasApiKey ? this.text("ip.newKeyPlaceholder") : this.ipRiskSettings.hasApiKey ? this.text("ip.savedKeyPlaceholder") : this.text("ip.keyPlaceholder");
-      const prepareKeyEdit = () => {
-        if (!draft.keyDirty && this.ipRiskSettings.hasApiKey) {
-          draft.keyDirty = true;
-          keyInput.value = "";
-          keyInput.placeholder = this.text("ip.newKeyPlaceholder");
-          keyInput.type = "password";
-          draft.revealKey = false;
-        }
-        draft.apiKeyValue = keyInput.value;
-      };
-      keyInput.addEventListener("keydown", (event) => {
-        if (event.key.length === 1 || event.key === "Backspace" || event.key === "Delete") {
-          prepareKeyEdit();
-        }
-      });
-      keyInput.addEventListener("paste", prepareKeyEdit);
-      keyInput.addEventListener("input", () => {
-        draft.keyDirty = true;
-        draft.apiKeyValue = keyInput.value;
-        draft.revealKey = keyInput.type !== "password";
-      });
-      const syncDraft = () => {
-        draft.enabled = enabledInput.checked;
-        draft.apiKeyValue = keyInput.value;
-        draft.revealKey = keyInput.type !== "password";
-      };
-      languageSelect.addEventListener("change", () => {
-        syncDraft();
-        const nextMode = languageModeFromValue(languageSelect.value);
-        this.languageMode = nextMode;
-        this.resolvedLanguage = resolveLanguage(nextMode);
-        this.handlers.onLanguageModeSave?.(nextMode);
-        this.render();
-      });
-      const reveal = this.renderActionButton(
-        "👁",
-        this.text("action.toggleSecret"),
-        () => {
-          keyInput.type = keyInput.type === "password" ? "text" : "password";
-          draft.revealKey = keyInput.type !== "password";
-        }
-      );
-      reveal.classList.add("settings-eye-button");
-      keyInputWrap.append(keyInput, reveal);
-      const actions = el("div", "settings-actions");
-      const save = textEl(
-        "button",
-        "settings-button primary-button",
-        this.text("settings.save")
-      );
-      save.type = "button";
-      save.addEventListener("click", () => {
-        draft.enabled = enabledInput.checked;
-        draft.apiKeyValue = keyInput.value;
-        const inputValue = draft.apiKeyValue.trim();
-        const previewValue = this.ipRiskSettings.apiKeyPreview ?? "";
-        this.handlers.onIpRiskSettingsSave?.({
-          enabled: draft.enabled,
-          apiKey: inputValue && inputValue !== previewValue ? inputValue : void 0
-        });
-        this.closeIpRiskSettingsDialog();
-      });
-      const refresh = textEl(
-        "button",
-        "settings-button",
-        this.text("settings.checkNow")
-      );
-      refresh.type = "button";
-      refresh.disabled = this.ipRiskRefreshing || !this.ipRiskSettings.enabled || !this.ipRiskSettings.hasApiKey;
-      refresh.addEventListener("click", () => {
-        this.handlers.onIpRiskRefresh?.();
-        this.closeIpRiskSettingsDialog();
-      });
-      const remove = textEl(
-        "button",
-        "settings-button danger-button",
-        this.text("ip.deleteKey")
-      );
-      remove.type = "button";
-      remove.disabled = !this.ipRiskSettings.hasApiKey;
-      remove.addEventListener("click", () => {
-        this.handlers.onIpRiskSettingsSave?.({
-          enabled: enabledInput.checked,
-          clearApiKey: true
-        });
-        this.closeIpRiskSettingsDialog();
-      });
-      actions.append(save, refresh, remove);
-      panel.append(
-        header,
-        textEl("label", "settings-label", this.text("language.label")),
-        languageSelect,
-        enabledLabel,
-        textEl("label", "settings-label", this.text("ip.apiKeyLabel")),
-        keyInputWrap,
-        textEl("div", "settings-help", this.text("ip.help")),
-        actions
-      );
+      panel.append(header, textEl("label", "settings-label", this.text("language.label")), select);
       return panel;
     }
-    ipRiskStatusText() {
-      if (!this.ipRiskSettings.enabled) {
-        return this.text("ip.status.disabled");
-      }
-      if (!this.ipRiskSettings.hasApiKey) {
-        return this.text("ip.status.missingKey");
-      }
-      if (this.ipRiskRefreshing) {
-        return this.text("ip.status.checking");
-      }
-      if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && this.ipRiskState?.status === "error") {
-        return this.text("ip.status.failed");
-      }
-      const freshIpRisk = this.freshIpRiskState();
-      if (freshIpRisk) {
-        return `${formatRiskLabelLocalized(
-          this.resolvedLanguage,
-          freshIpRisk.label
-        )} ${freshIpRisk.score}/100`;
-      }
-      return this.text("ip.status.waiting");
-    }
-    freshIpRiskState() {
-      const state = this.ipRiskState;
-      if (this.ipRiskSettings.enabled && this.ipRiskSettings.hasApiKey && state?.status === "ok" && typeof state.score === "number") {
-        return state;
-      }
-      return null;
-    }
-    renderSentinelRow(label, value) {
-      const row = el("div", "sentinel-row");
-      row.append(textEl("span", "sentinel-label", label), textEl("span", "", value));
-      return row;
-    }
-    renderSentinelBar(score) {
-      const bar = el("div", "bar sentinel-bar");
-      const fill = el("div", `bar-fill sentinel-fill ${sentinelRiskClass(score)}`);
-      const progress = clampPercent$1(score);
-      fill.style.width = `${progress}%`;
-      bar.style.setProperty("--meter-progress", `${progress}%`);
-      bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
-      return bar;
-    }
-    renderMeterSection(label, meters) {
+    renderMeterSection(label, meters, groupKey) {
       const section = el("section", "meter-section");
+      section.dataset.nodeKey = `section:${groupKey}`;
       section.append(cardCorners(), sectionTitle(label, "leaf-small.png"));
       for (const meter of meters) {
         section.append(this.renderMeter(meter));
@@ -2782,16 +3682,16 @@ button {
       return button;
     }
     renderSettingsButton() {
-      return this.renderActionButton("⚙", this.text("action.settings"), () => {
-        this.ipRiskSettingsOpen = !this.ipRiskSettingsOpen;
-        if (!this.ipRiskSettingsOpen) {
-          this.ipRiskSettingsDraft = null;
-        }
+      const button = this.renderActionButton("⚙", this.text("action.settings"), () => {
+        this.settingsOpen = !this.settingsOpen;
         this.render();
       });
+      button.dataset.action = "settings";
+      return button;
     }
     renderCollapsed() {
       const button = el("button", "collapsed");
+      button.dataset.nodeKey = "chip";
       button.type = "button";
       button.setAttribute(
         "aria-label",
@@ -2811,10 +3711,12 @@ button {
           textEl("span", "primary", this.collapsedPrimaryValue())
         ])
       );
+      this.schedulePlatformOverflowCheck(button);
       return button;
     }
     renderPanel() {
       const panel = el("section", "panel");
+      panel.dataset.nodeKey = "panel";
       panel.append(panelCorners("panel-corners compact-corners"), this.renderHeader(), this.renderMeta(), vineDivider());
       if (this.platform === "grok") {
         const modelMeta = this.renderGrokModelMeta();
@@ -2858,13 +3760,20 @@ button {
       }) : this.text("meta.neverUpdated");
       const right = this.backoffRemainingMs() > 0 ? this.text("meta.waitSeconds", {
         seconds: Math.ceil(this.backoffRemainingMs() / 1e3)
+      }) : (this.platform === "chatgpt" || this.platform === "muse") && this.snapshot?.checkedAt ? this.text("meta.checkedAt", {
+        age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt)
       }) : this.snapshot?.cacheAgeMs !== void 0 ? this.text("meta.cacheSeconds", {
         seconds: Math.floor(this.snapshot.cacheAgeMs / 1e3)
       }) : this.loading ? this.text("meta.loading") : "";
-      meta.append(
-        iconText("span", "meta-item", "leaf-small.png", updated),
-        right ? iconText("span", "meta-item", "leaf-small.png", right) : textEl("span", "", "")
-      );
+      const updatedNode = textEl("span", "", updated);
+      updatedNode.dataset.time = "updated";
+      const rightNode = textEl("span", "", right);
+      rightNode.dataset.time = this.backoffRemainingMs() > 0 ? "backoff" : this.snapshot?.checkedAt ? "checked" : "cache";
+      const leftWrap = el("span", "meta-item");
+      leftWrap.append(decorativeAsset("leaf-small.png", "inline-icon"), updatedNode);
+      const rightWrap = el("span", "meta-item");
+      rightWrap.append(rightNode);
+      meta.append(leftWrap, rightWrap);
       return meta;
     }
     renderGrokModelMeta() {
@@ -2881,11 +3790,15 @@ button {
     renderContent() {
       const content = el("div", "content");
       if (this.snapshot?.errorMessage) {
-        content.append(textEl("div", "error", this.snapshot.errorMessage));
+        const saved = this.platform === "muse" && this.snapshot.meters.length ? this.resolvedLanguage === "zh-CN" ? " · 显示上次读数" : " · Showing saved readings" : "";
+        content.append(textEl("div", "error", this.snapshot.errorMessage + saved));
       }
-      content.append(this.renderIpRiskSection());
-      const meters = this.snapshot?.meters ?? [];
+      const meters = (this.snapshot?.meters ?? []).filter(hasMeaningfulValue);
       if (meters.length === 0) {
+        content.append(textEl("div", "empty", this.loading ? this.text("meta.loading") : this.text("usage.empty")));
+        return content;
+      }
+      if (this.platform === "grok" && this.appendGrokCreditsContent(content, meters)) {
         return content;
       }
       for (const meter of meters) {
@@ -2893,9 +3806,90 @@ button {
       }
       return content;
     }
+    appendGrokCreditsContent(content, meters) {
+      const total = meters.find((meter) => meter.rawKind === "grokCreditsConfig:total");
+      const products = meters.filter(isGrokCreditsProductMeter).sort(grokCreditsProductCompare);
+      if (!total && products.length === 0) {
+        return false;
+      }
+      if (total) {
+        content.append(this.renderGrokCreditsMeter(total, products));
+      } else {
+        for (const product of products) {
+          content.append(this.renderMeter(product));
+        }
+      }
+      for (const meter of meters) {
+        if (meter !== total && !isGrokCreditsProductMeter(meter)) {
+          content.append(this.renderMeter(meter));
+        }
+      }
+      return true;
+    }
+    renderGrokCreditsMeter(total, products) {
+      const row = el("div", "meter grok-credits-meter");
+      row.dataset.nodeKey = `meter:${total.key}`;
+      const top = el("div", "meter-top");
+      top.append(
+        textEl(
+          "div",
+          "meter-label",
+          formatMeterLabelLocalized(this.resolvedLanguage, total)
+        ),
+        textEl("div", "meter-value", this.formatUsedPercentValue(total))
+      );
+      const progress = usedMeterProgress(total);
+      const bar = el("div", "bar grok-stack-bar");
+      const stack = el("div", "grok-stack-fill");
+      const visibleProducts = products.filter((product) => usedMeterProgress(product) > 0);
+      if (visibleProducts.length > 0) {
+        visibleProducts.forEach((product, index) => {
+          const segment = el("span", "grok-stack-segment");
+          const value = usedMeterProgress(product);
+          segment.style.width = `${value}%`;
+          segment.style.background = grokContributionColor(index);
+          segment.title = `${formatMeterLabelLocalized(
+            this.resolvedLanguage,
+            product
+          )} ${this.formatUsedPercentValue(product)}`;
+          stack.append(segment);
+        });
+      } else {
+        const segment = el("span", "grok-stack-segment");
+        segment.style.width = `${progress}%`;
+        segment.style.background = grokContributionColor(0);
+        stack.append(segment);
+      }
+      bar.style.setProperty("--meter-progress", `${progress}%`);
+      bar.append(stack, decorativeAsset("leaf-small.png", "progress-leaf"));
+      const details = el("div", "grok-contribution-list");
+      products.forEach((product, index) => {
+        const item = el("span", "grok-contribution");
+        const dot = el("span", "grok-contribution-dot");
+        dot.style.background = grokContributionColor(index);
+        item.append(
+          dot,
+          textEl(
+            "span",
+            "grok-contribution-label",
+            formatMeterLabelLocalized(this.resolvedLanguage, product)
+          ),
+          textEl("span", "grok-contribution-value", this.formatUsedPercentValue(product))
+        );
+        details.append(item);
+      });
+      row.append(top, bar);
+      if (products.length > 0) {
+        row.append(details);
+      }
+      row.append(this.renderMeterBottom(total));
+      return row;
+    }
     renderMeter(meter) {
       const row = el("div", "meter");
+      row.dataset.nodeKey = `meter:${meter.key}`;
       const top = el("div", "meter-top");
+      if (meter.rawKind === "muse.topup") top.classList.add("meter-top-detail");
       top.append(
         textEl(
           "div",
@@ -2917,27 +3911,64 @@ button {
       fill.style.width = `${progress}%`;
       bar.style.setProperty("--meter-progress", `${progress}%`);
       bar.append(fill, decorativeAsset("leaf-small.png", "progress-leaf"));
-      const bottom = el("div", "meter-bottom");
-      const age = meter.observedAt ? ` · ${formatAgeLocalized(this.resolvedLanguage, meter.observedAt)}` : "";
-      bottom.append(
-        textEl(
-          "span",
-          "badge",
-          `${formatSourceLabelLocalized(
-            this.resolvedLanguage,
-            meter.source
-          )} · ${formatConfidenceLabelLocalized(
-            this.resolvedLanguage,
-            meter.confidence
-          )}${age}`
-        ),
-        textEl("span", "", formatResetLocalized(this.resolvedLanguage, meter))
-      );
-      row.append(top, bar, bottom);
+      if (meter.rawKind === "chatgpt.subscription") {
+        const value = top.querySelector(".meter-value");
+        if (value) {
+          value.dataset.time = "subscription";
+          value.dataset.meterKey = meter.key;
+        }
+      }
+      const label = top.querySelector(".meter-label");
+      if (label) label.title = label.textContent ?? "";
+      row.append(top);
+      if (progress !== null) row.append(bar);
+      row.append(this.renderMeterBottom(meter));
       return row;
+    }
+    meterBadge(meter) {
+      const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
+      const uncalibrated = meter.quotaState === "unknown" ? this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated" : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
+      const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
+      const stale = (this.platform === "chatgpt" || this.platform === "muse") && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS ? this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale" : "";
+      return `${source} · ${uncalibrated}${age ? ` · ${age}` : ""}${stale}`;
+    }
+    renderMeterBottom(meter) {
+      const bottom = el("div", "meter-bottom");
+      const badge = textEl("span", "badge", this.meterBadge(meter));
+      badge.dataset.time = "badge";
+      badge.dataset.meterKey = meter.key;
+      const reset = textEl("span", "", this.formatMeterTimePreview(meter));
+      reset.dataset.time = "reset";
+      reset.dataset.meterKey = meter.key;
+      bottom.append(badge, reset);
+      return bottom;
+    }
+    formatMeterTimePreview(meter) {
+      if (meter.rawKind === "muse.topup") return this.text("meter.neverExpires");
+      if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
+        const fmt = (n) => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });
+        return this.resolvedLanguage === "zh-CN" ? `已用 ${fmt(meter.used)} / 共 ${fmt(meter.total)} GiB` : `Used ${fmt(meter.used)} / ${fmt(meter.total)} GiB`;
+      }
+      if (meter.quotaState === "unknown") return "";
+      if (meter.rawKind === "chatgpt.subscription") {
+        return formatSubscriptionExpiryLocalized(this.resolvedLanguage, meter);
+      }
+      return formatResetLocalized(this.resolvedLanguage, meter);
+    }
+    formatUsedPercentValue(meter) {
+      if (typeof meter.usedPercent === "number") {
+        return this.text("meter.usedPercent", {
+          percent: Math.round(meter.usedPercent)
+        });
+      }
+      return formatMeterValueLocalized(this.resolvedLanguage, meter);
     }
     primaryValue() {
       const meters = this.snapshot?.meters ?? [];
+      if (this.platform === "muse") {
+        const weekly = meters.find((meter) => meter.key === "muse:weekly");
+        return weekly ? formatMeterValueLocalized(this.resolvedLanguage, weekly) : "?";
+      }
       const byRemaining = meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
       if (byRemaining?.remaining !== void 0 && byRemaining.remaining !== null) {
         return `${byRemaining.remaining}`;
@@ -2963,42 +3994,14 @@ button {
     alertCount() {
       return this.chatGptMeters().filter(isAlertMeter).length;
     }
-    criticalSummary() {
-      const meters = this.chatGptMeters();
-      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.usedPercent === "number").sort((a, b) => (b.usedPercent ?? 0) - (a.usedPercent ?? 0))[0] ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
-      if (!alert) {
-        return formatStatusLabelLocalized(
-          this.resolvedLanguage,
-          this.snapshot?.status ?? "unknown"
-        );
-      }
-      if (typeof alert.remainingPercent === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${this.text("meter.remainingPercent", {
-          percent: Math.round(alert.remainingPercent)
-        })}`;
-      }
-      if (typeof alert.usedPercent === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${Math.round(alert.usedPercent)}%`;
-      }
-      if (typeof alert.remaining === "number") {
-        return `${shortLabel(
-          formatMeterLabelLocalized(this.resolvedLanguage, alert)
-        )} ${this.text("meter.remaining", { remaining: alert.remaining })}`;
-      }
-      return shortLabel(formatMeterLabelLocalized(this.resolvedLanguage, alert));
-    }
     chatGptMeters() {
-      const meters = [...this.snapshot?.meters ?? []];
+      const meters = [...this.snapshot?.meters ?? []].filter((meter) => hasMeaningfulValue(meter) && !isChatPassPath(meter.key));
       return meters.sort((a, b) => chatGptMeterPriority(a) - chatGptMeterPriority(b));
     }
     chatGptPrimaryValue() {
       const meters = this.chatGptMeters();
-      const alert = meters.find((meter) => typeof meter.remaining === "number" && meter.remaining <= 0) ?? meters.find((meter) => typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) ?? meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0] ?? meters.filter((meter) => typeof meter.remainingPercent === "number").sort((a, b) => (a.remainingPercent ?? 0) - (b.remainingPercent ?? 0))[0] ?? meters.find((meter) => typeof meter.usedPercent === "number");
-      return alert ? formatMeterValueLocalized(this.resolvedLanguage, alert) : "?";
+      const primary = chatGptPrimaryMeter(meters);
+      return primary ? formatMeterValueLocalized(this.resolvedLanguage, primary) : "?";
     }
     backoffRemainingMs() {
       return Math.max(0, this.backoffUntil - Date.now());
@@ -3014,6 +4017,9 @@ button {
       if (!meter) {
         return this.primaryValue();
       }
+      if (meter.rawKind?.startsWith("grokCreditsConfig:")) {
+        return this.formatUsedPercentValue(meter);
+      }
       return formatMeterValueLocalized(this.resolvedLanguage, meter);
     }
     grokPrimaryMeter() {
@@ -3023,77 +4029,28 @@ button {
       )[0] ?? null;
     }
   }
-  function meterProgress(meter) {
-    if (typeof meter.remainingPercent === "number") {
-      return clampPercent$1(meter.remainingPercent);
-    }
+  function usedMeterProgress(meter) {
     if (typeof meter.usedPercent === "number") {
       return clampPercent$1(meter.usedPercent);
     }
-    if (typeof meter.remaining === "number" && typeof meter.total === "number" && meter.total > 0) {
-      return clampPercent$1((meter.total - meter.remaining) / meter.total * 100);
-    }
-    return 0;
+    return meterProgress(meter) ?? 0;
   }
   function clampPercent$1(value) {
     return Math.max(0, Math.min(100, value));
   }
-  function sentinelRiskClass(score) {
-    if (score >= 75) {
-      return "sentinel-risk-severe";
-    }
-    if (score >= 50) {
-      return "sentinel-risk-high";
-    }
-    if (score >= 25) {
-      return "sentinel-risk-elevated";
-    }
-    return "sentinel-risk-normal";
-  }
-  function formatIpRiskSignals(state, language) {
-    const signals = [];
-    if (state.signals.proxy) {
-      signals.push("Proxy");
-    }
-    if (state.signals.vpn) {
-      signals.push("VPN");
-    }
-    if (state.signals.tor) {
-      signals.push("Tor");
-    }
-    if (state.signals.hosting) {
-      signals.push("Hosting");
-    }
-    if (state.signals.type && !signals.includes(state.signals.type)) {
-      signals.push(state.signals.type);
-    }
-    return signals.length > 0 ? signals.join(" / ") : t(language, "ip.noProxySignals");
-  }
-  function clamp$1(value, min, max) {
+  function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
   }
-  function isAlertMeter(meter) {
-    if (typeof meter.remaining === "number" && meter.remaining <= 0) {
-      return true;
-    }
-    if (typeof meter.remainingPercent === "number" && meter.remainingPercent <= 5) {
-      return true;
-    }
-    if (typeof meter.usedPercent === "number" && meter.usedPercent >= 95) {
-      return true;
-    }
-    return false;
-  }
   function chatGptMeterPriority(meter) {
-    const key = meter.key.toLowerCase();
+    const key2 = meter.key.toLowerCase();
     const label = meter.label.toLowerCase();
-    if (key.startsWith("limits_progress:file_upload")) {
+    if (key2.startsWith("limits_progress:file_upload")) {
       return 10;
     }
-    if (key.startsWith("limits_progress:") || meter.rawKind === "limits_progress") {
+    if (key2.startsWith("limits_progress:") || key2.startsWith("blocked_features:") || meter.rawKind === "limits_progress" || meter.rawKind === "blocked_features") {
       return 20;
     }
-    if (label.includes("primary window")) {
+    if (label.includes("primary window") || label.includes("5-hour window")) {
       return 40;
     }
     if (label.includes("weekly window")) {
@@ -3102,13 +4059,14 @@ button {
     if (label.includes("credits")) {
       return 42;
     }
-    if (key.includes("codex") || meter.rawKind === "codex.settings.usage") {
+    if (key2.includes("codex") || meter.rawKind === "codex.settings.usage") {
       return 50;
     }
     return 80;
   }
   function groupChatGptMeters(meters, language) {
     const groups = {
+      subscription: [],
       input: [],
       features: [],
       windows: [],
@@ -3118,46 +4076,80 @@ button {
     for (const meter of meters) {
       groups[chatGptMeterSection(meter)].push(meter);
     }
-    return GPT_SECTION_ORDER.map((key) => ({
-      label: formatGptSectionLabelLocalized(language, key),
-      meters: groups[key]
+    return GPT_SECTION_ORDER.map((key2) => ({
+      key: key2,
+      label: formatGptSectionLabelLocalized(language, key2),
+      meters: groups[key2]
     })).filter((section) => section.meters.length > 0);
   }
   function chatGptMeterSection(meter) {
-    const key = meter.key.toLowerCase();
+    const key2 = meter.key.toLowerCase();
     const rawKind = meter.rawKind?.toLowerCase() ?? "";
     const label = meter.label.toLowerCase();
-    if (key.includes("codex") || rawKind === "codex.settings.usage" || rawKind === "credits" || key === "wham:credits") {
+    if (rawKind === "chatgpt.library_storage") return "input";
+    if (rawKind === "chatgpt.reset_credits") return "codex";
+    if (rawKind === "chatgpt.subscription") {
+      return "subscription";
+    }
+    if (key2.includes("codex") || rawKind === "codex.settings.usage" || rawKind.includes("codex") || rawKind === "credits" || key2 === "wham:credits") {
       return "codex";
     }
-    if (key.startsWith("wham:") || key.startsWith("tasks:") || rawKind.includes("rate_limit") || rawKind.includes("window")) {
+    if (key2.startsWith("wham:") || key2.startsWith("tasks:") || rawKind.includes("rate_limit") || rawKind.includes("window")) {
       return "windows";
     }
-    if (rawKind === "limits_progress" || key.startsWith("limits_progress:")) {
-      return isInputOrAttachmentMeter(key, label) ? "input" : "features";
+    if (rawKind === "limits_progress" || rawKind === "blocked_features" || key2.startsWith("limits_progress:") || key2.startsWith("blocked_features:")) {
+      return isInputOrAttachmentMeter(key2, label) ? "input" : "features";
     }
     return "other";
   }
-  function isInputOrAttachmentMeter(key, label) {
-    return key.includes("file_upload") || key.includes("paste_text") || key.includes("dictation") || key.includes("upload") || label.includes("file upload") || label.includes("paste text") || label.includes("dictation");
+  function isInputOrAttachmentMeter(key2, label) {
+    return key2.includes("file_upload") || key2.includes("paste_text") || key2.includes("dictation") || key2.includes("upload") || label.includes("file upload") || label.includes("paste text") || label.includes("dictation");
   }
   function grokMeterPriority(meter) {
-    if (meter.rawKind === "queries") {
+    if (meter.rawKind === "grokCreditsConfig:total") {
       return 10;
     }
-    if (meter.rawKind === "highEffortRateLimits") {
+    if (meter.rawKind?.startsWith("grokCreditsConfig:product:")) {
       return 20;
     }
+    if (meter.rawKind === "queries") {
+      return 40;
+    }
+    if (meter.rawKind === "highEffortRateLimits") {
+      return 50;
+    }
     if (meter.rawKind === "lowEffortRateLimits") {
-      return 30;
+      return 60;
     }
     if (meter.rawKind === "tokens") {
-      return 40;
+      return 70;
     }
     return 80;
   }
-  function shortLabel(label) {
-    return label.replace(/\bwindow\b/gi, "").replace(/\s+/g, " ").trim().slice(0, 18);
+  function isGrokCreditsProductMeter(meter) {
+    return Boolean(meter.rawKind?.startsWith("grokCreditsConfig:product:"));
+  }
+  function grokCreditsProductCompare(a, b) {
+    return grokCreditsProductPriority(a) - grokCreditsProductPriority(b);
+  }
+  function grokCreditsProductPriority(meter) {
+    const productId = Number(meter.rawKind?.match(/product:(\d+)/)?.[1] ?? 0);
+    const priority = {
+      5: 10,
+      4: 20,
+      1: 30,
+      2: 40
+    };
+    return priority[productId] ?? 90;
+  }
+  function grokContributionColor(index) {
+    return [
+      "var(--rb-blue)",
+      "var(--rb-blue-soft)",
+      "#9fb9e8",
+      "#c4d2ef",
+      "var(--rb-mustard)"
+    ][index % 5];
   }
   function modelSummaryFromMeter(meter) {
     if (!meter.modelName) {
@@ -3169,7 +4161,7 @@ button {
     return meter.modelName;
   }
   function assetUrl(name) {
-    const path = `assets/nahida/${name}`;
+    const path = `assets/little-chihiro/${name}`;
     if (typeof chrome !== "undefined" && chrome.runtime?.getURL) {
       return chrome.runtime.getURL(path);
     }
@@ -3200,11 +4192,6 @@ button {
       textEl("span", "section-title-text", label)
     );
     return title;
-  }
-  function iconText(tagName, className, assetName, label) {
-    const element = el(tagName, className);
-    element.append(decorativeAsset(assetName, "inline-icon"), document.createTextNode(label));
-    return element;
   }
   function panelCorners(className) {
     const frame = el("div", className);
@@ -3243,6 +4230,9 @@ button {
       return "leaf-emblem.png";
     }
     if (platform2 === "gemini") {
+      return "gem-square.png";
+    }
+    if (platform2 === "perplexity") {
       return "gem-square.png";
     }
     return "leaf-small.png";
@@ -3287,10 +4277,19 @@ button {
     if (hostname === "www.kimi.com" || hostname === "kimi.com") {
       return "kimi";
     }
+    if (hostname === "www.perplexity.ai" || hostname === "perplexity.ai") {
+      return "perplexity";
+    }
+    if (hostname === "muse.ai") {
+      return "muse";
+    }
     return null;
   }
   function usageErrorFromBridge(response) {
     const status = response.error?.status;
+    if (response.error?.code) {
+      return { code: response.error.code, message: response.error.message, status };
+    }
     if (status === 401 || status === 403) {
       return {
         code: "UNAUTHORIZED",
@@ -3323,609 +4322,6 @@ button {
     const status = error.status ? `${error.status} ` : "";
     return `${prefix}${status}${error.message}`;
   }
-  const FEATURE_LABELS$1 = {
-    deep_research: "Deep Research",
-    image_gen: "Image Generation",
-    file_upload: "File Upload",
-    odyssey: "Odyssey"
-  };
-  function normalizeChatGptConversationInit(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return { meters: [], blockedFeatures: [] };
-    }
-    const meters = [];
-    for (const item of getArray(root, "limits_progress")) {
-      const record = asRecord(item);
-      if (!record) {
-        continue;
-      }
-      const featureName = getString(record, "feature_name") ?? "unknown_feature";
-      const remaining = getNumber(record, "remaining");
-      const resetAfter = record.reset_after;
-      const resetAt = typeof resetAfter === "string" || typeof resetAfter === "number" ? resetAfter : null;
-      meters.push({
-        key: `limits_progress:${featureName}`,
-        label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
-        remaining,
-        resetAt,
-        source,
-        confidence: remaining !== null && resetAt !== null ? "high" : "medium",
-        rawKind: "limits_progress"
-      });
-    }
-    const defaultModelSlug = getString(root, "default_model_slug") ?? void 0;
-    const blockedFeatures = asArray(root.blocked_features).map((item) => typeof item === "string" ? item : null).filter((item) => item !== null);
-    return { meters, defaultModelSlug, blockedFeatures };
-  }
-  function normalizeWindowMeter(args) {
-    const explicitRemainingPercent = percentFromRatioOrPercent(
-      numberFromKeys(args.record, [
-        "remaining_percent",
-        "remainingPercent",
-        "percent_remaining",
-        "percentRemaining",
-        "remaining_percentage",
-        "remainingPercentage",
-        "remaining_pct",
-        "remainingPct"
-      ])
-    );
-    const rawUsedPercent = percentFromRatioOrPercent(
-      numberFromKeys(args.record, [
-        "used_percent",
-        "usedPercent",
-        "used_percentage",
-        "usedPercentage",
-        "percent_used",
-        "percentUsed",
-        "utilization"
-      ])
-    );
-    const remainingPercent = explicitRemainingPercent ?? (args.displayAsRemaining && rawUsedPercent !== null ? percentFromRatioOrPercent(100 - rawUsedPercent) : null);
-    const usedPercent = remainingPercent !== null ? percentFromRatioOrPercent(100 - remainingPercent) : rawUsedPercent;
-    const resetValue = resetValueFromRecord(args.record);
-    const windowSeconds = numberFromKeys(args.record, [
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]);
-    if (usedPercent === null && remainingPercent === null && resetValue === null && windowSeconds === null) {
-      return null;
-    }
-    return {
-      key: args.key,
-      label: args.label,
-      usedPercent,
-      remainingPercent,
-      resetAt: resetValue,
-      windowSeconds,
-      source: args.source,
-      confidence: usedPercent !== null && resetValue !== null ? "high" : "medium",
-      rawKind: args.rawKind
-    };
-  }
-  function normalizeChatGptWhamUsage(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    const meters = [];
-    const rateLimit = getRecord(root, "rate_limit");
-    if (rateLimit) {
-      const primary = getRecord(rateLimit, "primary_window");
-      if (primary) {
-        const meter = normalizeWindowMeter({
-          key: "wham:primary_window",
-          label: "Primary window",
-          record: primary,
-          source,
-          rawKind: "rate_limit.primary_window",
-          displayAsRemaining: true
-        });
-        if (meter) {
-          meters.push(meter);
-        }
-      }
-      const secondary = getRecord(rateLimit, "secondary_window");
-      if (secondary) {
-        const meter = normalizeWindowMeter({
-          key: "wham:secondary_window",
-          label: "Weekly window",
-          record: secondary,
-          source,
-          rawKind: "rate_limit.secondary_window",
-          displayAsRemaining: true
-        });
-        if (meter) {
-          meters.push(meter);
-        }
-      }
-    }
-    const codeReviewRateLimit = getRecord(root, "code_review_rate_limit");
-    const codeReviewPrimary = codeReviewRateLimit ? getRecord(codeReviewRateLimit, "primary_window") : null;
-    if (codeReviewPrimary) {
-      const meter = normalizeWindowMeter({
-        key: "wham:code_review",
-        label: "Code Review",
-        record: codeReviewPrimary,
-        source,
-        rawKind: "code_review_rate_limit.primary_window",
-        displayAsRemaining: true
-      });
-      if (meter) {
-        meters.push(meter);
-      }
-    }
-    const credits = getRecord(root, "credits");
-    if (credits) {
-      const unlimited = asBoolean(credits.unlimited);
-      const balance = getNumber(credits, "balance");
-      if (unlimited !== null || balance !== null || asBoolean(credits.has_credits) !== null) {
-        meters.push({
-          key: "wham:credits",
-          label: unlimited ? "Credits (unlimited)" : "Credits",
-          remaining: balance,
-          source,
-          confidence: balance !== null || unlimited === true ? "medium" : "low",
-          rawKind: "credits"
-        });
-      }
-    }
-    meters.push(...normalizeAdditionalWhamUsageWindows(root, source));
-    meters.push(...normalizeWhamCodexNamedUsage(root, source));
-    return dedupeMeters(meters);
-  }
-  function normalizeAdditionalWhamUsageWindows(root, source) {
-    const knownPaths = /* @__PURE__ */ new Set([
-      "root.rate_limit.primary_window",
-      "root.rate_limit.secondary_window",
-      "root.code_review_rate_limit.primary_window",
-      "root.credits"
-    ]);
-    return collectUsageCandidates(root, "root", {
-      maxDepth: 7,
-      includeRecord: (path, record) => !knownPaths.has(path) && isGeneralChatGptUsageLike(path, record)
-    }).map(
-      (candidate) => normalizeGenericUsageObject(candidate.path, candidate.record, source, {
-        keyPrefix: "wham",
-        rawKind: "chatgpt.usage.window",
-        displayAsRemaining: true
-      })
-    ).filter((meter) => meter !== null);
-  }
-  function normalizeWhamCodexNamedUsage(root, source) {
-    const codexRoots = collectCodexNamedSubtrees(root);
-    const meters = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const item of codexRoots) {
-      for (const meter of normalizeCodexUsageRecordTree(
-        item.record,
-        `wham.${item.path}`,
-        source
-      )) {
-        if (seen.has(meter.key)) {
-          continue;
-        }
-        seen.add(meter.key);
-        meters.push(meter);
-      }
-    }
-    return meters;
-  }
-  function collectCodexNamedSubtrees(root) {
-    const queue = [
-      { path: "root", value: root, depth: 0 }
-    ];
-    const matches = [];
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (!item || item.depth > 4) {
-        continue;
-      }
-      const record = asRecord(item.value);
-      if (!record) {
-        continue;
-      }
-      for (const [key, value] of Object.entries(record)) {
-        const path = `${item.path}.${key}`;
-        const childRecord = asRecord(value);
-        if (childRecord) {
-          if (isCodexPath(path)) {
-            matches.push({ path, record: childRecord });
-          }
-          queue.push({ path, value, depth: item.depth + 1 });
-        } else if (Array.isArray(value)) {
-          value.forEach((entry, index) => {
-            queue.push({
-              path: `${path}.${index}`,
-              value: entry,
-              depth: item.depth + 1
-            });
-          });
-        }
-      }
-    }
-    return matches;
-  }
-  function isCodexPath(path) {
-    const normalized = path.toLowerCase();
-    return normalized.includes("codex") && !normalized.includes("code_review");
-  }
-  function normalizeTasksRateLimit(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    const meters = [];
-    const direct = normalizeWindowMeter({
-      key: "tasks:rate_limit",
-      label: "Tasks rate limit",
-      record: root,
-      source,
-      rawKind: "tasks.rate_limit"
-    });
-    if (direct) {
-      meters.push(direct);
-    }
-    return meters;
-  }
-  function normalizeChatGptCodexSettingsUsage(json, source = "api") {
-    const root = asRecord(json);
-    if (!root) {
-      return [];
-    }
-    return normalizeCodexUsageRecordTree(root, "codex", source);
-  }
-  function normalizeCodexUsageRecordTree(root, rootPath, source) {
-    const candidates = collectCodexUsageCandidates(root, rootPath);
-    const meters = [];
-    const seen = /* @__PURE__ */ new Set();
-    for (const candidate of candidates) {
-      const meter = normalizeCodexUsageObject(candidate.path, candidate.record, source);
-      if (!meter || seen.has(meter.key)) {
-        continue;
-      }
-      seen.add(meter.key);
-      meters.push(meter);
-    }
-    return meters;
-  }
-  function collectCodexUsageCandidates(root, rootPath) {
-    return collectUsageCandidates(root, rootPath, {
-      maxDepth: 7,
-      includeRecord: (_path, record) => isCodexUsageLike(record)
-    });
-  }
-  function isCodexUsageLike(record) {
-    return numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null || numberFromKeys(record, ["total", "limit", "quota", "total_credits", "totalCredits"]) !== null || numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) !== null || numberFromKeys(record, ["used_percent", "usedPercent", "utilization"]) !== null || numberFromKeys(record, [
-      "remaining_percent",
-      "remainingPercent",
-      "percent_remaining",
-      "percentRemaining",
-      "remaining_percentage",
-      "remainingPercentage"
-    ]) !== null || numberFromKeys(record, ["reset_after", "resetAfter", "reset_after_seconds"]) !== null || stringOrNumberFromKeys(record, ["reset_at", "resetAt", "resets_at"]) !== null;
-  }
-  function isGeneralChatGptUsageLike(path, record) {
-    if (isCodexPath(path)) {
-      return false;
-    }
-    if (!isCodexUsageLike(record)) {
-      return false;
-    }
-    const normalizedPath = path.toLowerCase();
-    const label = usageLabel(record, path).toLowerCase();
-    const hasUsageNameSignal = normalizedPath.includes("limit") || normalizedPath.includes("window") || normalizedPath.includes("usage") || normalizedPath.includes("quota") || normalizedPath.includes("bucket") || label.includes("limit") || label.includes("window") || label.includes("usage") || label.includes("额度") || label.includes("使用限额");
-    const hasCountQuotaSignal = numberFromKeys(record, ["remaining", "remaining_credits", "remainingCredits"]) !== null && numberFromKeys(record, [
-      "total",
-      "limit",
-      "quota",
-      "total_credits",
-      "totalCredits"
-    ]) !== null;
-    const hasCurrentWindowSignal = hasCountQuotaSignal || numberFromKeys(record, [
-      "remaining_percent",
-      "remainingPercent",
-      "percent_remaining",
-      "percentRemaining",
-      "remaining_percentage",
-      "remainingPercentage",
-      "remaining_pct",
-      "remainingPct",
-      "used_percent",
-      "usedPercent",
-      "used_percentage",
-      "usedPercentage",
-      "percent_used",
-      "percentUsed",
-      "utilization"
-    ]) !== null || resetValueFromRecord(record) !== null || numberFromKeys(record, [
-      "reset_after",
-      "resetAfter",
-      "reset_after_seconds",
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]) !== null;
-    return hasUsageNameSignal && hasCurrentWindowSignal;
-  }
-  function normalizeCodexUsageObject(path, record, source) {
-    return normalizeGenericUsageObject(path, record, source, {
-      keyPrefix: "codex",
-      rawKind: "codex.settings.usage",
-      displayAsRemaining: true
-    });
-  }
-  function normalizeGenericUsageObject(path, record, source, options) {
-    const remaining = numberFromKeys(record, [
-      "remaining",
-      "remaining_credits",
-      "remainingCredits"
-    ]);
-    const total = numberFromKeys(record, [
-      "total",
-      "limit",
-      "quota",
-      "total_credits",
-      "totalCredits"
-    ]);
-    const used = numberFromKeys(record, ["used", "usage", "used_credits", "usedCredits"]) ?? (remaining !== null && total !== null ? Math.max(0, total - remaining) : null);
-    const explicitRemainingPercent = percentFromRatioOrPercent(
-      numberFromKeys(record, [
-        "remaining_percent",
-        "remainingPercent",
-        "percent_remaining",
-        "percentRemaining",
-        "remaining_percentage",
-        "remainingPercentage",
-        "remaining_pct",
-        "remainingPct"
-      ])
-    );
-    const rawUsedPercent = percentFromRatioOrPercent(
-      numberFromKeys(record, [
-        "used_percent",
-        "usedPercent",
-        "used_percentage",
-        "usedPercentage",
-        "percent_used",
-        "percentUsed",
-        "utilization"
-      ])
-    );
-    const remainingPercent = explicitRemainingPercent ?? (options.displayAsRemaining && rawUsedPercent !== null ? percentFromRatioOrPercent(100 - rawUsedPercent) : null);
-    const usedPercent = remainingPercent !== null ? percentFromRatioOrPercent(100 - remainingPercent) : rawUsedPercent;
-    const resetAt = resetValueFromRecord(record);
-    const resetAfterSeconds = numberFromKeys(record, [
-      "reset_after",
-      "resetAfter",
-      "reset_after_seconds"
-    ]);
-    const windowSeconds = numberFromKeys(record, [
-      "limit_window_seconds",
-      "limitWindowSeconds",
-      "window_seconds",
-      "windowSeconds",
-      "window_size_seconds",
-      "windowSizeSeconds"
-    ]);
-    const label = usageLabel(record, path);
-    if (remaining === null && total === null && used === null && usedPercent === null && remainingPercent === null && resetAt === null && resetAfterSeconds === null && windowSeconds === null) {
-      return null;
-    }
-    return {
-      key: `${options.keyPrefix}:${path}`,
-      label,
-      remaining,
-      total,
-      used,
-      usedPercent: usedPercent ?? (used !== null && total !== null && total > 0 ? percentFromRatioOrPercent(used / total) : null),
-      remainingPercent: remainingPercent ?? (remaining !== null && total !== null && total > 0 ? percentFromRatioOrPercent(remaining / total) : null),
-      resetAt,
-      resetAfterSeconds,
-      windowSeconds,
-      source,
-      confidence: remaining !== null || total !== null || usedPercent !== null || remainingPercent !== null ? "medium" : "low",
-      rawKind: options.rawKind
-    };
-  }
-  function collectUsageCandidates(root, rootPath, options) {
-    const queue = [
-      { path: rootPath, value: root, depth: 0 }
-    ];
-    const candidates = [];
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (!item || item.depth > options.maxDepth) {
-        continue;
-      }
-      const record = asRecord(item.value);
-      if (!record) {
-        continue;
-      }
-      if (options.includeRecord(item.path, record)) {
-        candidates.push({ path: item.path, record });
-      }
-      for (const [key, value] of Object.entries(record)) {
-        if (Array.isArray(value)) {
-          value.forEach((entry, index) => {
-            queue.push({
-              path: `${item.path}.${key}.${index}`,
-              value: entry,
-              depth: item.depth + 1
-            });
-          });
-        } else if (asRecord(value)) {
-          queue.push({
-            path: `${item.path}.${key}`,
-            value,
-            depth: item.depth + 1
-          });
-        }
-      }
-    }
-    return candidates;
-  }
-  function usageLabel(record, path) {
-    const direct = getString(record, "label") ?? getString(record, "title") ?? getString(record, "name") ?? getString(record, "display_name") ?? getString(record, "displayName") ?? getString(record, "feature_name") ?? getString(record, "bucket_name") ?? getString(record, "bucketName") ?? getString(record, "limit_name") ?? getString(record, "limitName");
-    if (direct) {
-      const titled = displayUsageLabel(direct);
-      if (path.toLowerCase().includes("codex") && isSimpleUsageKey(direct) && !/codex|gpt/i.test(titled)) {
-        return `Codex ${titled}`;
-      }
-      return titled;
-    }
-    const model = getString(record, "model") ?? getString(record, "model_name") ?? getString(record, "modelName") ?? getString(record, "model_slug") ?? getString(record, "modelSlug");
-    const windowName = getString(record, "window") ?? getString(record, "window_name") ?? getString(record, "windowName") ?? getString(record, "period") ?? getString(record, "period_name") ?? getString(record, "periodName");
-    if (model && windowName) {
-      return `${model} ${titleFromKey(windowName)} 使用限额`;
-    }
-    if (model) {
-      return `${model} 使用限额`;
-    }
-    const normalizedPath = path.toLowerCase();
-    if (normalizedPath === "codex" || normalizedPath.includes("codex_usage")) {
-      return "Codex usage";
-    }
-    const pathLabel = path.split(".").filter((part) => part !== "root" && !/^\d+$/.test(part)).slice(-3).join(" ");
-    return pathLabel ? titleFromKey(pathLabel) : "Codex usage";
-  }
-  function displayUsageLabel(value) {
-    const trimmed = value.trim();
-    if (!isSimpleUsageKey(trimmed)) {
-      return trimmed;
-    }
-    return titleFromKey(trimmed);
-  }
-  function isSimpleUsageKey(value) {
-    return /^[A-Za-z0-9_]+$/.test(value.trim());
-  }
-  function resetValueFromRecord(record) {
-    return stringOrNumberFromKeys(record, [
-      "reset_at",
-      "resetAt",
-      "resets_at",
-      "resetsAt",
-      "reset_time",
-      "resetTime",
-      "resets"
-    ]);
-  }
-  function dedupeMeters(meters) {
-    const seen = /* @__PURE__ */ new Set();
-    const result = [];
-    for (const meter of meters) {
-      if (seen.has(meter.key)) {
-        continue;
-      }
-      seen.add(meter.key);
-      result.push(meter);
-    }
-    return result;
-  }
-  function numberFromKeys(record, keys) {
-    for (const key of keys) {
-      const value = getNumber(record, key);
-      if (value !== null) {
-        return value;
-      }
-    }
-    return null;
-  }
-  function stringOrNumberFromKeys(record, keys) {
-    for (const key of keys) {
-      const value = record[key];
-      if (typeof value === "string" || typeof value === "number") {
-        return value;
-      }
-    }
-    return null;
-  }
-  function responseFailure$3(response) {
-    return formatUsageError(
-      usageErrorFromBridge(response),
-      response.endpointKey ?? "chatgpt"
-    );
-  }
-  async function fetchChatGptUsage(fetcher) {
-    const meters = [];
-    const requiredFailures = [];
-    const optionalFailures = [];
-    let defaultModelSlug;
-    let blockedFeatures = [];
-    const conversation = await fetcher("chatgpt:conversationInit");
-    if (conversation.ok) {
-      const normalized = normalizeChatGptConversationInit(conversation.json, "api");
-      meters.push(...normalized.meters);
-      defaultModelSlug = normalized.defaultModelSlug;
-      blockedFeatures = normalized.blockedFeatures;
-    } else {
-      requiredFailures.push(responseFailure$3(conversation));
-    }
-    const wham = await fetcher("chatgpt:whamUsage");
-    if (wham.ok) {
-      meters.push(...normalizeChatGptWhamUsage(wham.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$3(wham));
-    }
-    const tasks = await fetcher("chatgpt:whamTasksRateLimit");
-    if (tasks.ok) {
-      meters.push(...normalizeTasksRateLimit(tasks.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$3(tasks));
-    }
-    const codexUsage = await fetcher("chatgpt:codexSettingsUsage");
-    if (codexUsage.ok) {
-      meters.push(...normalizeChatGptCodexSettingsUsage(codexUsage.json, "api"));
-    } else {
-      optionalFailures.push(responseFailure$3(codexUsage));
-    }
-    const hasBlocking = blockedFeatures.length > 0;
-    const hasOptionalFailures = optionalFailures.length > 0;
-    const firstFailure = requiredFailures[0] ?? optionalFailures[0];
-    return {
-      platform: "chatgpt",
-      meters,
-      source: meters.length > 0 ? "api" : "unknown",
-      updatedAt: Date.now(),
-      status: meters.length > 0 ? hasOptionalFailures || hasBlocking ? "partial" : "ok" : firstFailure ? "error" : "unknown",
-      errorMessage: hasBlocking ? "部分功能被限制" : meters.length === 0 && firstFailure ? firstFailure : void 0,
-      debug: {
-        endpoint: "chatgpt:conversationInit,chatgpt:whamUsage,chatgpt:codexSettingsUsage",
-        parser: defaultModelSlug ? `chatgpt.default_model=${defaultModelSlug}` : "chatgpt"
-      }
-    };
-  }
-  function normalizeChatGptIntercepted(url, json) {
-    const path = safePathname(url);
-    if (path === "/backend-api/conversation/init") {
-      return normalizeChatGptConversationInit(json, "intercepted").meters;
-    }
-    if (path === "/backend-api/wham/usage") {
-      return normalizeChatGptWhamUsage(json, "intercepted");
-    }
-    if (path === "/backend-api/wham/tasks/rate_limit") {
-      return normalizeTasksRateLimit(json, "intercepted");
-    }
-    if (path === "/codex/settings/usage") {
-      return normalizeChatGptCodexSettingsUsage(json, "intercepted");
-    }
-    return [];
-  }
-  function safePathname(url) {
-    try {
-      return new URL(url).pathname;
-    } catch {
-      return "";
-    }
-  }
   const FRIENDLY_LABELS = {
     five_hour: "5h",
     seven_day: "7d all models",
@@ -3956,7 +4352,7 @@ button {
   function isUsageLike(record) {
     return "utilization" in record || "used_percentage" in record || "used_credits" in record || "monthly_limit" in record;
   }
-  function normalizeUsageObject(key, record, source) {
+  function normalizeUsageObject(key2, record, source) {
     if (!isUsageLike(record)) {
       return null;
     }
@@ -3972,8 +4368,8 @@ button {
       return null;
     }
     return {
-      key,
-      label: FRIENDLY_LABELS[key] ?? titleFromKey(key),
+      key: key2,
+      label: FRIENDLY_LABELS[key2] ?? titleFromKey(key2),
       remaining,
       total,
       used,
@@ -3981,7 +4377,7 @@ button {
       resetAt,
       source,
       confidence: usedPercent !== null && resetAt !== null ? "high" : usedPercent !== null || total !== null || used !== null ? "medium" : "low",
-      rawKind: key
+      rawKind: key2
     };
   }
   function normalizeClaudeUsage(json, source = "api") {
@@ -3990,19 +4386,19 @@ button {
       return [];
     }
     const meters = [];
-    for (const [key, value] of Object.entries(root)) {
+    for (const [key2, value] of Object.entries(root)) {
       const record = asRecord(value);
       if (!record) {
         continue;
       }
-      const meter = normalizeUsageObject(key, record, source);
+      const meter = normalizeUsageObject(key2, record, source);
       if (meter) {
         meters.push(meter);
       }
     }
     return meters;
   }
-  function responseFailure$2(response) {
+  function responseFailure$3(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "claude"
@@ -4017,7 +4413,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$2(organizations),
+        errorMessage: responseFailure$3(organizations),
         debug: {
           endpoint: "claude:organizations",
           parser: "claude.organizations"
@@ -4047,7 +4443,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: "error",
-        errorMessage: responseFailure$2(usage),
+        errorMessage: responseFailure$3(usage),
         debug: {
           endpoint: "claude:usage",
           parser: "claude.usage"
@@ -4135,7 +4531,7 @@ button {
         source: "unknown",
         updatedAt: Date.now(),
         status: missingReplayParams ? "unknown" : "error",
-        errorMessage: missingReplayParams ? "等待 Gemini 页面用量参数" : responseFailure$1(response),
+        errorMessage: missingReplayParams ? "等待 Gemini 页面用量参数" : responseFailure$2(response),
         debug: {
           endpoint: GEMINI_ENDPOINT_KEY,
           parser: "gemini.batchexecute"
@@ -4265,232 +4661,293 @@ button {
     }
     return null;
   }
-  function responseFailure$1(response) {
+  function responseFailure$2(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "gemini"
     );
   }
-  const GROK_ENDPOINT_KEY = "grok:rate-limits";
-  const MAX_OBSERVED_CONTEXTS = 12;
-  const DEFAULT_REQUEST_KIND = "DEFAULT";
-  const observedContexts = /* @__PURE__ */ new Map();
-  function makeMeter(args) {
-    const explicitResetAfterSeconds = args.resetAfterSeconds ?? null;
-    if (args.remaining === null && args.total === null && explicitResetAfterSeconds === null) {
-      return null;
-    }
-    const used = args.remaining !== null && args.total !== null ? Math.max(0, args.total - args.remaining) : null;
-    const usedPercent = used !== null && args.total !== null && args.total > 0 ? percentFromRatioOrPercent(used / args.total) : null;
-    const confidence = args.remaining !== null && args.total !== null ? "high" : args.resetAfterSeconds !== null || args.windowSeconds !== null ? "medium" : "low";
-    return {
-      key: args.key,
-      label: args.label,
-      modelName: args.modelName,
-      requestKind: args.requestKind,
-      remaining: args.remaining,
-      total: args.total,
-      used,
-      usedPercent,
-      resetAfterSeconds: explicitResetAfterSeconds ?? args.windowSeconds,
-      windowSeconds: args.windowSeconds,
-      source: args.source,
-      confidence,
-      rawKind: args.rawKind
-    };
-  }
-  function normalizeGrokRateLimit(json, options = {}) {
-    const record = asRecord(json);
-    if (!record) {
+  const GROK_ENDPOINT_KEY = "grok:credits-config";
+  const GRPC_WEB_DATA_FRAME = 0;
+  const USAGE_PERIOD_LABELS = {
+    1: "monthly",
+    2: "weekly"
+  };
+  const PRODUCT_LABELS = {
+    1: "Grok Build",
+    2: "API",
+    4: "Chat",
+    5: "Imagine",
+    6: "Build",
+    7: "Voice",
+    8: "API"
+  };
+  function normalizeGrokCreditsConfig(base64Text, options = {}) {
+    const config = parseGrokCreditsConfig(base64Text);
+    if (!config) {
       return [];
     }
     const source = options.source ?? "api";
-    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId") ?? options.modelName ?? "unknown";
-    const requestKind = getString(record, "requestKind") ?? getString(record, "kind") ?? options.requestKind ?? DEFAULT_REQUEST_KIND;
-    const displayName = getString(record, "displayName") ?? getString(record, "modelDisplayName");
-    const labelPrefix = options.labelPrefix ?? displayName ?? modelName;
-    const meterKeyPrefix = grokMeterKeyPrefix(modelName, requestKind);
-    const requestKindLabel = requestKind === DEFAULT_REQUEST_KIND ? "" : ` · ${requestKind}`;
-    const windowSeconds = getNumber(record, "windowSizeSeconds");
+    const resetAt = config.currentPeriod?.end ?? null;
+    const period = config.currentPeriod?.type ?? "current";
     const meters = [];
-    const queryMeter = makeMeter({
-      key: `${meterKeyPrefix}:queries`,
-      label: `${labelPrefix}${requestKindLabel} query limit`,
-      modelName,
-      requestKind,
-      remaining: getNumber(record, "remainingQueries"),
-      total: getNumber(record, "totalQueries"),
-      windowSeconds,
-      source,
-      rawKind: "queries"
-    });
-    if (queryMeter) {
-      meters.push(queryMeter);
-    }
-    const tokenMeter = makeMeter({
-      key: `${meterKeyPrefix}:tokens`,
-      label: `${labelPrefix}${requestKindLabel} token limit`,
-      modelName,
-      requestKind,
-      remaining: getNumber(record, "remainingTokens"),
-      total: getNumber(record, "totalTokens"),
-      windowSeconds,
-      source,
-      rawKind: "tokens"
-    });
-    if (tokenMeter) {
-      meters.push(tokenMeter);
-    }
-    const lowEffort = getRecord(record, "lowEffortRateLimits");
-    if (lowEffort) {
-      const meter = makeMeter({
-        key: `${meterKeyPrefix}:low-effort`,
-        label: `${labelPrefix}${requestKindLabel} Low / Fast / Normal`,
-        modelName,
-        requestKind,
-        remaining: getNumber(lowEffort, "remainingQueries"),
-        total: getNumber(lowEffort, "totalQueries"),
-        windowSeconds,
-        resetAfterSeconds: getNumber(lowEffort, "waitTimeSeconds"),
+    const validProductUsage = config.productUsage.filter(
+      (item) => Number.isFinite(item.usagePercent)
+    );
+    if (config.creditUsagePercent !== null || validProductUsage.length > 0) {
+      const rawUsedPercent = validProductUsage.length > 0 ? validProductUsage.reduce((sum, item) => sum + item.usagePercent, 0) : config.creditUsagePercent ?? 0;
+      const usedPercent = percentFromGrokPercent(rawUsedPercent);
+      meters.push({
+        key: `grok:${period}:total`,
+        label: `${titleCase(period)} Grok limit`,
+        usedPercent,
+        resetAt,
         source,
-        rawKind: "lowEffortRateLimits"
+        confidence: resetAt ? "high" : "medium",
+        rawKind: "grokCreditsConfig:total"
       });
-      if (meter) {
-        meters.push(meter);
-      }
     }
-    const highEffort = getRecord(record, "highEffortRateLimits");
-    if (highEffort) {
-      const meter = makeMeter({
-        key: `${meterKeyPrefix}:high-effort`,
-        label: `${labelPrefix}${requestKindLabel} High / Thinking / Expert`,
-        modelName,
-        requestKind,
-        remaining: getNumber(highEffort, "remainingQueries"),
-        total: getNumber(highEffort, "totalQueries"),
-        windowSeconds,
-        resetAfterSeconds: getNumber(highEffort, "waitTimeSeconds"),
-        source,
-        rawKind: "highEffortRateLimits"
-      });
-      if (meter) {
-        meters.push(meter);
+    for (const item of config.productUsage) {
+      const label = PRODUCT_LABELS[item.product] ?? `Product ${item.product}`;
+      const usedPercent = percentFromGrokPercent(item.usagePercent);
+      if (usedPercent === null) {
+        continue;
       }
+      meters.push({
+        key: `grok:${period}:${label.toLowerCase().replace(/\s+/g, "-")}`,
+        label,
+        usedPercent,
+        resetAt,
+        source,
+        confidence: resetAt ? "high" : "medium",
+        rawKind: `grokCreditsConfig:product:${item.product}`
+      });
     }
     return meters;
   }
-  function grokRateLimitContextFromJson(json) {
-    const record = asRecord(json);
-    if (!record) {
-      return void 0;
-    }
-    const modelName = getString(record, "modelName") ?? getString(record, "model") ?? getString(record, "modelId");
-    const requestKind = getString(record, "requestKind") ?? getString(record, "kind");
-    if (!modelName && !requestKind) {
-      return void 0;
-    }
-    return {
-      modelName: modelName ?? void 0,
-      requestKind: requestKind ?? void 0
-    };
-  }
-  function responseFailure(response) {
+  function responseFailure$1(response) {
     return formatUsageError(
       usageErrorFromBridge(response),
       response.endpointKey ?? "grok"
     );
   }
   async function fetchGrokUsage(fetcher) {
-    const meters = [];
-    const failures = [];
-    const latestContext = getLatestObservedGrokRateLimitContext();
-    const contexts = latestContext ? [latestContext] : [];
-    if (contexts.length === 0) {
-      return {
-        platform: "grok",
-        meters,
-        source: "unknown",
-        updatedAt: Date.now(),
-        status: "unknown",
-        debug: {
-          endpoint: GROK_ENDPOINT_KEY,
-          parser: "grok.rateLimit.dynamic"
-        }
-      };
-    }
-    for (const context of contexts) {
-      const response = await fetcher(GROK_ENDPOINT_KEY, {
-        modelName: context.modelName,
-        requestKind: context.requestKind ?? DEFAULT_REQUEST_KIND
-      });
-      if (!response.ok) {
-        failures.push(responseFailure(response));
-        continue;
-      }
-      meters.push(
-        ...normalizeGrokRateLimit(response.json, {
-          modelName: context.modelName,
-          requestKind: context.requestKind,
-          source: "api"
-        })
-      );
-    }
+    const response = await fetcher(GROK_ENDPOINT_KEY);
+    const meters = response.ok ? normalizeGrokCreditsConfig(response.text, { source: "api" }) : [];
+    const failure = response.ok ? void 0 : responseFailure$1(response);
     return {
       platform: "grok",
       meters,
       source: meters.length > 0 ? "api" : "unknown",
       updatedAt: Date.now(),
-      status: meters.length > 0 ? failures.length > 0 ? "partial" : "ok" : failures.length > 0 ? "error" : "unknown",
-      errorMessage: failures[0],
+      status: meters.length > 0 ? "ok" : failure ? "error" : "unknown",
+      errorMessage: failure,
       debug: {
-        endpoint: contexts.map(
-          (context) => `${GROK_ENDPOINT_KEY}:${context.modelName}:${context.requestKind ?? DEFAULT_REQUEST_KIND}`
-        ).join(","),
-        parser: "grok.rateLimit.dynamic"
+        endpoint: GROK_ENDPOINT_KEY,
+        parser: "grok.creditsConfig.grpcWeb"
       }
     };
   }
-  function rememberGrokRateLimitContext(context) {
-    if (!context?.modelName || !isSafeGrokModelName(context.modelName)) {
-      return;
+  function parseGrokCreditsConfig(base64Text) {
+    if (!base64Text) {
+      return null;
     }
-    const requestKind = isSafeGrokRequestKind(context.requestKind) ? context.requestKind : DEFAULT_REQUEST_KIND;
-    const normalized = {
-      modelName: context.modelName,
-      requestKind
+    let message;
+    try {
+      message = firstGrpcWebMessage(base64ToBytes(base64Text));
+    } catch {
+      return null;
+    }
+    if (!message) {
+      return null;
+    }
+    const rootConfig = fields(message).find(
+      (field) => field.field === 1 && field.wireType === 2
+    );
+    if (!rootConfig?.bytes) {
+      return null;
+    }
+    let creditUsagePercent = null;
+    let currentPeriod = null;
+    const productUsage = [];
+    for (const field of fields(rootConfig.bytes)) {
+      if (field.field === 1 && field.wireType === 5) {
+        creditUsagePercent = finiteNumber(field.float);
+      } else if (field.field === 7 && field.wireType === 2 && field.bytes) {
+        const item = parseProductUsage(field.bytes);
+        if (item) {
+          productUsage.push(item);
+        }
+      } else if (field.field === 8 && field.wireType === 2 && field.bytes) {
+        currentPeriod = parseCurrentPeriod(field.bytes);
+      }
+    }
+    if (creditUsagePercent === null && productUsage.length === 0) {
+      return null;
+    }
+    return {
+      creditUsagePercent,
+      currentPeriod,
+      productUsage
     };
-    const key = contextKey(normalized);
-    observedContexts.delete(key);
-    observedContexts.set(key, normalized);
-    while (observedContexts.size > MAX_OBSERVED_CONTEXTS) {
-      const oldestKey = observedContexts.keys().next().value;
-      if (!oldestKey) {
+  }
+  function parseProductUsage(bytes) {
+    let product = null;
+    let usagePercent = null;
+    for (const field of fields(bytes)) {
+      if (field.field === 1 && field.wireType === 0 && field.varint !== void 0) {
+        product = Number(field.varint);
+      } else if (field.field === 2 && field.wireType === 5) {
+        usagePercent = finiteNumber(field.float);
+      }
+    }
+    if (product === null || usagePercent === null) {
+      return null;
+    }
+    return { product, usagePercent };
+  }
+  function parseCurrentPeriod(bytes) {
+    let type = "unspecified";
+    let start2 = null;
+    let end = null;
+    for (const field of fields(bytes)) {
+      if (field.field === 1 && field.wireType === 0 && field.varint !== void 0) {
+        type = USAGE_PERIOD_LABELS[Number(field.varint)] ?? "unspecified";
+      } else if (field.field === 2 && field.wireType === 2 && field.bytes) {
+        start2 = parseTimestamp(field.bytes);
+      } else if (field.field === 3 && field.wireType === 2 && field.bytes) {
+        end = parseTimestamp(field.bytes);
+      }
+    }
+    return { type, start: start2, end };
+  }
+  function parseTimestamp(bytes) {
+    let seconds = null;
+    let nanos = 0;
+    for (const field of fields(bytes)) {
+      if (field.field === 1 && field.wireType === 0 && field.varint !== void 0) {
+        seconds = field.varint;
+      } else if (field.field === 2 && field.wireType === 0 && field.varint !== void 0) {
+        nanos = Number(field.varint);
+      }
+    }
+    if (seconds === null) {
+      return null;
+    }
+    const millis = Number(seconds) * 1e3 + Math.floor(nanos / 1e6);
+    const date = new Date(millis);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+  function firstGrpcWebMessage(bytes) {
+    let offset = 0;
+    while (offset + 5 <= bytes.length) {
+      const flag = bytes[offset];
+      const length = readUint32Be(bytes, offset + 1);
+      const start2 = offset + 5;
+      const end = start2 + length;
+      if (end > bytes.length) {
+        return null;
+      }
+      if (flag === GRPC_WEB_DATA_FRAME) {
+        return bytes.slice(start2, end);
+      }
+      offset = end;
+    }
+    return null;
+  }
+  function fields(bytes) {
+    const result = [];
+    let offset = 0;
+    while (offset < bytes.length) {
+      const key2 = readVarint(bytes, offset);
+      if (!key2) {
         break;
       }
-      observedContexts.delete(oldestKey);
+      offset = key2.offset;
+      const field = Number(key2.value >> 3n);
+      const wireType = Number(key2.value & 7n);
+      if (field <= 0) {
+        break;
+      }
+      if (wireType === 0) {
+        const value = readVarint(bytes, offset);
+        if (!value) {
+          break;
+        }
+        offset = value.offset;
+        result.push({ field, wireType, varint: value.value });
+      } else if (wireType === 2) {
+        const length = readVarint(bytes, offset);
+        if (!length) {
+          break;
+        }
+        offset = length.offset;
+        const end = offset + Number(length.value);
+        if (end > bytes.length) {
+          break;
+        }
+        result.push({ field, wireType, bytes: bytes.slice(offset, end) });
+        offset = end;
+      } else if (wireType === 5) {
+        if (offset + 4 > bytes.length) {
+          break;
+        }
+        result.push({
+          field,
+          wireType,
+          float: new DataView(
+            bytes.buffer,
+            bytes.byteOffset + offset,
+            4
+          ).getFloat32(0, true)
+        });
+        offset += 4;
+      } else {
+        break;
+      }
     }
+    return result;
   }
-  function getObservedGrokRateLimitContexts() {
-    return [...observedContexts.values()];
+  function readVarint(bytes, offset) {
+    let value = 0n;
+    let shift = 0n;
+    let cursor = offset;
+    while (cursor < bytes.length) {
+      const byte = BigInt(bytes[cursor]);
+      cursor += 1;
+      value |= (byte & 0x7fn) << shift;
+      if ((byte & 0x80n) === 0n) {
+        return { value, offset: cursor };
+      }
+      shift += 7n;
+      if (shift > 63n) {
+        return null;
+      }
+    }
+    return null;
   }
-  function getLatestObservedGrokRateLimitContext() {
-    const contexts = getObservedGrokRateLimitContexts();
-    return contexts[contexts.length - 1];
+  function readUint32Be(bytes, offset) {
+    return bytes[offset] * 16777216 + bytes[offset + 1] * 65536 + bytes[offset + 2] * 256 + bytes[offset + 3];
   }
-  function grokMeterKeyPrefix(modelName, requestKind) {
-    return `${modelName}:${requestKind.toLowerCase()}`;
+  function base64ToBytes(value) {
+    const binary = atob(value.replace(/\s+/g, ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
   }
-  function contextKey(context) {
-    return grokMeterKeyPrefix(
-      context.modelName,
-      context.requestKind ?? DEFAULT_REQUEST_KIND
-    );
+  function finiteNumber(value) {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
   }
-  function isSafeGrokModelName(value) {
-    return /^[A-Za-z0-9._:-]{1,120}$/.test(value);
+  function percentFromGrokPercent(value) {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    return Math.max(0, Math.min(100, value));
   }
-  function isSafeGrokRequestKind(value) {
-    return value !== void 0 && /^[A-Z_]{1,40}$/.test(value);
+  function titleCase(value) {
+    return value ? `${value[0].toUpperCase()}${value.slice(1)}` : value;
   }
   const FEATURE_LABELS = {
     FEATURE_OMNI: "Credit"
@@ -4554,6 +5011,286 @@ button {
       status: "unknown"
     };
   }
+  const PERPLEXITY_ENDPOINT_KEY = "perplexity:rateLimitAll";
+  const FIELD_METERS = [
+    {
+      field: "remaining_pro",
+      key: "perplexity:pro",
+      label: "Pro"
+    },
+    {
+      field: "remaining_research",
+      key: "perplexity:research",
+      label: "Deep Research"
+    },
+    {
+      field: "remaining_labs",
+      key: "perplexity:labs",
+      label: "Labs"
+    },
+    {
+      field: "remaining_agentic_research",
+      key: "perplexity:agentic-research",
+      label: "Agentic Research"
+    },
+    {
+      field: "free_queries",
+      key: "perplexity:free-queries",
+      label: "Free queries"
+    }
+  ];
+  function normalizePerplexityRateLimit(json, source = "api") {
+    const root = asRecord(json);
+    if (!root) {
+      return [];
+    }
+    const meters = FIELD_METERS.flatMap((definition) => {
+      const remaining = getNumber(root, definition.field);
+      return remaining === null ? [] : [
+        makeRemainingMeter({
+          key: definition.key,
+          label: definition.label,
+          remaining,
+          source,
+          rawKind: definition.field
+        })
+      ];
+    });
+    meters.push(...normalizeModelSpecificLimits(root.model_specific_limits, source));
+    return meters;
+  }
+  async function fetchPerplexityUsage(fetcher) {
+    const response = await fetcher(PERPLEXITY_ENDPOINT_KEY);
+    if (!response.ok) {
+      return {
+        platform: "perplexity",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "error",
+        errorMessage: responseFailure(response),
+        debug: {
+          endpoint: PERPLEXITY_ENDPOINT_KEY,
+          parser: "perplexity.rateLimitAll"
+        }
+      };
+    }
+    const meters = normalizePerplexityRateLimit(response.json, "api");
+    return {
+      platform: "perplexity",
+      meters,
+      source: meters.length > 0 ? "api" : "unknown",
+      updatedAt: Date.now(),
+      status: meters.length > 0 ? "ok" : "error",
+      errorMessage: meters.length > 0 ? void 0 : "Perplexity rate-limit fields missing",
+      debug: {
+        endpoint: PERPLEXITY_ENDPOINT_KEY,
+        parser: "perplexity.rateLimitAll"
+      }
+    };
+  }
+  function normalizeModelSpecificLimits(value, source) {
+    const limits = asRecord(value);
+    if (!limits) {
+      return [];
+    }
+    const meters = [];
+    for (const [modelName, rawLimit] of Object.entries(limits)) {
+      const limit = asRecord(rawLimit);
+      if (!limit) {
+        continue;
+      }
+      const remaining = getNumber(limit, "remaining") ?? getNumber(limit, "remaining_queries") ?? getNumber(limit, "remainingQueries");
+      const total = getNumber(limit, "limit") ?? getNumber(limit, "total") ?? getNumber(limit, "total_queries") ?? getNumber(limit, "totalQueries");
+      if (remaining === null) {
+        continue;
+      }
+      meters.push(
+        makeRemainingMeter({
+          key: `perplexity:model:${modelName}`,
+          label: `${titleFromKey(modelName)} model limit`,
+          modelName,
+          remaining,
+          total,
+          source,
+          rawKind: `model_specific_limits.${modelName}`
+        })
+      );
+    }
+    return meters;
+  }
+  function makeRemainingMeter(args) {
+    const total = args.total ?? null;
+    const used = args.remaining !== null && total !== null ? Math.max(0, total - args.remaining) : null;
+    const usedPercent = used !== null && total !== null && total > 0 ? used / total * 100 : null;
+    const remainingPercent = args.remaining !== null && total !== null && total > 0 ? Math.max(0, Math.min(100, args.remaining / total * 100)) : null;
+    return {
+      key: args.key,
+      label: args.label,
+      modelName: args.modelName,
+      remaining: args.remaining,
+      total,
+      used,
+      usedPercent,
+      remainingPercent,
+      source: args.source,
+      confidence: total !== null ? "high" : "medium",
+      rawKind: args.rawKind
+    };
+  }
+  function responseFailure(response) {
+    return formatUsageError(
+      usageErrorFromBridge(response),
+      response.endpointKey ?? "perplexity"
+    );
+  }
+  const MUSE_ENDPOINT_KEY = "muse:subscription";
+  function parseMuseSubscriptionJson(value) {
+    const root = asRecord(value);
+    if (!root || typeof root.success !== "boolean") return null;
+    if (!root.success) {
+      const recovery = asRecord(root.sessionRecovery);
+      const unauthorized = root.unauthorized === true || recovery?.scope === "hatch" && (recovery.reason === "authentication" || recovery.reason === "checkpoint");
+      return {
+        success: false,
+        unauthorized,
+        error: unauthorized ? "请登录 Muse 后刷新额度" : "Muse 额度查询失败"
+      };
+    }
+    const subscription = asRecord(root.subscription);
+    if (!subscription) return null;
+    const tier = asRecord(subscription.tier);
+    const usage = asRecord(subscription.usage);
+    return {
+      success: true,
+      subscription: {
+        tier: tier ? {
+          name: getString(tier, "name") ?? void 0,
+          tierId: getString(tier, "tierId") ?? void 0
+        } : void 0,
+        usage: usage ? {
+          state: getString(usage, "state") ?? void 0,
+          percentUsed: getNumber(usage, "percentUsed") ?? void 0,
+          resetsAt: getNumber(usage, "resetsAt") ?? void 0
+        } : void 0,
+        usageRowLabel: getString(subscription, "usageRowLabel") ?? void 0,
+        topupBalance: getNumber(subscription, "topupBalance") ?? void 0,
+        topupTotal: getNumber(subscription, "topupTotal") ?? void 0,
+        topupRowLabel: getString(subscription, "topupRowLabel") ?? void 0,
+        topupRowValueLabel: getString(subscription, "topupRowValueLabel") ?? void 0
+      }
+    };
+  }
+  function parseMuseSubscriptionText(text) {
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^[0-9a-f]+:(\{.*\})$/i.exec(line);
+      if (!match) continue;
+      try {
+        const result = parseMuseSubscriptionJson(JSON.parse(match[1]));
+        if (result) return result;
+      } catch {
+      }
+    }
+    return null;
+  }
+  function normalizeMuseUsage(value, source = "api") {
+    const result = parseMuseSubscriptionJson(value);
+    if (!result?.success) return [];
+    const subscription = result.subscription;
+    const meters = [];
+    const usage = subscription.usage;
+    if (usage) {
+      const metered = usage.state === "METERED" && typeof usage.percentUsed === "number";
+      const unlimited = usage.state === "UNLIMITED";
+      const usedPercent = metered ? Math.max(0, Math.min(100, usage.percentUsed)) : void 0;
+      meters.push({
+        key: "muse:weekly",
+        label: subscription.usageRowLabel || subscription.tier?.name || "Muse weekly",
+        usedPercent,
+        remainingPercent: usedPercent === void 0 ? void 0 : 100 - usedPercent,
+        resetAt: metered && typeof usage.resetsAt === "number" && usage.resetsAt > 0 ? usage.resetsAt * 1e3 : void 0,
+        windowSeconds: metered ? 7 * 24 * 60 * 60 : void 0,
+        quotaState: !metered && !unlimited ? "unknown" : void 0,
+        displayValue: unlimited ? "Unlimited" : void 0,
+        metricKind: "quota",
+        unit: "percent",
+        source,
+        confidence: metered || unlimited ? "high" : "low",
+        rawKind: unlimited ? "muse.unlimited" : "muse.weekly"
+      });
+    }
+    const balance = subscription.topupBalance;
+    const total = subscription.topupTotal;
+    const displayValue = subscription.topupRowValueLabel?.trim();
+    if (typeof balance === "number" && typeof total === "number" && total > 0 && displayValue) {
+      const usedPercent = Math.round(100 * (total - Math.min(Math.max(balance, 0), total)) / total);
+      meters.push({
+        key: "muse:topup",
+        label: subscription.topupRowLabel || "Additional usage",
+        displayValue,
+        usedPercent,
+        remainingPercent: 100 - usedPercent,
+        metricKind: "balance",
+        unit: "percent",
+        source,
+        confidence: "high",
+        rawKind: "muse.topup"
+      });
+    }
+    return meters;
+  }
+  function museSnapshotFromResult(result, source, observedAt, requestStartedAt = observedAt) {
+    const meters = normalizeMuseUsage(result, source).map((meter) => ({ ...meter, observedAt, requestStartedAt }));
+    const errorCode = result === null || result.success && !meters.length ? "PARSER_ERROR" : !result.success ? result.unauthorized ? "UNAUTHORIZED" : "UNKNOWN" : void 0;
+    return {
+      platform: "muse",
+      meters,
+      source: meters.length ? source : "unknown",
+      updatedAt: observedAt,
+      checkedAt: errorCode ? void 0 : observedAt,
+      status: errorCode ? "error" : meters.some((meter) => meter.quotaState === "unknown") ? "partial" : "ok",
+      errorCode,
+      errorMessage: errorCode ? result && !result.success ? result.error : "Muse 额度响应结构变化" : void 0,
+      debug: { endpoint: MUSE_ENDPOINT_KEY, parser: "muse.subscription" }
+    };
+  }
+  async function fetchMuseUsage(fetcher) {
+    const response = await fetcher(MUSE_ENDPOINT_KEY);
+    if (!response.ok) {
+      const error = usageErrorFromBridge(response);
+      return {
+        platform: "muse",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "error",
+        errorCode: error.code,
+        errorMessage: error.code === "UNAUTHORIZED" ? "请登录 Muse 后刷新额度" : formatUsageError(error, MUSE_ENDPOINT_KEY)
+      };
+    }
+    return museSnapshotFromResult(
+      typeof response.text === "string" ? parseMuseSubscriptionText(response.text) : parseMuseSubscriptionJson(response.json),
+      "api",
+      response.observedAt ?? Date.now(),
+      response.requestStartedAt
+    );
+  }
+  function mergeMuseUsageSnapshots(previous, incoming, now = Date.now()) {
+    const newestPreviousRequest = Math.max(0, ...previous?.meters.map((meter) => meter.requestStartedAt ?? meter.observedAt ?? 0) ?? []);
+    if (previous && incoming.meters.length && incoming.meters.every((meter) => newestPreviousRequest > (meter.requestStartedAt ?? meter.observedAt ?? incoming.updatedAt))) {
+      return previous;
+    }
+    if (incoming.errorCode === "UNAUTHORIZED" || incoming.status !== "error") return incoming;
+    const merged = mergeUsageSnapshots(previous, incoming, now);
+    return {
+      ...merged,
+      source: merged.meters.length ? previous?.source ?? "unknown" : "unknown",
+      updatedAt: previous?.updatedAt ?? incoming.updatedAt,
+      checkedAt: previous?.checkedAt,
+      errorCode: incoming.errorCode,
+      errorMessage: incoming.errorMessage
+    };
+  }
   function fetchPlatformUsage(platform2, fetcher) {
     if (platform2 === "grok") {
       return fetchGrokUsage(fetcher);
@@ -4567,9 +5304,23 @@ button {
     if (platform2 === "gemini") {
       return fetchGeminiUsage(fetcher);
     }
+    if (platform2 === "perplexity") {
+      return fetchPerplexityUsage(fetcher);
+    }
+    if (platform2 === "muse") {
+      return fetchMuseUsage(fetcher);
+    }
     return fetchChatGptUsage(fetcher);
   }
   function normalizeInterceptedUsage(args) {
+    if (args.platform === "muse") {
+      return museSnapshotFromResult(
+        typeof args.text === "string" ? parseMuseSubscriptionText(args.text) : parseMuseSubscriptionJson(args.json),
+        "intercepted",
+        args.ts,
+        args.requestStartedAt
+      );
+    }
     const meters = normalizeInterceptedMeters(args);
     return {
       platform: args.platform,
@@ -4585,13 +5336,7 @@ button {
   }
   function normalizeInterceptedMeters(args) {
     if (args.platform === "grok") {
-      const usageContext = args.usageContext ?? grokRateLimitContextFromJson(args.json);
-      rememberGrokRateLimitContext(usageContext);
-      return normalizeGrokRateLimit(args.json, {
-        modelName: usageContext?.modelName,
-        requestKind: usageContext?.requestKind,
-        source: "intercepted"
-      });
+      return normalizeGrokCreditsConfig(args.text, { source: "intercepted" });
     }
     if (args.platform === "claude") {
       return normalizeClaudeUsage(args.json, "intercepted");
@@ -4602,404 +5347,10 @@ button {
     if (args.platform === "gemini") {
       return typeof args.text === "string" ? normalizeGeminiUsageText(args.text, "intercepted").meters : [];
     }
+    if (args.platform === "perplexity") {
+      return normalizePerplexityRateLimit(args.json, "intercepted");
+    }
     return normalizeChatGptIntercepted(args.url, args.json);
-  }
-  const MERGED_METER_TTL_MS = 30 * 6e4;
-  function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
-    const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
-    if (!existing || existing.platform !== incoming.platform) {
-      return {
-        ...normalizedIncoming,
-        cacheAgeMs: Math.max(0, now - normalizedIncoming.updatedAt)
-      };
-    }
-    const normalizedExisting = withObservedAt(existing, existing.updatedAt);
-    const incomingKeys = new Set(normalizedIncoming.meters.map((meter) => meter.key));
-    const retainedExisting = normalizedExisting.meters.filter((meter) => {
-      if (incomingKeys.has(meter.key)) {
-        return false;
-      }
-      const observedAt = meter.observedAt ?? normalizedExisting.updatedAt;
-      return now - observedAt <= MERGED_METER_TTL_MS;
-    });
-    const meters = [...retainedExisting, ...normalizedIncoming.meters];
-    const updatedAt = Math.max(normalizedExisting.updatedAt, normalizedIncoming.updatedAt);
-    return {
-      platform: incoming.platform,
-      meters,
-      source: normalizedIncoming.source,
-      updatedAt,
-      cacheAgeMs: Math.max(0, now - updatedAt),
-      status: mergedStatus(normalizedExisting, normalizedIncoming, meters.length),
-      errorMessage: mergedErrorMessage(normalizedExisting, normalizedIncoming, meters.length),
-      debug: {
-        endpoint: joinDebugField(
-          normalizedExisting.debug?.endpoint,
-          normalizedIncoming.debug?.endpoint
-        ),
-        parser: joinDebugField(
-          normalizedExisting.debug?.parser,
-          normalizedIncoming.debug?.parser
-        )
-      }
-    };
-  }
-  function withObservedAt(snapshot, fallbackObservedAt) {
-    return {
-      ...snapshot,
-      meters: snapshot.meters.map((meter) => ({
-        ...meter,
-        observedAt: meter.observedAt ?? fallbackObservedAt
-      }))
-    };
-  }
-  function mergedStatus(existing, incoming, meterCount) {
-    if (meterCount === 0) {
-      return incoming.status !== "unknown" ? incoming.status : existing.status;
-    }
-    if (incoming.status === "error") {
-      return "partial";
-    }
-    if (incoming.status === "partial" || existing.status === "partial") {
-      return "partial";
-    }
-    return "ok";
-  }
-  function mergedErrorMessage(existing, incoming, meterCount) {
-    if (meterCount === 0) {
-      return incoming.errorMessage ?? existing.errorMessage;
-    }
-    if (incoming.errorMessage === "部分功能被限制") {
-      return incoming.errorMessage;
-    }
-    return void 0;
-  }
-  function joinDebugField(existing, incoming) {
-    const values = [existing, incoming].filter(
-      (value) => Boolean(value)
-    );
-    if (values.length === 0) {
-      return void 0;
-    }
-    return Array.from(new Set(values.flatMap((value) => value.split(",")))).join(",");
-  }
-  const CHATGPT_SENTINEL_EVENT = "__AIQM_SENTINEL_EVENT__";
-  function sanitizeSentinelObservation(value) {
-    const record = asRecord(value);
-    if (!record || record.source !== "chatgpt-sentinel") {
-      return null;
-    }
-    const urlKind = record.urlKind;
-    if (urlKind !== "chat-requirements" && urlKind !== "prepare") {
-      return null;
-    }
-    const ts = getNumber(record, "ts");
-    if (ts === null) {
-      return null;
-    }
-    const powDifficulty = getString(record, "powDifficulty");
-    return {
-      source: "chatgpt-sentinel",
-      ts,
-      urlKind,
-      powRequired: asBoolean(record.powRequired) === true,
-      powDifficulty
-    };
-  }
-  function parsePowRisk(difficulty) {
-    if (!difficulty || typeof difficulty !== "string") {
-      return {
-        raw: null,
-        clean: null,
-        len: null,
-        decimal: null,
-        level: "Unknown",
-        risk: 0
-      };
-    }
-    const clean = difficulty.replace(/^0x/i, "").replace(/^0+/, "") || "0";
-    const len = clean.length;
-    const parsed = Number.parseInt(clean, 16);
-    const decimal = Number.isFinite(parsed) ? parsed : null;
-    if (len <= 2) {
-      return { raw: difficulty, clean, len, decimal, level: "Critical", risk: 100 };
-    }
-    if (len <= 3) {
-      return { raw: difficulty, clean, len, decimal, level: "Hard", risk: 75 };
-    }
-    if (len <= 4) {
-      return { raw: difficulty, clean, len, decimal, level: "Medium", risk: 50 };
-    }
-    if (len <= 5) {
-      return { raw: difficulty, clean, len, decimal, level: "Easy", risk: 25 };
-    }
-    return { raw: difficulty, clean, len, decimal, level: "Very Easy", risk: 0 };
-  }
-  function computeSentinelRisk(obs) {
-    const pow = parsePowRisk(obs.powDifficulty);
-    const powRequiredWithoutDifficulty = obs.powRequired === true && !obs.powDifficulty;
-    const score = clamp(
-      pow.risk + 10 * Number(powRequiredWithoutDifficulty)
-    );
-    const label = score >= 75 ? "严重" : score >= 50 ? "高" : score >= 25 ? "偏高" : "正常";
-    return {
-      score,
-      label,
-      pow,
-      factors: {
-        powRequired: obs.powRequired,
-        powRequiredWithoutDifficulty
-      }
-    };
-  }
-  function toChatGPTSentinelState(obs) {
-    const sentinel = computeSentinelRisk(obs);
-    return {
-      updatedAt: obs.ts,
-      sentinelRisk: {
-        score: sentinel.score,
-        label: sentinel.label
-      },
-      pow: sentinel.pow,
-      gates: {
-        powRequired: obs.powRequired
-      },
-      explanation: "当前仅验证 PoW 难度，不判断模型 fallback。"
-    };
-  }
-  function containsForbiddenSentinelKey(value) {
-    const queue = [value];
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const record = asRecord(current);
-      if (!record) {
-        if (Array.isArray(current)) {
-          queue.push(...current);
-        }
-        continue;
-      }
-      for (const [key, child] of Object.entries(record)) {
-        if (isForbiddenSentinelKey(key)) {
-          return true;
-        }
-        queue.push(child);
-      }
-    }
-    return false;
-  }
-  function isForbiddenSentinelKey(key) {
-    const normalized = key.toLowerCase();
-    return normalized === "token" || normalized === "prepare_token" || normalized === "dx" || normalized === "collector_dx" || normalized === "seed" || normalized === "cookie" || normalized === "authorization" || normalized.startsWith("oai-") || normalized.startsWith("x-oai-");
-  }
-  function clamp(n, min = 0, max = 100) {
-    return Math.max(min, Math.min(max, Math.round(n)));
-  }
-  const IP_RISK_AUTO_REFRESH_MS = 24 * 60 * 60 * 1e3;
-  const DEFAULT_IP_RISK_PUBLIC_SETTINGS = {
-    enabled: false
-  };
-  function disabledIpRiskState(now = Date.now()) {
-    return {
-      provider: "proxycheck",
-      source: "proxycheck.io",
-      status: "disabled",
-      updatedAt: now,
-      score: null,
-      label: "未知",
-      signals: emptySignals()
-    };
-  }
-  function missingKeyIpRiskState(now = Date.now()) {
-    return {
-      provider: "proxycheck",
-      source: "proxycheck.io",
-      status: "missing-key",
-      updatedAt: now,
-      score: null,
-      label: "未知",
-      signals: emptySignals()
-    };
-  }
-  function sanitizeProxycheckApiKey(value) {
-    if (typeof value !== "string") {
-      return null;
-    }
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 512) {
-      return null;
-    }
-    return trimmed;
-  }
-  function publicIpRiskSettings(settings) {
-    return {
-      provider: "proxycheck",
-      enabled: settings.enabled,
-      hasApiKey: Boolean(settings.proxycheckApiKey),
-      apiKeyPreview: maskProxycheckApiKey(settings.proxycheckApiKey)
-    };
-  }
-  function maskProxycheckApiKey(value) {
-    const apiKey = sanitizeProxycheckApiKey(value);
-    if (!apiKey) {
-      return null;
-    }
-    if (apiKey.length <= 4) {
-      return "••••";
-    }
-    const suffix = apiKey.slice(-4);
-    const hiddenLength = Math.min(Math.max(apiKey.length - 4, 6), 14);
-    return `${"•".repeat(hiddenLength)}${suffix}`;
-  }
-  function emptySignals() {
-    return {
-      proxy: false,
-      vpn: false,
-      tor: false,
-      hosting: false,
-      type: null
-    };
-  }
-  const OBSERVATION_LIMIT = 20;
-  const STATE_KEY = "aiUsage:chatgpt:sentinelState";
-  const OBSERVATIONS_KEY = "aiUsage:chatgpt:sentinelObservations";
-  async function getChatGptSentinelState() {
-    const items = await storageGet$2(STATE_KEY);
-    const value = items[STATE_KEY];
-    return isChatGptSentinelState(value) ? value : null;
-  }
-  async function rememberChatGptSentinelObservation(observation, state) {
-    if (containsForbiddenSentinelKey(observation) || containsForbiddenSentinelKey(state)) {
-      return;
-    }
-    const existing = await getChatGptSentinelObservations();
-    const observations = [observation, ...existing].slice(0, OBSERVATION_LIMIT);
-    await storageSet$2({
-      [STATE_KEY]: state,
-      [OBSERVATIONS_KEY]: observations
-    });
-  }
-  async function getChatGptSentinelObservations() {
-    const items = await storageGet$2(OBSERVATIONS_KEY);
-    const value = items[OBSERVATIONS_KEY];
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value.filter(isChatGptSentinelObservation).slice(0, OBSERVATION_LIMIT);
-  }
-  function storageGet$2(keys) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.get(keys, (items) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(items);
-      });
-    });
-  }
-  function storageSet$2(items) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.set(items, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve();
-      });
-    });
-  }
-  function isChatGptSentinelObservation(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && candidate.source === "chatgpt-sentinel" && (candidate.urlKind === "chat-requirements" || candidate.urlKind === "prepare") && typeof candidate.ts === "number" && typeof candidate.powRequired === "boolean";
-  }
-  function isChatGptSentinelState(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && typeof candidate.updatedAt === "number" && typeof candidate.sentinelRisk?.score === "number" && typeof candidate.sentinelRisk?.label === "string" && typeof candidate.pow?.risk === "number" && typeof candidate.gates?.powRequired === "boolean";
-  }
-  const IP_RISK_SETTINGS_KEY = "aiUsage:ipRisk:settings";
-  const IP_RISK_STATE_KEY = "aiUsage:ipRisk:state";
-  async function getStoredIpRiskSettings() {
-    const items = await storageGet$1(IP_RISK_SETTINGS_KEY);
-    return storedIpRiskSettingsFromValue(items[IP_RISK_SETTINGS_KEY]);
-  }
-  async function getIpRiskPublicSettings() {
-    return publicIpRiskSettings(await getStoredIpRiskSettings());
-  }
-  async function saveIpRiskSettings(update) {
-    const existing = await getStoredIpRiskSettings();
-    const next = {
-      provider: "proxycheck",
-      enabled: update.enabled,
-      proxycheckApiKey: existing.proxycheckApiKey
-    };
-    const apiKey = sanitizeProxycheckApiKey(update.apiKey);
-    if (apiKey) {
-      next.proxycheckApiKey = apiKey;
-    }
-    if (update.clearApiKey) {
-      delete next.proxycheckApiKey;
-    }
-    await storageSet$1({ [IP_RISK_SETTINGS_KEY]: next });
-    return publicIpRiskSettings(next);
-  }
-  async function getIpRiskState() {
-    const items = await storageGet$1(IP_RISK_STATE_KEY);
-    const state = items[IP_RISK_STATE_KEY];
-    return isIpRiskState(state) ? state : null;
-  }
-  function setIpRiskState(state) {
-    return storageSet$1({ [IP_RISK_STATE_KEY]: state });
-  }
-  function publicSettingsFromStorageValue(value) {
-    return publicIpRiskSettings(storedIpRiskSettingsFromValue(value));
-  }
-  function ipRiskStateFromStorageValue(value) {
-    return isIpRiskState(value) ? value : null;
-  }
-  function storedIpRiskSettingsFromValue(value) {
-    if (typeof value !== "object" || value === null) {
-      return {
-        provider: "proxycheck",
-        enabled: DEFAULT_IP_RISK_PUBLIC_SETTINGS.enabled
-      };
-    }
-    const record = value;
-    const apiKey = sanitizeProxycheckApiKey(record.proxycheckApiKey);
-    return {
-      provider: "proxycheck",
-      enabled: record.enabled === true,
-      ...apiKey ? { proxycheckApiKey: apiKey } : {}
-    };
-  }
-  function isIpRiskState(value) {
-    const candidate = value;
-    return typeof value === "object" && value !== null && candidate.provider === "proxycheck" && candidate.source === "proxycheck.io" && typeof candidate.updatedAt === "number" && typeof candidate.signals === "object" && candidate.signals !== null;
-  }
-  function storageGet$1(keys) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.get(keys, (items) => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve(items);
-      });
-    });
-  }
-  function storageSet$1(items) {
-    return new Promise((resolve, reject) => {
-      chrome.storage.local.set(items, () => {
-        const error = chrome.runtime.lastError;
-        if (error) {
-          reject(new Error(error.message));
-          return;
-        }
-        resolve();
-      });
-    });
   }
   const LANGUAGE_SETTINGS_KEY = "aiUsage:language";
   async function getLanguageMode() {
@@ -5056,64 +5407,29 @@ button {
     console.debug(`[ai-usage] ${message}`, details);
   }
   const platform = detectPlatform(window.location);
-  if (platform) {
+  if (platform && shouldStartOnThisFrame(platform) && !window.__AI_USAGE_FLOATING_MONITOR_CONTENT__) {
+    window.__AI_USAGE_FLOATING_MONITOR_CONTENT__ = true;
     void start(platform);
+  }
+  function shouldStartOnThisFrame(platformId) {
+    if (window.top === window) {
+      return true;
+    }
+    if (platformId !== "perplexity") {
+      return false;
+    }
+    return window.innerWidth >= 640 && window.innerHeight >= 480;
   }
   async function start(platformId) {
     let widget;
     const bridge = new BridgeClient();
     let currentSnapshot = null;
     let refreshing = false;
-    let ipRiskRefreshing = false;
+    let chatGptController;
     let pendingEstimatorRefresh = 0;
-    let codexProbeStarted = false;
-    let stopCodexProbe = null;
-    const refreshIpRisk = async (options) => {
-      if (ipRiskRefreshing) {
-        return;
-      }
-      const settings = await getIpRiskPublicSettings();
-      widget.setIpRiskSettings(settings);
-      if (!settings.enabled) {
-        const state = disabledIpRiskState();
-        widget.setIpRiskState(state);
-        if (options.force) {
-          await setIpRiskState(state);
-        }
-        return;
-      }
-      if (!settings.hasApiKey) {
-        const state = missingKeyIpRiskState();
-        widget.setIpRiskState(state);
-        if (options.force) {
-          await setIpRiskState(state);
-        }
-        return;
-      }
-      const cached2 = await getIpRiskState();
-      if (cached2) {
-        widget.setIpRiskState(cached2);
-      }
-      if (!options.force && cached2 && cached2.status === "ok" && Date.now() - cached2.updatedAt < IP_RISK_AUTO_REFRESH_MS) {
-        return;
-      }
-      ipRiskRefreshing = true;
-      widget.setIpRiskRefreshing(true);
-      try {
-        const state = await requestIpRiskRefresh();
-        widget.setIpRiskState(state);
-      } catch (error) {
-        debugLog("proxycheck refresh failed", error);
-      } finally {
-        ipRiskRefreshing = false;
-        widget.setIpRiskRefreshing(false);
-      }
-    };
-    const saveIpRisk = async (update) => {
-      const settings = await saveIpRiskSettings(update);
-      widget.setIpRiskSettings(settings);
-      await refreshIpRisk({ force: settings.enabled && settings.hasApiKey });
-    };
+    let museSessionVerified = false;
+    let museInitialCheckPending = platformId === "muse";
+    let museSessionGeneration = 0;
     const saveLanguage = async (mode) => {
       widget.setLanguageMode(await saveLanguageMode(mode));
     };
@@ -5123,14 +5439,6 @@ button {
         void refreshUsage({ force: true });
       },
       {
-        onIpRiskRefresh: () => {
-          void refreshIpRisk({ force: true });
-        },
-        onIpRiskSettingsSave: (update) => {
-          void saveIpRisk(update).catch((error) => {
-            debugLog("failed to save IP risk settings", error);
-          });
-        },
         onLanguageModeSave: (mode) => {
           void saveLanguage(mode).catch((error) => {
             debugLog("failed to save language settings", error);
@@ -5138,60 +5446,72 @@ button {
         }
       }
     );
+    widget.mount();
     widget.setLanguageMode(await getLanguageMode());
-    const maybeStartCodexProbe = (snapshot) => {
-      if (platformId !== "chatgpt" || codexProbeStarted || hasCodexMeter(snapshot)) {
-        return;
-      }
-      codexProbeStarted = true;
-      stopCodexProbe = probeCodexAnalyticsUsage();
-    };
     const applySnapshot = async (snapshot) => {
       const shouldReplace = platformId === "grok" && snapshot.source === "intercepted";
-      currentSnapshot = mergeUsageSnapshots(
-        shouldReplace ? null : currentSnapshot,
-        snapshot
-      );
+      const previous = shouldReplace ? null : currentSnapshot;
+      const merged = platformId === "muse" ? mergeMuseUsageSnapshots(previous, snapshot) : mergeUsageSnapshots(previous, snapshot);
+      if (platformId === "muse" && previous && sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+      if (platformId === "muse") {
+        if (snapshot.errorCode === "UNAUTHORIZED") {
+          museSessionVerified = false;
+          museSessionGeneration++;
+        } else if (snapshot.status !== "error" && snapshot.meters.length > 0) {
+          museSessionVerified = true;
+          museInitialCheckPending = false;
+        }
+      }
+      currentSnapshot = merged;
       widget.setSnapshot(currentSnapshot);
-      await setCachedSnapshot(currentSnapshot);
+      if (platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED") await clearCachedSnapshot("muse");
+      else if (platformId !== "muse" || museSessionVerified) await setCachedSnapshot(currentSnapshot);
     };
     const refreshUsage = async (options) => {
+      if (chatGptController) {
+        await chatGptController.refresh(options.force ? "manual" : "poll");
+        return;
+      }
       if (refreshing) {
         return;
       }
       const now = Date.now();
       const backoffUntil = await getBackoffUntil(platformId);
-      widget.setBackoffUntil(backoffUntil);
-      if (backoffUntil > now) {
+      widget.setBackoffUntil(museInitialCheckPending ? 0 : backoffUntil);
+      if (backoffUntil > now && !museInitialCheckPending) {
         return;
       }
-      const cached2 = await getCachedSnapshot(platformId);
-      if (!options.force && cached2 && now - cached2.updatedAt < CACHE_TTL_MS) {
+      const cached2 = platformId === "muse" && !museSessionVerified ? null : await getCachedSnapshot(platformId);
+      if (!options.force && cached2 && now - (cached2.checkedAt ?? cached2.updatedAt) < CACHE_TTL_MS) {
         currentSnapshot = cached2;
         widget.setSnapshot(cached2);
         return;
       }
       const lastRefreshAt = await getLastRefreshAt(platformId);
-      if (lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
+      if (!museInitialCheckPending && !(platformId === "muse" && options.force) && lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
         if (cached2) {
           currentSnapshot = cached2;
           widget.setSnapshot(cached2);
         }
         return;
       }
+      if (refreshing) return;
       refreshing = true;
+      museInitialCheckPending = false;
+      const museGeneration = museSessionGeneration;
       widget.setLoading(true);
       await setLastRefreshAt(platformId, now);
       try {
-        let snapshot = await fetchPlatformUsage(
-          platformId,
-          (endpointKey, payload) => bridge.fetchUsage(platformId, endpointKey, payload)
-        );
-        snapshot = await withEstimateFallback(platformId, snapshot);
+        const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key2, payload) => bridge.fetchUsage(platformId, key2, payload)));
+        if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
         await applySnapshot(snapshot);
-        maybeStartCodexProbe(snapshot);
-        await updateFailureState(platformId, snapshot, widget);
+        await updateFailureState(
+          platformId,
+          snapshot,
+          widget
+        );
       } catch (error) {
+        if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
         const snapshot = await withEstimateFallback(platformId, {
           platform: platformId,
           meters: [],
@@ -5207,65 +5527,31 @@ button {
         widget.setLoading(false);
       }
     };
-    widget.mount();
-    const cached = await getCachedSnapshot(platformId);
+    if (platformId === "chatgpt") {
+      chatGptController = new ChatGptUsageController({
+        fetcher: (key2) => bridge.fetchUsage(platformId, key2),
+        onSnapshot: (snapshot) => {
+          currentSnapshot = snapshot;
+          widget.setSnapshot(snapshot);
+        },
+        onLoading: (loading) => widget.setLoading(loading),
+        readCache: (scope) => getCachedSnapshot("chatgpt", scope),
+        writeCache: setCachedSnapshot
+      });
+      bridge.onContextChanged(() => {
+        chatGptController?.reset();
+        void chatGptController?.refresh("startup");
+      });
+    }
+    const cached = platformId === "muse" ? null : await getCachedSnapshot(platformId);
     if (cached) {
       currentSnapshot = cached;
       widget.setSnapshot(cached);
     }
-    widget.setBackoffUntil(await getBackoffUntil(platformId));
-    const ipRiskSettings = await getIpRiskPublicSettings();
-    widget.setIpRiskSettings(ipRiskSettings);
-    const cachedIpRisk = await getIpRiskState();
-    if (cachedIpRisk) {
-      widget.setIpRiskState(cachedIpRisk);
-    } else if (!ipRiskSettings.enabled) {
-      widget.setIpRiskState(disabledIpRiskState());
-    } else if (!ipRiskSettings.hasApiKey) {
-      widget.setIpRiskState(missingKeyIpRiskState());
-    }
-    void refreshIpRisk({ force: false });
-    if (platformId === "chatgpt") {
-      const cachedSentinelState = await getChatGptSentinelState();
-      if (cachedSentinelState) {
-        widget.setChatGptSentinelState(cachedSentinelState);
-      }
-    }
-    const onSentinelEvent = (event) => {
-      if (platformId !== "chatgpt") {
-        return;
-      }
-      const observation = sanitizeSentinelObservation(
-        event.detail
-      );
-      if (!observation) {
-        return;
-      }
-      const state = toChatGPTSentinelState(observation);
-      widget.setChatGptSentinelState(state);
-      void rememberChatGptSentinelObservation(observation, state).catch(
-        (error) => {
-          debugLog("failed to cache sentinel observation", error);
-        }
-      );
-    };
-    window.addEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+    widget.setBackoffUntil(platformId === "chatgpt" || platformId === "muse" ? 0 : await getBackoffUntil(platformId));
     const onStorageChanged = (changes, areaName) => {
       if (areaName !== "local") {
         return;
-      }
-      const settingsChange = changes[IP_RISK_SETTINGS_KEY];
-      if (settingsChange) {
-        widget.setIpRiskSettings(
-          publicSettingsFromStorageValue(settingsChange.newValue)
-        );
-      }
-      const stateChange = changes[IP_RISK_STATE_KEY];
-      if (stateChange) {
-        const state = ipRiskStateFromStorageValue(stateChange.newValue);
-        if (state) {
-          widget.setIpRiskState(state);
-        }
       }
       const languageChange = changes[LANGUAGE_SETTINGS_KEY];
       if (languageChange) {
@@ -5279,6 +5565,10 @@ button {
       if (message.platform !== platformId) {
         return;
       }
+      if (chatGptController && message.endpointKey) {
+        void chatGptController.acceptIntercept(message.endpointKey, message.json, message.ts, message.requestStartedAt, message.scopeKey);
+        return;
+      }
       const snapshot = normalizeInterceptedUsage({
         platform: platformId,
         url: message.url,
@@ -5286,29 +5576,27 @@ button {
         text: message.text,
         ts: message.ts,
         endpointKey: message.endpointKey,
-        usageContext: message.usageContext
+        requestStartedAt: message.requestStartedAt
       });
-      if (snapshot.meters.length === 0) {
+      if (snapshot.meters.length === 0 && !(platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED")) {
         return;
-      }
-      if (hasCodexMeter(snapshot)) {
-        stopCodexProbe?.();
-        stopCodexProbe = null;
       }
       void applySnapshot(snapshot).catch((error) => {
         debugLog("failed to cache intercepted usage", error);
       });
+      if (platformId === "muse") void updateFailureState(platformId, snapshot, widget).catch((error) => debugLog("failed to update Muse retry state", error));
     });
-    installSendEstimator(platformId, (snapshot) => {
-      if (!currentSnapshot || currentSnapshot.meters.length === 0) {
+    const stopEstimator = installSendEstimator(platformId, (snapshot) => {
+      if (platformId !== "chatgpt" && platformId !== "muse" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
         currentSnapshot = snapshot;
         widget.setSnapshot(snapshot);
       }
       window.clearTimeout(pendingEstimatorRefresh);
       pendingEstimatorRefresh = window.setTimeout(() => {
-        void refreshUsage({ force: false });
+        if (chatGptController) void chatGptController.refresh("operation");
+        else void refreshUsage({ force: false });
       }, 1500);
-    });
+    }, { recordCounts: platformId !== "chatgpt" && platformId !== "muse" });
     try {
       await injectMainWorld();
       await bridge.enableIntercept(platformId);
@@ -5316,9 +5604,27 @@ button {
       debugLog("main world bridge injection failed", error);
     }
     await refreshUsage({ force: false });
-    window.addEventListener("pagehide", () => {
-      stopCodexProbe?.();
-      window.removeEventListener(CHATGPT_SENTINEL_EVENT, onSentinelEvent);
+    const stopUsagePolling = platformId === "chatgpt" || platformId === "muse" ? startVisibleUsagePolling({
+      intervalMs: platformId === "muse" ? 6e4 : void 0,
+      isVisible: () => document.visibilityState === "visible",
+      onVisibilityChange: (callback) => {
+        document.addEventListener("visibilitychange", callback);
+        return () => document.removeEventListener("visibilitychange", callback);
+      },
+      setInterval: (callback, intervalMs) => window.setInterval(callback, intervalMs),
+      clearInterval: (id) => window.clearInterval(id),
+      refresh: () => {
+        void refreshUsage({ force: false });
+      }
+    }) : null;
+    window.addEventListener("pagehide", (event) => {
+      if (event.persisted) return;
+      stopEstimator();
+      widget.destroy();
+      stopUsagePolling?.();
+      chatGptController?.destroy();
+      bridge.destroy();
+      window.clearTimeout(pendingEstimatorRefresh);
       chrome.storage.onChanged.removeListener(onStorageChanged);
     });
   }
@@ -5342,26 +5648,8 @@ button {
       throw new Error(response.error ?? "Injection failed");
     }
   }
-  async function requestIpRiskRefresh() {
-    const response = await new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        { type: "AI_USAGE_IP_RISK_REFRESH" },
-        (value) => {
-          const error = chrome.runtime.lastError;
-          if (error) {
-            reject(new Error(error.message));
-            return;
-          }
-          resolve(value ?? { ok: false, error: "No IP risk response" });
-        }
-      );
-    });
-    if (response.state) {
-      return response.state;
-    }
-    throw new Error(response.error ?? "IP 风险检测失败");
-  }
   async function withEstimateFallback(platform2, snapshot) {
+    if (platform2 === "muse") return snapshot;
     if (snapshot.meters.length > 0 && snapshot.status !== "error") {
       return snapshot;
     }
@@ -5376,8 +5664,8 @@ button {
       updatedAt: Math.max(snapshot.updatedAt, estimate.updatedAt)
     };
   }
-  async function updateFailureState(platform2, snapshot, widget) {
-    if (snapshot.status !== "error") {
+  async function updateFailureState(platform2, snapshot, widget, retryableEndpointFailure = false) {
+    if (snapshot.status !== "error" && !retryableEndpointFailure) {
       await setFailureCount(platform2, 0);
       await setBackoffUntil(platform2, 0);
       widget.setBackoffUntil(0);
@@ -5390,10 +5678,5 @@ button {
     await setFailureCount(platform2, nextFailures);
     await setBackoffUntil(platform2, backoffUntil);
     widget.setBackoffUntil(backoffUntil);
-  }
-  function hasCodexMeter(snapshot) {
-    return snapshot.meters.some(
-      (meter) => meter.rawKind === "codex.settings.usage" || meter.key.toLowerCase().includes("codex")
-    );
   }
 })();

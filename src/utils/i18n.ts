@@ -1,4 +1,3 @@
-import type { IpRiskLabel } from "../platforms/ipRisk";
 import type { UsageMeter } from "../platforms/types";
 import { resolveResetMs } from "./time";
 
@@ -9,60 +8,34 @@ export const DEFAULT_LANGUAGE_MODE: LanguageMode = "auto";
 
 const ZH_TEXT = {
   "action.closeSettings": "关闭设置",
-  "action.collapsePanel": "折叠用量面板",
   "action.collapseWidget": "收起用量组件",
-  "action.expandPanel": "展开用量面板",
   "action.hidePanel": "隐藏用量面板",
   "action.openUsage": "打开 {platform} 用量",
   "action.refreshUsage": "刷新用量",
   "action.restoreGptPanel": "恢复 GPT 用量面板",
   "action.settings": "设置",
-  "action.toggleSecret": "显示或隐藏密钥",
   "gpt.alertCount": "{count} 项预警",
   "gpt.title": "GPT 用量",
-  "ip.apiKeyLabel": "proxycheck.io API 密钥",
-  "ip.check": "IP 检测",
-  "ip.deleteKey": "删除密钥",
-  "ip.enableProxycheck": "启用 proxycheck.io",
-  "ip.enabledHelp": "proxycheck.io 密钥仅保存在本地，检测结果不代表 OpenAI 官方账号状态。",
-  "ip.errorFallback": "检测失败",
-  "ip.help": "密钥保存在 chrome.storage.local。检测会先临时获取当前公网 IP，再查询 proxycheck.io，不保存历史 IP。",
-  "ip.keyPlaceholder": "输入 proxycheck.io API 密钥",
-  "ip.newKeyPlaceholder": "输入新的 proxycheck.io API 密钥",
-  "ip.noProxySignals": "未见明显代理信号",
-  "ip.querying": "正在查询 proxycheck.io。",
-  "ip.savedKeyPlaceholder": "已保存密钥，留空则不修改",
-  "ip.source": "来源",
-  "ip.disabledHelp": "可在设置中启用 proxycheck.io 作为第三方 IP 信誉检测源。",
-  "ip.signal": "信号",
-  "ip.status.checking": "检测中",
-  "ip.status.disabled": "未启用",
-  "ip.status.failed": "检测失败",
-  "ip.status.missingKey": "未配置密钥",
-  "ip.status.waiting": "等待检测",
   "language.auto": "跟随浏览器",
   "language.en": "English",
   "language.label": "语言",
   "language.zhCN": "简体中文",
   "meta.cacheSeconds": "缓存 {seconds}秒",
+  "meta.checkedAt": "最近查询 {age}",
   "meta.loading": "加载中",
   "meta.neverUpdated": "尚未更新",
   "meta.updatedAt": "更新于 {age}",
   "meta.waitSeconds": "等待 {seconds}秒",
   "meter.unknown": "未知",
+  "meter.neverExpires": "从不过期",
   "meter.used": "已用 {used}/{total}",
   "meter.usedPercent": "{percent}% 已用",
   "meter.remaining": "剩余 {remaining}",
   "meter.remainingPercent": "{percent}% 剩余",
   "model.label": "模型",
-  "settings.checkNow": "立即检测",
   "settings.save": "保存",
   "settings.title": "设置",
-  "sentinel.accountStatus": "账号状态",
-  "sentinel.explanation": "说明：当前仅验证 PoW 难度，不判断模型 fallback。",
-  "sentinel.gate": "发送门禁",
   "usage.empty": "暂无用量数据",
-  "usage.networkRisk": "网络风险",
   "usage.title": "{platform} 用量"
 } as const;
 
@@ -70,60 +43,34 @@ export type TextKey = keyof typeof ZH_TEXT;
 
 const EN_TEXT: Record<TextKey, string> = {
   "action.closeSettings": "Close settings",
-  "action.collapsePanel": "Collapse usage panel",
   "action.collapseWidget": "Collapse usage widget",
-  "action.expandPanel": "Expand usage panel",
   "action.hidePanel": "Hide usage panel",
   "action.openUsage": "Open {platform} usage",
   "action.refreshUsage": "Refresh usage",
   "action.restoreGptPanel": "Restore GPT usage panel",
   "action.settings": "Settings",
-  "action.toggleSecret": "Show or hide key",
   "gpt.alertCount": "{count} alerts",
   "gpt.title": "GPT Usage",
-  "ip.apiKeyLabel": "proxycheck.io API key",
-  "ip.check": "IP check",
-  "ip.deleteKey": "Delete key",
-  "ip.enableProxycheck": "Enable proxycheck.io",
-  "ip.enabledHelp": "The proxycheck.io key is stored locally only. Results do not represent official OpenAI account status.",
-  "ip.errorFallback": "Check failed",
-  "ip.help": "The key is stored in chrome.storage.local. Checks temporarily fetch the current public IP, query proxycheck.io, and do not keep IP history.",
-  "ip.keyPlaceholder": "Enter proxycheck.io API key",
-  "ip.newKeyPlaceholder": "Enter a new proxycheck.io API key",
-  "ip.noProxySignals": "No clear proxy signals",
-  "ip.querying": "Querying proxycheck.io.",
-  "ip.savedKeyPlaceholder": "Key saved. Leave blank to keep it",
-  "ip.source": "Source",
-  "ip.disabledHelp": "Enable proxycheck.io in settings as a third-party IP reputation source.",
-  "ip.signal": "Signals",
-  "ip.status.checking": "Checking",
-  "ip.status.disabled": "Disabled",
-  "ip.status.failed": "Check failed",
-  "ip.status.missingKey": "Missing key",
-  "ip.status.waiting": "Waiting to check",
   "language.auto": "Follow browser",
   "language.en": "English",
   "language.label": "Language",
   "language.zhCN": "Simplified Chinese",
   "meta.cacheSeconds": "Cached {seconds}s",
+  "meta.checkedAt": "Queried {age}",
   "meta.loading": "Loading",
   "meta.neverUpdated": "Not updated yet",
   "meta.updatedAt": "Updated {age}",
   "meta.waitSeconds": "Wait {seconds}s",
   "meter.unknown": "Unknown",
+  "meter.neverExpires": "Never expires",
   "meter.used": "Used {used}/{total}",
   "meter.usedPercent": "{percent}% used",
   "meter.remaining": "Remaining {remaining}",
   "meter.remainingPercent": "{percent}% remaining",
   "model.label": "Model",
-  "settings.checkNow": "Check now",
   "settings.save": "Save",
   "settings.title": "Settings",
-  "sentinel.accountStatus": "Account status",
-  "sentinel.explanation": "Note: currently only validates PoW difficulty, not model fallback.",
-  "sentinel.gate": "Send gate",
   "usage.empty": "No usage data yet",
-  "usage.networkRisk": "Network risk",
   "usage.title": "{platform} Usage"
 };
 
@@ -134,9 +81,10 @@ const TEXT: Record<ResolvedLanguage, Record<TextKey, string>> = {
 
 const GPT_SECTION_LABELS: Record<
   ResolvedLanguage,
-  Record<"input" | "features" | "windows" | "codex" | "other", string>
+  Record<"subscription" | "input" | "features" | "windows" | "codex" | "other", string>
 > = {
   "zh-CN": {
+    subscription: "订阅",
     input: "输入与附件",
     features: "GPT 功能额度",
     windows: "用量窗口",
@@ -144,6 +92,7 @@ const GPT_SECTION_LABELS: Record<
     other: "其他"
   },
   en: {
+    subscription: "Subscription",
     input: "Input and attachments",
     features: "GPT feature limits",
     windows: "Usage windows",
@@ -195,37 +144,44 @@ const STATUS_LABELS: Record<ResolvedLanguage, Record<string, string>> = {
   }
 };
 
-const RISK_LABELS: Record<ResolvedLanguage, Record<IpRiskLabel, string>> = {
-  "zh-CN": {
-    正常: "正常",
-    偏高: "偏高",
-    高: "高",
-    严重: "严重",
-    未知: "未知"
-  },
-  en: {
-    正常: "Normal",
-    偏高: "Elevated",
-    高: "High",
-    严重: "Severe",
-    未知: "Unknown"
-  }
-};
-
 const METER_LABELS_ZH: Record<string, string> = {
+  "Library storage": "文件库空间",
+  "Available resets": "可用重置次数",
   "File Upload": "文件上传",
   "Paste Text To File": "粘贴文本转文件",
   Dictation: "听写",
   "Deep Research": "深度研究",
   "Image Generation": "图像生成",
+  "Computer Control": "电脑操控",
+  "Computer Use": "电脑操控",
+  "Reasoning Quota": "思考额度",
   "Primary window": "主窗口",
+  "Secondary window": "次窗口",
+  "5-hour window": "5 小时窗口",
   "Weekly window": "每周窗口",
+  "Additional Primary window": "额外主窗口",
+  "Additional Weekly window": "额外每周窗口",
+  "ChatGPT subscription": "ChatGPT 订阅",
+  "Current Grok limit": "当前 Grok 限额",
+  "Weekly Grok limit": "每周 Grok 限额",
+  "Monthly Grok limit": "每月 Grok 限额",
+  Chat: "聊天",
+  "Grok Build": "Grok Build",
+  API: "API",
+  Build: "Build",
+  Voice: "Voice",
   "Tasks rate limit": "任务限额",
   "Code Review": "代码审查",
   Credits: "余额",
   "Credits (unlimited)": "余额（无限）",
   "Gemini 5h": "Gemini 5 小时",
-  "Gemini weekly": "Gemini 每周"
+  "Gemini weekly": "Gemini 每周",
+  Pro: "Pro",
+  Labs: "Labs",
+  "Agentic Research": "智能体研究",
+  "Free queries": "免费查询",
+  "Muse weekly": "Muse 每周额度",
+  "Additional usage": "额外的使用额度"
 };
 
 export function isLanguageMode(value: unknown): value is LanguageMode {
@@ -307,17 +263,67 @@ export function formatResetLocalized(
     return language === "zh-CN" ? `${minutes}分钟` : `${minutes}m`;
   }
   const hours = Math.floor(minutes / 60);
-  if (hours < 48) {
+  if (hours < 24) {
+    const remainingMinutes = minutes % 60;
+    if (remainingMinutes > 0) {
+      return language === "zh-CN"
+        ? `${hours}小时 ${remainingMinutes}分钟`
+        : `${hours}h ${remainingMinutes}m`;
+    }
     return language === "zh-CN" ? `${hours}小时` : `${hours}h`;
   }
   const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  if (remainingHours > 0) {
+    return language === "zh-CN"
+      ? `${days}天 ${remainingHours}小时`
+      : `${days}d ${remainingHours}h`;
+  }
   return language === "zh-CN" ? `${days}天` : `${days}d`;
+}
+
+export function formatSubscriptionExpiryLocalized(
+  language: ResolvedLanguage,
+  meter: UsageMeter
+): string {
+  const resetMs = resolveResetMs(meter);
+  if (resetMs === null) {
+    return "";
+  }
+  const date = new Date(resetMs);
+  const exact = [
+    date.getFullYear(),
+    pad2(date.getMonth() + 1),
+    pad2(date.getDate())
+  ].join("-") + ` ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(
+    date.getSeconds()
+  )}`;
+  const verb =
+    meter.requestKind === "renews"
+      ? language === "zh-CN"
+        ? "续订"
+        : "Renews"
+      : language === "zh-CN"
+        ? "到期"
+        : "Expires";
+  return `${verb} ${exact}`;
 }
 
 export function formatMeterValueLocalized(
   language: ResolvedLanguage,
   meter: UsageMeter
 ): string {
+  if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+  if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
+  if (meter.displayValue?.trim()) return meter.displayValue;
+  if (meter.unit === "bytes") {
+    const gib = (n: number): string => (n / 1073741824).toLocaleString(language, { maximumFractionDigits: 2 });
+    return typeof meter.remaining === "number" ? (language === "zh-CN" ? "剩余 " : "Remaining ") + gib(meter.remaining) + " GiB" : t(language, "meter.unknown");
+  }
+  if (meter.label === "Credits (unlimited)") return language === "zh-CN" ? "无限" : "Unlimited";
+  if (meter.rawKind === "chatgpt.subscription") {
+    return formatSubscriptionRemainingLocalized(language, meter);
+  }
   if (typeof meter.remainingPercent === "number") {
     return t(language, "meter.remainingPercent", {
       percent: Math.round(meter.remainingPercent)
@@ -341,6 +347,42 @@ export function formatMeterValueLocalized(
     });
   }
   return t(language, "meter.unknown");
+}
+
+function formatSubscriptionRemainingLocalized(
+  language: ResolvedLanguage,
+  meter: UsageMeter,
+  now = Date.now()
+): string {
+  const resetMs = resolveResetMs(meter, now);
+  if (resetMs === null) {
+    return t(language, "meter.unknown");
+  }
+  const seconds = Math.max(0, Math.floor((resetMs - now) / 1000));
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (language === "zh-CN") {
+    if (days > 0) {
+      return `剩余 ${days}天 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
+    }
+    if (hours > 0) {
+      return `剩余 ${hours}小时 ${minutes}分钟 ${remainingSeconds}秒`;
+    }
+    return minutes > 0 ? `剩余 ${minutes}分钟 ${remainingSeconds}秒` : `剩余 ${remainingSeconds}秒`;
+  }
+  if (days > 0) {
+    return `${days}d ${hours}h ${minutes}m ${remainingSeconds}s left`;
+  }
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${remainingSeconds}s left`;
+  }
+  return minutes > 0 ? `${minutes}m ${remainingSeconds}s left` : `${remainingSeconds}s left`;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
 }
 
 export function formatMeterLabelLocalized(
@@ -370,7 +412,7 @@ export function formatMeterLabelLocalized(
 
 export function formatGptSectionLabelLocalized(
   language: ResolvedLanguage,
-  section: "input" | "features" | "windows" | "codex" | "other"
+  section: "subscription" | "input" | "features" | "windows" | "codex" | "other"
 ): string {
   return GPT_SECTION_LABELS[language][section];
 }
@@ -394,13 +436,6 @@ export function formatStatusLabelLocalized(
   status: string
 ): string {
   return STATUS_LABELS[language][status] ?? status;
-}
-
-export function formatRiskLabelLocalized(
-  language: ResolvedLanguage,
-  label: IpRiskLabel
-): string {
-  return RISK_LABELS[language][label] ?? label;
 }
 
 function browserLanguageCandidates(): string[] {
