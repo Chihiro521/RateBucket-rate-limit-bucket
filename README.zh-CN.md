@@ -1,6 +1,6 @@
 # RateBucket
 
-[English README](README.md)
+[English](README.md#user-content-readme-en) | [中文](README.md#user-content-readme-zh)
 
 RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity 和 Muse 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
 
@@ -115,6 +115,8 @@ npm run build
 ## 开发
 
 日常开发使用 `dev` 分支，完成验证后合并到 `master`；已发布版本通过 Git 标签和 GitHub Release 保留。
+
+修改 `README.en.md` 或 `README.zh-CN.md` 后，运行 `npm run docs:build` 更新仓库首页的双语 README。
 
 运行测试：
 
