@@ -4,6 +4,8 @@
 
 RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and Muse. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
+[Website and interactive demo](https://chihiro521.github.io/RateBucket-rate-limit-bucket/) · This README is the project documentation.
+
 This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, Moonshot AI, Perplexity AI.
 
 ## Project Status

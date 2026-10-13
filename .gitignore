@@ -11,3 +11,7 @@ chrome-webstore-archive/
 submission/
 /.secrets/
 /.release/
+/.site-public/
+/site-dist/
+/output/playwright/
+/.playwright-cli/

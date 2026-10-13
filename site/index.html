@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#fbf5eb" />
+    <meta name="description" content="在 ChatGPT、Claude、Grok 等七个平台的页面中查看 AI 用量、剩余额度与重置时间。RateBucket 是免费的开源浏览器扩展。" />
+    <meta property="og:title" content="RateBucket · AI 用量与重置，随时看一眼" />
+    <meta property="og:description" content="在 ChatGPT、Claude、Grok 等七个平台的页面中查看 AI 用量、剩余额度与重置时间。RateBucket 是免费的开源浏览器扩展。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://chihiro521.github.io/RateBucket-rate-limit-bucket/" />
+    <meta property="og:image" content="https://chihiro521.github.io/RateBucket-rate-limit-bucket/assets/illustrations/hero-usage.png" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="canonical" href="https://chihiro521.github.io/RateBucket-rate-limit-bucket/" />
+    <link rel="icon" type="image/png" href="./brand-icon.png" />
+    <title>RateBucket · AI 用量与重置，随时看一眼</title>
+    <script type="module" src="./main.ts"></script>
+  </head>
+  <body>
+    <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6" /></symbol>
+      <symbol id="arrow-up" viewBox="0 0 24 24"><path d="M6 18 18 6M6 6h12v12" /></symbol>
+      <symbol id="sparkle" viewBox="0 0 24 24"><path d="M12 2 14.8 9.2 22 12l-7.2 2.8L12 22l-2.8-7.2L2 12l7.2-2.8Z" /></symbol>
+      <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></symbol>
+      <symbol id="window" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3" /><path d="M3 9h18m-13-2h.01M7 13h5m-5 3h10" /></symbol>
+      <symbol id="download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 15v5h16v-5" /></symbol>
+      <symbol id="github" viewBox="0 0 24 24"><path d="M9 19c-4.3 1.3-4.3-2.2-6-2.7M15 22v-3.9c0-1.1-.4-1.9-1-2.4 3.3-.4 6.8-1.6 6.8-7.3 0-1.6-.6-2.9-1.5-3.9.2-.4.7-1.9-.2-3.8 0 0-1.3-.4-4.1 1.5a14 14 0 0 0-7.5 0C4.7.3 3.4.7 3.4.7c-.9 1.9-.4 3.4-.2 3.8-1 1-1.5 2.3-1.5 3.9 0 5.7 3.5 6.9 6.8 7.3-.6.5-1 1.4-1 2.4V22" transform="translate(1 1) scale(.9)" /></symbol>
+    </svg>
+    <a class="skip-link" href="#main" data-i18n="skip">跳到正文</a>
+    <header class="site-header wrap">
+      <a class="brand" href="#" aria-label="RateBucket"><img src="./brand-icon.png" width="44" height="44" alt="" /><span>RateBucket<span class="brand-dot">.</span></span></a>
+      <nav class="main-nav" data-i18n-aria="navLabel" aria-label="主导航">
+        <a href="#playground" data-i18n="navDemo">试试看</a><a href="#features" data-i18n="navFeatures">为什么用它</a><a href="#install" data-i18n="navInstall">安装</a>
+      </nav>
+      <div class="header-actions"><div class="language-switch" role="group" data-i18n-aria="languageLabel" aria-label="页面语言"><button type="button" data-language="zh-CN" aria-pressed="true" aria-label="中文">中</button><span aria-hidden="true">/</span><button type="button" data-language="en" aria-pressed="false" aria-label="English">EN</button></div><a class="header-github" href="https://github.com/Chihiro521/RateBucket-rate-limit-bucket" target="_blank" rel="noopener noreferrer" aria-label="GitHub"><svg class="icon"><use href="#github" /></svg></a></div>
+    </header>
+
+    <main id="main">
+      <section class="hero wrap">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="little-line"></span><span data-i18n="heroEyebrow">AI 用量监控 · 浏览器扩展</span></div>
+          <h1><span data-i18n="heroTitle1">AI 用量与重置，</span><br /><span class="hero-title-accent" data-i18n="heroTitle2">随时看一眼。</span></h1>
+          <p class="hero-description" data-i18n="heroDescription">还剩多少额度，多久恢复？RateBucket 把平台提供的用量与重置时间放在当前页面，展开就能看，收起也不占地方。</p>
+          <div class="hero-actions"><a class="button button-dark" href="https://chromewebstore.google.com/detail/hiikdaglmnmplobmgcmhplldmklcnjke" target="_blank" rel="noopener noreferrer"><svg class="icon"><use href="#download" /></svg><span data-i18n="installChrome">添加到 Chrome</span><svg class="icon button-arrow"><use href="#arrow-up" /></svg></a><a class="button button-text" href="#playground"><span data-i18n="tryDemo">先体验一下</span><svg class="icon"><use href="#arrow" /></svg></a></div>
+          <div class="hero-details"><span class="detail-dot"></span><span data-i18n="heroDetails">开源免费</span><span class="detail-separator">·</span><span data-i18n="heroDetails2">在你熟悉的 AI 页面里</span></div>
+        </div>
+        <div class="hero-art">
+          <div class="hero-visual">
+          <div class="orbit orbit-outer" aria-hidden="true"></div><div class="orbit orbit-inner" aria-hidden="true"></div><div class="art-disc" aria-hidden="true"></div>
+          <span class="art-note" aria-hidden="true">usage in view.<br />back to your work.</span>
+          <svg class="art-star star-one icon" aria-hidden="true"><use href="#sparkle" /></svg><svg class="art-star star-two icon" aria-hidden="true"><use href="#sparkle" /></svg><span class="orbit-dot" aria-hidden="true"></span>
+          <img class="hero-mascot" src="./assets/illustrations/hero-usage.png" width="1254" height="1254" data-i18n-alt="mascotAlt" alt="小千寻坐在浏览器窗口上，用平板查看用量，旁边是额度表与时钟" fetchpriority="high" />
+          <div class="quota-card"><div class="quota-card-top"><span><span class="platform-dot"></span>ChatGPT</span><span class="example-tag" data-i18n="sample">示例数据</span></div><div class="quota-card-number">72<span>%</span><span class="quota-card-label" data-i18n="remaining">剩余额度</span></div><div class="quota-track"><span></span></div><div class="quota-card-bottom"><svg class="icon"><use href="#clock" /></svg><span data-i18n="heroReset">2 小时 36 分钟后重置</span></div></div>
+          </div>
+          <div class="art-caption"><span class="caption-line"></span><span data-i18n="artCaption">用量、余量、重置时间，一眼可见。</span></div>
+        </div>
+      </section>
+
+      <div class="platform-ribbon wrap">
+        <p data-i18n="platformRibbon">支持七个平台，在各自的页面中查看用量</p>
+        <div class="platform-names">
+          <span><img class="platform-logo" src="./assets/logos/chatgpt.svg" width="25" height="25" alt="" />ChatGPT</span>
+          <span><img class="platform-logo" src="./assets/logos/claude.svg" width="25" height="25" alt="" />Claude</span>
+          <span><img class="platform-logo" src="./assets/logos/grok.svg" width="25" height="25" alt="" />Grok</span>
+          <span><img class="platform-logo" src="./assets/logos/gemini.svg" width="25" height="25" alt="" />Gemini</span>
+          <span><img class="platform-logo platform-logo-kimi" src="./assets/logos/kimi.png" width="25" height="25" alt="" />Kimi</span>
+          <span><img class="platform-logo" src="./assets/logos/perplexity.svg" width="25" height="25" alt="" />Perplexity</span>
+          <span><img class="platform-logo" src="./assets/logos/muse.svg" width="25" height="25" alt="" />Muse</span>
+        </div>
+        <p class="brand-disclaimer" data-i18n="brandDisclaimer">各平台名称与标识归各自权利人所有，仅用于说明兼容性。RateBucket 是独立开源项目，与上述平台无隶属、合作或背书关系。</p>
+      </div>
+
+      <section id="playground" class="playground section-space">
+        <div class="wrap">
+          <div class="section-heading reveal"><div><div class="section-label"><span>01</span><span data-i18n="demoEyebrow">交互演示</span></div><h2><span data-i18n="demoTitle1">先点点看，</span><br /><span class="serif-accent" data-i18n="demoTitle2">再决定安装。</span></h2></div><p data-i18n="demoIntro">这是正在运行的真实扩展组件。换个平台，展开面板，或者把小胶囊拖到你喜欢的位置。</p></div>
+          <div class="demo-layout reveal">
+            <aside class="demo-sidebar"><div class="demo-platform-number">7<span data-i18n="platformCount">个平台，一眼清楚</span></div><div class="demo-sidebar-rule"></div><h3 id="platform-title">ChatGPT</h3><p id="platform-description"></p><div class="demo-tip"><svg class="icon"><use href="#window" /></svg><p data-i18n="demoTip">点右上角的 × 收起，再拖动小胶囊。每个平台都有自己的额度表达方式。</p></div><span class="handwritten" aria-hidden="true">usage & resets,<br />within reach.</span></aside>
+            <div class="demo-area"><div class="platform-tabs" role="tablist" data-i18n-aria="platformTabsLabel" aria-label="选择演示平台"><button type="button" role="tab" id="tab-chatgpt" aria-selected="true" aria-controls="demo-panel" data-platform="chatgpt">ChatGPT</button><button type="button" role="tab" id="tab-claude" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="claude">Claude</button><button type="button" role="tab" id="tab-grok" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="grok">Grok</button><button type="button" role="tab" id="tab-gemini" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="gemini">Gemini</button><button type="button" role="tab" id="tab-kimi" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="kimi">Kimi</button><button type="button" role="tab" id="tab-perplexity" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="perplexity">Perplexity</button><button type="button" role="tab" id="tab-muse" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-platform="muse">Muse</button></div>
+              <div class="browser-window" id="demo-panel" role="tabpanel" aria-labelledby="tab-chatgpt"><div class="browser-toolbar"><span class="browser-dots" aria-hidden="true"><i></i><i></i><i></i></span><div class="browser-address"><span aria-hidden="true">⌑</span><span id="demo-address">chatgpt.com</span></div><span class="example-tag" data-i18n="sample">示例数据</span></div><iframe id="demo-frame" src="./demo.html" title="RateBucket 交互演示" data-i18n-title="iframeTitle"></iframe><div id="demo-error" class="demo-error" hidden><p data-i18n="demoError">演示暂时没有加载成功。</p><button type="button" class="button button-dark" id="reload-demo" data-i18n="reloadDemo">重新加载演示</button></div></div>
+              <div class="demo-controls"><div class="demo-control-buttons"><button type="button" id="toggle-demo"><svg class="icon"><use href="#window" /></svg><span data-i18n="toggleDemo">展开 / 收起</span></button><button type="button" id="refresh-demo"><span aria-hidden="true">↻</span><span data-i18n="refreshDemo">刷新示例</span></button><button type="button" id="reset-demo" data-i18n="resetDemo">重新开始</button></div><span id="demo-status" role="status" aria-live="polite"></span></div>
+              <p class="demo-disclaimer" data-i18n="demoDisclaimer">演示使用固定示例读数，供你体验界面；实际额度以各平台返回的信息为准。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="features section-space wrap">
+        <div class="section-label reveal"><span>02</span><span data-i18n="featuresEyebrow">用量信息，随手可查</span></div>
+        <div class="features-intro reveal"><h2><span data-i18n="featuresTitle1">还能用多少，</span><br /><span class="serif-accent" data-i18n="featuresTitle2">什么时候重置。</span></h2><p data-i18n="featuresIntro">次数、百分比、共享额度池和倒计时，按平台实际提供的信息展示。查看用量后，继续当前的对话和创作。</p></div>
+        <div class="feature-grid">
+          <article class="feature feature-quota reveal"><span class="feature-number">01 /</span><div class="mini-meter" aria-hidden="true"><div><span>Claude · 5h</span><span>65%</span></div><div class="mini-meter-track"><span></span></div><span class="mini-meter-caption" data-i18n="sample">示例数据</span></div><h3 data-i18n="featureQuotaTitle">剩下多少，抬眼就知道</h3><p data-i18n="featureQuotaDescription">次数、百分比、共享额度池——把不同平台的用量信息，变成容易读懂的小面板。</p></article>
+          <article class="feature feature-time reveal"><span class="feature-number">02 /</span><div class="mini-clock" aria-hidden="true"><svg viewBox="0 0 130 130"><circle cx="65" cy="65" r="51" /><circle class="clock-center" cx="65" cy="65" r="3" /><path d="M65 30v35l24 13M65 19v6M65 105v6M19 65h6M105 65h6" /></svg><span>02:36<span data-i18n="sample">示例数据</span></span></div><h3 data-i18n="featureTimeTitle">离重置还有多久</h3><p data-i18n="featureTimeDescription">当平台提供重置时间时，直接看到倒计时。什么时候再来，不用自己掐着时间算。</p></article>
+          <article class="feature feature-small reveal"><span class="feature-number">03 /</span><div class="mini-capsule" aria-hidden="true"><img src="./assets/illustrations/capsule-peek.png" width="1254" height="1254" alt="" loading="lazy" /><span><i></i>GPT<span>72%</span></span></div><h3 data-i18n="featureSmallTitle">展开查看，收起成胶囊</h3><p data-i18n="featureSmallDescription">想看时展开，专注时收起。把胶囊拖到顺手的位置，在你原本的 AI 页面里继续工作。</p></article>
+        </div>
+        <div class="local-note reveal"><svg class="icon"><use href="#sparkle" /></svg><p><strong data-i18n="localTitle">简单，也轻盈。</strong><span data-i18n="localDescription">用量读数保存在浏览器本地。无需额外账号，没有项目自建后台，也没有广告或遥测。</span></p><a href="./privacy-policy.html" target="_blank" rel="noopener noreferrer"><span data-i18n="privacyLink">了解数据处理</span><svg class="icon"><use href="#arrow-up" /></svg></a></div>
+      </section>
+
+      <section id="install" class="install-section section-space">
+        <div class="wrap"><div class="install-card reveal"><div class="install-copy"><div class="section-label"><span>03</span><span data-i18n="installEyebrow">添加到浏览器</span></div><h2><span data-i18n="installTitle1">打开 AI 页面，</span><br /><span data-i18n="installTitle2">用量就在旁边。</span></h2><p data-i18n="installDescription">安装扩展后，打开已登录的支持网站，即可使用用量悬浮窗。无需额外注册账号。</p><a class="button button-cream" href="https://chromewebstore.google.com/detail/hiikdaglmnmplobmgcmhplldmklcnjke" target="_blank" rel="noopener noreferrer"><svg class="icon"><use href="#download" /></svg><span data-i18n="installChrome">添加到 Chrome</span><svg class="icon"><use href="#arrow-up" /></svg></a><p class="install-browser-note" data-i18n="browserNote">面向桌面 Chrome / Chromium 浏览器</p></div><div class="install-art" aria-hidden="true"><div class="install-orbit"></div><svg class="icon"><use href="#sparkle" /></svg><img src="./assets/illustrations/install-extension.png" width="1254" height="1254" alt="" loading="lazy" /><span>ready when you are.</span></div></div>
+          <div class="manual-install reveal"><div><h3 data-i18n="manualTitle">也可以从 GitHub 安装</h3><p data-i18n="manualDescription">喜欢自己动手？下载扩展包，解压后加载即可。</p><a href="https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/latest" target="_blank" rel="noopener noreferrer"><span data-i18n="downloadRelease">下载最新 Release</span><svg class="icon"><use href="#arrow-up" /></svg></a></div><ol><li><span>1</span><p data-i18n="installStep1">下载 Release 中的 ZIP，并解压到一个固定目录。</p></li><li><span>2</span><p><span data-i18n="installStep2a">打开</span> <code>chrome://extensions</code><span data-i18n="installStep2b">，开启「开发者模式」。</span><button type="button" id="copy-extensions" data-i18n-title="copyAddress" title="复制扩展管理地址"><svg class="icon"><use href="#window" /></svg></button></p></li><li><span>3</span><p data-i18n="installStep3">点击「加载已解压的扩展程序」，选择解压后的目录。</p></li></ol><span id="copy-status" class="sr-only" role="status" aria-live="polite"></span></div>
+        </div>
+      </section>
+
+      <section class="faq section-space wrap" id="faq"><div class="faq-intro reveal"><div class="section-label"><span>04</span><span data-i18n="faqEyebrow">常见问题</span></div><h2 data-i18n="faqTitle">你可能想知道</h2><p data-i18n="faqIntro">安装与用量显示的几个常见问题。</p></div><div class="faq-list reveal"><details><summary><span data-i18n="faq1Title">需要登录另一个账号吗？</span><span aria-hidden="true">+</span></summary><p data-i18n="faq1Answer">不需要。安装后，在已经登录的支持网站上使用即可。RateBucket 没有单独的账号系统。</p></details><details><summary><span data-i18n="faq2Title">每个平台都能看到精确剩余次数吗？</span><span aria-hidden="true">+</span></summary><p data-i18n="faq2Answer">显示内容取决于平台提供的信息：有的提供次数，有的提供百分比或共享额度池。部分信息属于本地估算或未校准读数，组件会标明来源与状态。</p></details><details><summary><span data-i18n="faq3Title">暂时看不到额度，怎么办？</span><span aria-hidden="true">+</span></summary><p data-i18n="faq3Answer">先确认已登录平台，再尝试组件的刷新按钮。平台接口可能变化；如果问题持续，可以在 GitHub 提交问题，附上平台名称和组件提示。</p></details><details><summary><span data-i18n="faq4Title">可以在手机或其他浏览器上使用吗？</span><span aria-hidden="true">+</span></summary><p data-i18n="faq4Answer">目前主要在桌面 Chrome / Chromium 浏览器上验证。官网可以用手机浏览，扩展本身尚未正式支持手机、Firefox 或 Safari。</p></details><details><summary><span data-i18n="faq5Title">它是各家 AI 平台的官方扩展吗？</span><span aria-hidden="true">+</span></summary><p data-i18n="faq5Answer">RateBucket 是独立的开源项目，与所支持的 AI 平台没有隶属或官方合作关系。代码采用 MIT 许可证，欢迎通过 GitHub 了解和参与。</p></details></div></section>
+    </main>
+
+    <footer class="site-footer wrap">
+      <div class="footer-top"><a class="brand" href="#"><img src="./brand-icon.png" width="40" height="40" alt="" /><span>RateBucket<span class="brand-dot">.</span></span></a><span class="footer-motto" data-i18n="footerMotto">AI 用量，随时可查。</span><a class="back-top" href="#"><span data-i18n="backTop">回到顶部</span><svg class="icon"><use href="#arrow-up" /></svg></a></div>
+      <div class="footer-bottom"><span>© <span id="year">2026</span> RateBucket <span class="footer-made" data-i18n="footerMade">· 开源浏览器扩展</span></span><div><a href="https://github.com/Chihiro521/RateBucket-rate-limit-bucket" target="_blank" rel="noopener noreferrer">GitHub</a><a href="https://github.com/Chihiro521/RateBucket-rate-limit-bucket/blob/master/CHANGELOG.md" target="_blank" rel="noopener noreferrer" data-i18n="changelog">更新记录</a><a href="./privacy-policy.html" target="_blank" rel="noopener noreferrer" data-i18n="privacy">隐私政策</a><a href="https://github.com/Chihiro521/RateBucket-rate-limit-bucket/blob/master/LICENSE" target="_blank" rel="noopener noreferrer">MIT License</a></div></div>
+      <p class="trademark-notice" data-i18n="trademarkNotice">本页涉及的第三方商标和标识归各自权利人所有。Gemini 是 Google LLC 的商标。项目的 MIT 许可证不授予第三方商标或标识的使用权。</p>
+    </footer>
+  </body>
+</html>

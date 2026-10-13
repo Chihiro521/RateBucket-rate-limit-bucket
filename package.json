@@ -6,6 +6,9 @@
   "scripts": {
     "build": "tsc --noEmit && node scripts/build.mjs",
     "docs:build": "node scripts/build-readme.mjs",
+    "site:dev": "node scripts/prepare-site.mjs && vite --config vite.site.config.ts --host 127.0.0.1",
+    "site:build": "node scripts/prepare-site.mjs && tsc --project tsconfig.site.json && vite build --config vite.site.config.ts",
+    "site:preview": "vite preview --config vite.site.config.ts --host 127.0.0.1",
     "test": "vitest run"
   },
   "devDependencies": {

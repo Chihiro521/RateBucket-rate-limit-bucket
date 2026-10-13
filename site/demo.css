@@ -1,0 +1,16 @@
+:root { color-scheme: light; font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: #25364d; background: #fcfaf6; }
+* { box-sizing: border-box; }
+body { margin: 0; overflow: hidden; }
+.mock-page { position: relative; height: 100vh; min-height: 400px; padding: 26px; background: radial-gradient(ellipse at 5% 95%, #e8e9e6 0, transparent 55%); overflow: hidden; }
+.mock-brand { font-size: 14px; font-weight: 600; opacity: .38; }
+.sample-label { position: absolute; bottom: 17px; left: 20px; border: 1px solid #d9cebb; border-radius: 20px; font-size: 10px; padding: 4px 9px; color: #807260; background: #fffbf2; }
+.mock-content { width: 46%; position: absolute; top: 34%; left: 26px; opacity: .62; }
+.mock-eyebrow { font-size: 9px; letter-spacing: .12em; color: #8f887f; }
+.mock-content h1 { font-size: clamp(18px, 2.8vw, 26px); font-weight: 450; line-height: 1.5; margin: 15px 0 23px; }
+.mock-prompt { background: #fff; border: 1px solid #dedbd5; border-radius: 12px; padding: 18px 13px; display: flex; align-items: center; gap: 10px; justify-content: space-between; font-size: 10px; color: #898b8e; box-shadow: 0 4px 15px #25364d05; }
+.mock-prompt > span:last-child { border-radius: 100%; color: #fff; background: #8c99a5; padding: 1px 7px 3px; }
+.mock-suggestions { display: flex; gap: 10px; margin-top: 16px; }
+.mock-suggestions > span { padding: 5px 17px; font-size: 12px; border: 1px solid #dfdfda; border-radius: 20px; color: #949b9d; }
+.mock-hint { position: absolute; bottom: 55px; left: 27px; font-size: 10px; letter-spacing: .04em; color: #949b9d; }
+@media (max-width: 600px) { .mock-content { width: 60%; top: 42%; } .mock-content h1 { font-size: 18px; } .mock-hint { display: none; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }

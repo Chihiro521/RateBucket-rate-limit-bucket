@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["site/**/*.ts", "vite.site.config.ts"],
+  "exclude": ["node_modules", "site-dist", ".site-public"]
+}
