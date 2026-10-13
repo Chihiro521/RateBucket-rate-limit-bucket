@@ -2,6 +2,9 @@ import type { BridgeResponse, UsageError } from "./types";
 
 export function usageErrorFromBridge(response: BridgeResponse): UsageError {
   const status = response.error?.status;
+  if (response.error?.code) {
+    return { code: response.error.code, message: response.error.message, status };
+  }
   if (status === 401 || status === 403) {
     return {
       code: "UNAUTHORIZED",

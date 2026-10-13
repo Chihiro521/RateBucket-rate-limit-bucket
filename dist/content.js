@@ -5,7 +5,7 @@
     return path.split(/[.:]/).some((part) => part.replaceAll("_", "").toLowerCase().startsWith("chatpass"));
   }
   function hasMeaningfulValue(meter) {
-    return meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription" || [meter.remaining, meter.total, meter.used, meter.remainingPercent, meter.usedPercent].some((value) => typeof value === "number" && Number.isFinite(value)) || meter.label === "Credits (unlimited)";
+    return Boolean(meter.displayValue?.trim()) || meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription" || [meter.remaining, meter.total, meter.used, meter.remainingPercent, meter.usedPercent].some((value) => typeof value === "number" && Number.isFinite(value)) || meter.label === "Credits (unlimited)";
   }
   function isAlertMeter(meter) {
     if (meter.metricKind === "balance" || meter.metricKind === "subscription" || meter.rawKind === "credits" || meter.rawKind === "chatgpt.subscription" || meter.source === "estimate") {
@@ -939,7 +939,7 @@
       }
     };
     const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
-    const intervalId = options.setInterval(refreshIfVisible, CHATGPT_POLL_CHECK_MS);
+    const intervalId = options.setInterval(refreshIfVisible, options.intervalMs ?? CHATGPT_POLL_CHECK_MS);
     return () => {
       options.clearInterval(intervalId);
       stopVisibilityListener();
@@ -962,6 +962,7 @@
   function meterValue(meter) {
     return JSON.stringify({
       label: meter.label,
+      displayValue: meter.displayValue,
       modelName: meter.modelName,
       requestKind: meter.requestKind,
       remaining: meter.remaining,
@@ -1341,6 +1342,15 @@
     const { cacheAgeMs: _cacheAgeMs, ...persisted } = snapshot;
     return storageSet$1({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
   }
+  function clearCachedSnapshot(platform2) {
+    return new Promise((resolve, reject) => {
+      chrome.storage.local.remove(snapshotKey(platform2), () => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve();
+      });
+    });
+  }
   async function getLastRefreshAt(platform2) {
     const key2 = lastRefreshKey(platform2);
     const items = await storageGet$1(key2);
@@ -1524,6 +1534,7 @@
     "meta.updatedAt": "更新于 {age}",
     "meta.waitSeconds": "等待 {seconds}秒",
     "meter.unknown": "未知",
+    "meter.neverExpires": "从不过期",
     "meter.used": "已用 {used}/{total}",
     "meter.usedPercent": "{percent}% 已用",
     "meter.remaining": "剩余 {remaining}",
@@ -1555,6 +1566,7 @@
     "meta.updatedAt": "Updated {age}",
     "meta.waitSeconds": "Wait {seconds}s",
     "meter.unknown": "Unknown",
+    "meter.neverExpires": "Never expires",
     "meter.used": "Used {used}/{total}",
     "meter.usedPercent": "{percent}% used",
     "meter.remaining": "Remaining {remaining}",
@@ -1648,7 +1660,9 @@
     Pro: "Pro",
     Labs: "Labs",
     "Agentic Research": "智能体研究",
-    "Free queries": "免费查询"
+    "Free queries": "免费查询",
+    "Muse weekly": "Muse 每周额度",
+    "Additional usage": "额外的使用额度"
   };
   function isLanguageMode(value) {
     return value === "auto" || value === "zh-CN" || value === "en";
@@ -1742,6 +1756,8 @@
   }
   function formatMeterValueLocalized(language, meter) {
     if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+    if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
+    if (meter.displayValue?.trim()) return meter.displayValue;
     if (meter.unit === "bytes") {
       const gib = (n) => (n / 1073741824).toLocaleString(language, { maximumFractionDigits: 2 });
       return typeof meter.remaining === "number" ? (language === "zh-CN" ? "剩余 " : "Remaining ") + gib(meter.remaining) + " GiB" : t(language, "meter.unknown");
@@ -3248,10 +3264,15 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
 .meter-top { align-items: start; gap: 8px; }
 .meter-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
 .meter-value { text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.meter-top-detail { flex-direction: column; gap: 4px; }
+.meter-top-detail .meter-value { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .meter-bottom { flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
 .badge, .meta, .settings-label, .settings-help, .model-meta { font-size: 12px; }
 .settings-popover { max-height: calc(100dvh - 16px); max-width: calc(100% - 16px); overflow-y: auto; width: min(360px, calc(100vw - 16px)); }
 .panel { width: min(314px, calc(100vw - 16px)); }
+:host([data-platform="muse"]) .collapsed { width: max-content; max-width: calc(100vw - 16px); grid-template-columns: 78px 7px max-content; }
+:host([data-platform="muse"]) .collapsed-main { grid-template-columns: max-content 1px max-content; column-gap: 4px; }
+:host([data-platform="muse"]) .primary { padding-left: 0; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px), (max-height: 600px) {
   :host([data-platform="chatgpt"]) { top: 8px; right: 8px; }
@@ -3265,7 +3286,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     chatgpt: "GPT",
     kimi: "Kimi",
     gemini: "Gemini",
-    perplexity: "Perplexity"
+    perplexity: "Perplexity",
+    muse: "Muse"
   };
   const GPT_SECTION_ORDER = [
     "subscription",
@@ -3738,7 +3760,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       }) : this.text("meta.neverUpdated");
       const right = this.backoffRemainingMs() > 0 ? this.text("meta.waitSeconds", {
         seconds: Math.ceil(this.backoffRemainingMs() / 1e3)
-      }) : this.platform === "chatgpt" && this.snapshot?.checkedAt ? this.text("meta.checkedAt", {
+      }) : (this.platform === "chatgpt" || this.platform === "muse") && this.snapshot?.checkedAt ? this.text("meta.checkedAt", {
         age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt)
       }) : this.snapshot?.cacheAgeMs !== void 0 ? this.text("meta.cacheSeconds", {
         seconds: Math.floor(this.snapshot.cacheAgeMs / 1e3)
@@ -3768,7 +3790,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     renderContent() {
       const content = el("div", "content");
       if (this.snapshot?.errorMessage) {
-        content.append(textEl("div", "error", this.snapshot.errorMessage));
+        const saved = this.platform === "muse" && this.snapshot.meters.length ? this.resolvedLanguage === "zh-CN" ? " · 显示上次读数" : " · Showing saved readings" : "";
+        content.append(textEl("div", "error", this.snapshot.errorMessage + saved));
       }
       const meters = (this.snapshot?.meters ?? []).filter(hasMeaningfulValue);
       if (meters.length === 0) {
@@ -3866,6 +3889,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       const row = el("div", "meter");
       row.dataset.nodeKey = `meter:${meter.key}`;
       const top = el("div", "meter-top");
+      if (meter.rawKind === "muse.topup") top.classList.add("meter-top-detail");
       top.append(
         textEl(
           "div",
@@ -3905,7 +3929,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
       const uncalibrated = meter.quotaState === "unknown" ? this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated" : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
       const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
-      const stale = this.platform === "chatgpt" && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS ? this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale" : "";
+      const stale = (this.platform === "chatgpt" || this.platform === "muse") && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS ? this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale" : "";
       return `${source} · ${uncalibrated}${age ? ` · ${age}` : ""}${stale}`;
     }
     renderMeterBottom(meter) {
@@ -3920,6 +3944,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       return bottom;
     }
     formatMeterTimePreview(meter) {
+      if (meter.rawKind === "muse.topup") return this.text("meter.neverExpires");
       if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
         const fmt = (n) => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });
         return this.resolvedLanguage === "zh-CN" ? `已用 ${fmt(meter.used)} / 共 ${fmt(meter.total)} GiB` : `Used ${fmt(meter.used)} / ${fmt(meter.total)} GiB`;
@@ -3940,6 +3965,10 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     }
     primaryValue() {
       const meters = this.snapshot?.meters ?? [];
+      if (this.platform === "muse") {
+        const weekly = meters.find((meter) => meter.key === "muse:weekly");
+        return weekly ? formatMeterValueLocalized(this.resolvedLanguage, weekly) : "?";
+      }
       const byRemaining = meters.filter((meter) => typeof meter.remaining === "number").sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];
       if (byRemaining?.remaining !== void 0 && byRemaining.remaining !== null) {
         return `${byRemaining.remaining}`;
@@ -4251,10 +4280,16 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     if (hostname === "www.perplexity.ai" || hostname === "perplexity.ai") {
       return "perplexity";
     }
+    if (hostname === "muse.ai") {
+      return "muse";
+    }
     return null;
   }
   function usageErrorFromBridge(response) {
     const status = response.error?.status;
+    if (response.error?.code) {
+      return { code: response.error.code, message: response.error.message, status };
+    }
     if (status === 401 || status === 403) {
       return {
         code: "UNAUTHORIZED",
@@ -5109,6 +5144,153 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       response.endpointKey ?? "perplexity"
     );
   }
+  const MUSE_ENDPOINT_KEY = "muse:subscription";
+  function parseMuseSubscriptionJson(value) {
+    const root = asRecord(value);
+    if (!root || typeof root.success !== "boolean") return null;
+    if (!root.success) {
+      const recovery = asRecord(root.sessionRecovery);
+      const unauthorized = root.unauthorized === true || recovery?.scope === "hatch" && (recovery.reason === "authentication" || recovery.reason === "checkpoint");
+      return {
+        success: false,
+        unauthorized,
+        error: unauthorized ? "请登录 Muse 后刷新额度" : "Muse 额度查询失败"
+      };
+    }
+    const subscription = asRecord(root.subscription);
+    if (!subscription) return null;
+    const tier = asRecord(subscription.tier);
+    const usage = asRecord(subscription.usage);
+    return {
+      success: true,
+      subscription: {
+        tier: tier ? {
+          name: getString(tier, "name") ?? void 0,
+          tierId: getString(tier, "tierId") ?? void 0
+        } : void 0,
+        usage: usage ? {
+          state: getString(usage, "state") ?? void 0,
+          percentUsed: getNumber(usage, "percentUsed") ?? void 0,
+          resetsAt: getNumber(usage, "resetsAt") ?? void 0
+        } : void 0,
+        usageRowLabel: getString(subscription, "usageRowLabel") ?? void 0,
+        topupBalance: getNumber(subscription, "topupBalance") ?? void 0,
+        topupTotal: getNumber(subscription, "topupTotal") ?? void 0,
+        topupRowLabel: getString(subscription, "topupRowLabel") ?? void 0,
+        topupRowValueLabel: getString(subscription, "topupRowValueLabel") ?? void 0
+      }
+    };
+  }
+  function parseMuseSubscriptionText(text) {
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^[0-9a-f]+:(\{.*\})$/i.exec(line);
+      if (!match) continue;
+      try {
+        const result = parseMuseSubscriptionJson(JSON.parse(match[1]));
+        if (result) return result;
+      } catch {
+      }
+    }
+    return null;
+  }
+  function normalizeMuseUsage(value, source = "api") {
+    const result = parseMuseSubscriptionJson(value);
+    if (!result?.success) return [];
+    const subscription = result.subscription;
+    const meters = [];
+    const usage = subscription.usage;
+    if (usage) {
+      const metered = usage.state === "METERED" && typeof usage.percentUsed === "number";
+      const unlimited = usage.state === "UNLIMITED";
+      const usedPercent = metered ? Math.max(0, Math.min(100, usage.percentUsed)) : void 0;
+      meters.push({
+        key: "muse:weekly",
+        label: subscription.usageRowLabel || subscription.tier?.name || "Muse weekly",
+        usedPercent,
+        remainingPercent: usedPercent === void 0 ? void 0 : 100 - usedPercent,
+        resetAt: metered && typeof usage.resetsAt === "number" && usage.resetsAt > 0 ? usage.resetsAt * 1e3 : void 0,
+        windowSeconds: metered ? 7 * 24 * 60 * 60 : void 0,
+        quotaState: !metered && !unlimited ? "unknown" : void 0,
+        displayValue: unlimited ? "Unlimited" : void 0,
+        metricKind: "quota",
+        unit: "percent",
+        source,
+        confidence: metered || unlimited ? "high" : "low",
+        rawKind: unlimited ? "muse.unlimited" : "muse.weekly"
+      });
+    }
+    const balance = subscription.topupBalance;
+    const total = subscription.topupTotal;
+    const displayValue = subscription.topupRowValueLabel?.trim();
+    if (typeof balance === "number" && typeof total === "number" && total > 0 && displayValue) {
+      const usedPercent = Math.round(100 * (total - Math.min(Math.max(balance, 0), total)) / total);
+      meters.push({
+        key: "muse:topup",
+        label: subscription.topupRowLabel || "Additional usage",
+        displayValue,
+        usedPercent,
+        remainingPercent: 100 - usedPercent,
+        metricKind: "balance",
+        unit: "percent",
+        source,
+        confidence: "high",
+        rawKind: "muse.topup"
+      });
+    }
+    return meters;
+  }
+  function museSnapshotFromResult(result, source, observedAt, requestStartedAt = observedAt) {
+    const meters = normalizeMuseUsage(result, source).map((meter) => ({ ...meter, observedAt, requestStartedAt }));
+    const errorCode = result === null || result.success && !meters.length ? "PARSER_ERROR" : !result.success ? result.unauthorized ? "UNAUTHORIZED" : "UNKNOWN" : void 0;
+    return {
+      platform: "muse",
+      meters,
+      source: meters.length ? source : "unknown",
+      updatedAt: observedAt,
+      checkedAt: errorCode ? void 0 : observedAt,
+      status: errorCode ? "error" : meters.some((meter) => meter.quotaState === "unknown") ? "partial" : "ok",
+      errorCode,
+      errorMessage: errorCode ? result && !result.success ? result.error : "Muse 额度响应结构变化" : void 0,
+      debug: { endpoint: MUSE_ENDPOINT_KEY, parser: "muse.subscription" }
+    };
+  }
+  async function fetchMuseUsage(fetcher) {
+    const response = await fetcher(MUSE_ENDPOINT_KEY);
+    if (!response.ok) {
+      const error = usageErrorFromBridge(response);
+      return {
+        platform: "muse",
+        meters: [],
+        source: "unknown",
+        updatedAt: Date.now(),
+        status: "error",
+        errorCode: error.code,
+        errorMessage: error.code === "UNAUTHORIZED" ? "请登录 Muse 后刷新额度" : formatUsageError(error, MUSE_ENDPOINT_KEY)
+      };
+    }
+    return museSnapshotFromResult(
+      typeof response.text === "string" ? parseMuseSubscriptionText(response.text) : parseMuseSubscriptionJson(response.json),
+      "api",
+      response.observedAt ?? Date.now(),
+      response.requestStartedAt
+    );
+  }
+  function mergeMuseUsageSnapshots(previous, incoming, now = Date.now()) {
+    const newestPreviousRequest = Math.max(0, ...previous?.meters.map((meter) => meter.requestStartedAt ?? meter.observedAt ?? 0) ?? []);
+    if (previous && incoming.meters.length && incoming.meters.every((meter) => newestPreviousRequest > (meter.requestStartedAt ?? meter.observedAt ?? incoming.updatedAt))) {
+      return previous;
+    }
+    if (incoming.errorCode === "UNAUTHORIZED" || incoming.status !== "error") return incoming;
+    const merged = mergeUsageSnapshots(previous, incoming, now);
+    return {
+      ...merged,
+      source: merged.meters.length ? previous?.source ?? "unknown" : "unknown",
+      updatedAt: previous?.updatedAt ?? incoming.updatedAt,
+      checkedAt: previous?.checkedAt,
+      errorCode: incoming.errorCode,
+      errorMessage: incoming.errorMessage
+    };
+  }
   function fetchPlatformUsage(platform2, fetcher) {
     if (platform2 === "grok") {
       return fetchGrokUsage(fetcher);
@@ -5125,9 +5307,20 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     if (platform2 === "perplexity") {
       return fetchPerplexityUsage(fetcher);
     }
+    if (platform2 === "muse") {
+      return fetchMuseUsage(fetcher);
+    }
     return fetchChatGptUsage(fetcher);
   }
   function normalizeInterceptedUsage(args) {
+    if (args.platform === "muse") {
+      return museSnapshotFromResult(
+        typeof args.text === "string" ? parseMuseSubscriptionText(args.text) : parseMuseSubscriptionJson(args.json),
+        "intercepted",
+        args.ts,
+        args.requestStartedAt
+      );
+    }
     const meters = normalizeInterceptedMeters(args);
     return {
       platform: args.platform,
@@ -5234,6 +5427,9 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     let refreshing = false;
     let chatGptController;
     let pendingEstimatorRefresh = 0;
+    let museSessionVerified = false;
+    let museInitialCheckPending = platformId === "muse";
+    let museSessionGeneration = 0;
     const saveLanguage = async (mode) => {
       widget.setLanguageMode(await saveLanguageMode(mode));
     };
@@ -5255,10 +5451,21 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     const applySnapshot = async (snapshot) => {
       const shouldReplace = platformId === "grok" && snapshot.source === "intercepted";
       const previous = shouldReplace ? null : currentSnapshot;
-      const merged = mergeUsageSnapshots(previous, snapshot);
+      const merged = platformId === "muse" ? mergeMuseUsageSnapshots(previous, snapshot) : mergeUsageSnapshots(previous, snapshot);
+      if (platformId === "muse" && previous && sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+      if (platformId === "muse") {
+        if (snapshot.errorCode === "UNAUTHORIZED") {
+          museSessionVerified = false;
+          museSessionGeneration++;
+        } else if (snapshot.status !== "error" && snapshot.meters.length > 0) {
+          museSessionVerified = true;
+          museInitialCheckPending = false;
+        }
+      }
       currentSnapshot = merged;
       widget.setSnapshot(currentSnapshot);
-      await setCachedSnapshot(currentSnapshot);
+      if (platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED") await clearCachedSnapshot("muse");
+      else if (platformId !== "muse" || museSessionVerified) await setCachedSnapshot(currentSnapshot);
     };
     const refreshUsage = async (options) => {
       if (chatGptController) {
@@ -5270,29 +5477,33 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       }
       const now = Date.now();
       const backoffUntil = await getBackoffUntil(platformId);
-      widget.setBackoffUntil(backoffUntil);
-      if (backoffUntil > now) {
+      widget.setBackoffUntil(museInitialCheckPending ? 0 : backoffUntil);
+      if (backoffUntil > now && !museInitialCheckPending) {
         return;
       }
-      const cached2 = await getCachedSnapshot(platformId);
+      const cached2 = platformId === "muse" && !museSessionVerified ? null : await getCachedSnapshot(platformId);
       if (!options.force && cached2 && now - (cached2.checkedAt ?? cached2.updatedAt) < CACHE_TTL_MS) {
         currentSnapshot = cached2;
         widget.setSnapshot(cached2);
         return;
       }
       const lastRefreshAt = await getLastRefreshAt(platformId);
-      if (lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
+      if (!museInitialCheckPending && !(platformId === "muse" && options.force) && lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
         if (cached2) {
           currentSnapshot = cached2;
           widget.setSnapshot(cached2);
         }
         return;
       }
+      if (refreshing) return;
       refreshing = true;
+      museInitialCheckPending = false;
+      const museGeneration = museSessionGeneration;
       widget.setLoading(true);
       await setLastRefreshAt(platformId, now);
       try {
         const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key2, payload) => bridge.fetchUsage(platformId, key2, payload)));
+        if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
         await applySnapshot(snapshot);
         await updateFailureState(
           platformId,
@@ -5300,6 +5511,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
           widget
         );
       } catch (error) {
+        if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
         const snapshot = await withEstimateFallback(platformId, {
           platform: platformId,
           meters: [],
@@ -5331,12 +5543,12 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
         void chatGptController?.refresh("startup");
       });
     }
-    const cached = await getCachedSnapshot(platformId);
+    const cached = platformId === "muse" ? null : await getCachedSnapshot(platformId);
     if (cached) {
       currentSnapshot = cached;
       widget.setSnapshot(cached);
     }
-    widget.setBackoffUntil(platformId === "chatgpt" ? 0 : await getBackoffUntil(platformId));
+    widget.setBackoffUntil(platformId === "chatgpt" || platformId === "muse" ? 0 : await getBackoffUntil(platformId));
     const onStorageChanged = (changes, areaName) => {
       if (areaName !== "local") {
         return;
@@ -5363,17 +5575,19 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
         json: message.json,
         text: message.text,
         ts: message.ts,
-        endpointKey: message.endpointKey
+        endpointKey: message.endpointKey,
+        requestStartedAt: message.requestStartedAt
       });
-      if (snapshot.meters.length === 0) {
+      if (snapshot.meters.length === 0 && !(platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED")) {
         return;
       }
       void applySnapshot(snapshot).catch((error) => {
         debugLog("failed to cache intercepted usage", error);
       });
+      if (platformId === "muse") void updateFailureState(platformId, snapshot, widget).catch((error) => debugLog("failed to update Muse retry state", error));
     });
     const stopEstimator = installSendEstimator(platformId, (snapshot) => {
-      if (platformId !== "chatgpt" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
+      if (platformId !== "chatgpt" && platformId !== "muse" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
         currentSnapshot = snapshot;
         widget.setSnapshot(snapshot);
       }
@@ -5382,7 +5596,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
         if (chatGptController) void chatGptController.refresh("operation");
         else void refreshUsage({ force: false });
       }, 1500);
-    }, { recordCounts: platformId !== "chatgpt" });
+    }, { recordCounts: platformId !== "chatgpt" && platformId !== "muse" });
     try {
       await injectMainWorld();
       await bridge.enableIntercept(platformId);
@@ -5390,7 +5604,8 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       debugLog("main world bridge injection failed", error);
     }
     await refreshUsage({ force: false });
-    const stopUsagePolling = platformId === "chatgpt" ? startVisibleUsagePolling({
+    const stopUsagePolling = platformId === "chatgpt" || platformId === "muse" ? startVisibleUsagePolling({
+      intervalMs: platformId === "muse" ? 6e4 : void 0,
       isVisible: () => document.visibilityState === "visible",
       onVisibilityChange: (callback) => {
         document.addEventListener("visibilitychange", callback);
@@ -5434,6 +5649,7 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     }
   }
   async function withEstimateFallback(platform2, snapshot) {
+    if (platform2 === "muse") return snapshot;
     if (snapshot.meters.length > 0 && snapshot.status !== "error") {
       return snapshot;
     }

@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageWidget } from "../src/content/widget";
 import type { PlatformId, UsageSnapshot } from "../src/platforms/types";
+import { museSnapshotFromResult, parseMuseSubscriptionJson } from "../src/platforms/muse";
+import { MUSE_RESPONSE } from "./museFixture";
 
 let frames: FrameRequestCallback[];
 let widgets: UsageWidget[];
@@ -31,7 +33,7 @@ beforeEach(() => {
 afterEach(() => { widgets.forEach((widget) => widget.destroy()); document.documentElement.querySelectorAll("#ai-usage-floating-monitor").forEach((node) => node.remove()); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("existing widget experience", () => {
-  it.each<PlatformId>(["chatgpt", "grok", "claude", "kimi", "gemini", "perplexity"])("keeps %s theme, mascot and language settings without IP UI", (platform) => {
+  it.each<PlatformId>(["chatgpt", "grok", "claude", "kimi", "gemini", "perplexity", "muse"])("keeps %s theme, mascot and language settings without IP UI", (platform) => {
     const { root } = mount(platform);
     expect(root.querySelector(".capsule-mascot")).toBeNull(); // mascot is retained in the collapsed chip, not duplicated in a panel
     expect(root.querySelector(".panel,.gpt-panel")).not.toBeNull();
@@ -41,6 +43,29 @@ describe("existing widget experience", () => {
     expect(root.textContent).not.toContain("PoW");
     root.querySelector<HTMLButtonElement>('[data-action="settings"]')!.click(); flush();
     expect(root.querySelector("select")).not.toBeNull(); expect(root.querySelector('input[type="password"]')).toBeNull();
+  });
+  it("shows Muse official balance text and expiry while keeping the weekly chip primary", () => {
+    const { widget, root, refresh } = mount("muse");
+    const reading = museSnapshotFromResult(parseMuseSubscriptionJson(MUSE_RESPONSE), "api", Date.now());
+    // An exhausted top-up must not replace the still-available weekly quota in the chip.
+    reading.meters[1].remainingPercent = 0;
+    widget.setSnapshot(reading); flush();
+    expect(root.textContent).toContain("Muse 用量");
+    expect(root.textContent).toContain("10 亿个词元");
+    expect(root.textContent).toContain("从不过期");
+    expect(root.textContent).not.toContain("40000000");
+    root.querySelector<HTMLButtonElement>('button[title="刷新用量"]')!.click();
+    expect(refresh).toHaveBeenCalledOnce();
+    root.querySelector<HTMLButtonElement>('button[title="收起用量组件"]')!.click(); flush();
+    expect(root.querySelector(".primary")?.textContent).toBe("55% 剩余");
+    widget.setLanguageMode("en");
+    root.querySelector<HTMLButtonElement>(".collapsed")!.click(); flush();
+    expect(root.textContent).toContain("Never expires");
+    expect(root.textContent).toContain("10 亿个词元");
+    widget.setSnapshot({ ...reading, meters: reading.meters.map((meter) => meter.key === "muse:topup"
+      ? { ...meter, displayValue: "已使用 0%（剩余 9.99 亿个词元）" } : meter) }); flush();
+    expect(root.textContent).toContain("9.99 亿个词元");
+    expect(root.textContent).not.toContain("10 亿个词元");
   });
   it("reuses rows and scroll container through refresh and timer updates", () => {
     const { widget, root } = mount();

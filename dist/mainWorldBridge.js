@@ -9,8 +9,21 @@
   function asString(value) {
     return typeof value === "string" ? value : null;
   }
+  function asNumber(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
   function getRecord(record, key) {
     return asRecord(record[key]);
+  }
+  function getNumber(record, key) {
+    return asNumber(record[key]);
   }
   function getString(record, key) {
     return asString(record[key]);
@@ -92,12 +105,225 @@
       return flight;
     }
   }
+  const MUSE_ENDPOINT_KEY = "muse:subscription";
+  function parseMuseSubscriptionJson(value) {
+    const root = asRecord(value);
+    if (!root || typeof root.success !== "boolean") return null;
+    if (!root.success) {
+      const recovery = asRecord(root.sessionRecovery);
+      const unauthorized = root.unauthorized === true || recovery?.scope === "hatch" && (recovery.reason === "authentication" || recovery.reason === "checkpoint");
+      return {
+        success: false,
+        unauthorized,
+        error: unauthorized ? "请登录 Muse 后刷新额度" : "Muse 额度查询失败"
+      };
+    }
+    const subscription = asRecord(root.subscription);
+    if (!subscription) return null;
+    const tier = asRecord(subscription.tier);
+    const usage = asRecord(subscription.usage);
+    return {
+      success: true,
+      subscription: {
+        tier: tier ? {
+          name: getString(tier, "name") ?? void 0,
+          tierId: getString(tier, "tierId") ?? void 0
+        } : void 0,
+        usage: usage ? {
+          state: getString(usage, "state") ?? void 0,
+          percentUsed: getNumber(usage, "percentUsed") ?? void 0,
+          resetsAt: getNumber(usage, "resetsAt") ?? void 0
+        } : void 0,
+        usageRowLabel: getString(subscription, "usageRowLabel") ?? void 0,
+        topupBalance: getNumber(subscription, "topupBalance") ?? void 0,
+        topupTotal: getNumber(subscription, "topupTotal") ?? void 0,
+        topupRowLabel: getString(subscription, "topupRowLabel") ?? void 0,
+        topupRowValueLabel: getString(subscription, "topupRowValueLabel") ?? void 0
+      }
+    };
+  }
+  function parseMuseSubscriptionText(text) {
+    for (const line of text.split(/\r?\n/)) {
+      const match = /^[0-9a-f]+:(\{.*\})$/i.exec(line);
+      if (!match) continue;
+      try {
+        const result = parseMuseSubscriptionJson(JSON.parse(match[1]));
+        if (result) return result;
+      } catch {
+      }
+    }
+    return null;
+  }
   const SOURCE = "ai-usage-floating-monitor";
   function isBridgeRequest(value) {
     return isRecord(value) && value.source === SOURCE && value.direction === "content-to-main" && typeof value.requestId === "string" && typeof value.action === "string" && typeof value.platform === "string";
   }
+  function findMuseSubscriptionAction(script) {
+    return /createServerReference\s*\)?\s*\(\s*["']([a-f0-9]{40,64})["'][^;]{0,250}?["']fetchSubscriptionAction["']/i.exec(script)?.[1] ?? null;
+  }
+  class MuseSubscriptionBridge {
+    constructor(fetcher, pageDocument = document, origin = window.location.origin) {
+      this.fetcher = fetcher;
+      this.pageDocument = pageDocument;
+      this.origin = origin;
+    }
+    actionId = null;
+    scannedScripts = /* @__PURE__ */ new Map();
+    inFlight = null;
+    matches(url, method, actionId) {
+      return this.origin === "https://muse.ai" && url.origin === this.origin && url.pathname === "/" && method.toUpperCase() === "POST" && this.actionId !== null && actionId === this.actionId;
+    }
+    async fetchUsage(requestId) {
+      const pending = this.inFlight ?? (this.inFlight = this.queryUsage(requestId));
+      try {
+        return { ...await pending, requestId };
+      } finally {
+        if (this.inFlight === pending) this.inFlight = null;
+      }
+    }
+    async queryUsage(requestId) {
+      const requestedAt = Date.now();
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 1e4);
+      let stage = "discovery";
+      const base = {
+        source: SOURCE,
+        direction: "main-to-content",
+        requestId,
+        platform: "muse",
+        endpointKey: MUSE_ENDPOINT_KEY,
+        requestStartedAt: requestedAt
+      };
+      try {
+        if (this.origin !== "https://muse.ai") throw new Error("Muse 额度只能从 Muse 页面查询");
+        for (let attempt = 0; attempt < 2; attempt++) {
+          stage = "discovery";
+          const actionId = this.actionId ?? await this.discoverAction(controller.signal);
+          stage = "request";
+          const response = await this.fetcher(`${this.origin}/`, {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            signal: controller.signal,
+            headers: { Accept: "text/x-component", "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
+            body: '[{"includeAgreement":false}]'
+          });
+          if (response.redirected && response.url.startsWith("https://auth.muse.ai/")) {
+            return { ...base, ok: false, error: { status: 401, message: "请登录 Muse 后刷新额度" } };
+          }
+          stage = "response";
+          const text = await response.text();
+          const missingAction = response.status === 404 || response.headers.get("x-nextjs-action-not-found") === "1" || /Failed to find Server Action|Server Action[^\n]*not found/i.test(text);
+          if (missingAction) {
+            this.actionId = null;
+            this.scannedScripts.clear();
+            if (attempt === 0) continue;
+            return { ...base, ok: false, error: { message: "Muse 额度接口已更新，请重新加载页面" } };
+          }
+          if (!response.ok) return { ...base, ok: false, error: { status: response.status, message: response.statusText || "Muse 额度接口请求失败" } };
+          const result = parseMuseSubscriptionText(text);
+          if (!result) return { ...base, ok: false, error: { code: "PARSER_ERROR", message: "Muse 额度响应结构变化" } };
+          if (!result.success) return { ...base, ok: false, error: { status: result.unauthorized ? 401 : void 0, message: result.error } };
+          return { ...base, ok: true, json: result, observedAt: Date.now() };
+        }
+        throw new Error("Muse 额度接口已更新，请重新加载页面");
+      } catch (error) {
+        const timeoutMessage = stage === "discovery" ? "识别 Muse 额度接口超时，请刷新页面后重试" : stage === "request" ? "Muse 额度请求超时，请稍后刷新" : "Muse 额度响应读取超时，请稍后刷新";
+        return { ...base, ok: false, error: { code: controller.signal.aborted ? "NETWORK_ERROR" : "UNKNOWN", message: controller.signal.aborted ? timeoutMessage : error instanceof Error ? error.message : "Muse 额度查询失败" } };
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+    async discoverAction(signal) {
+      while (!signal.aborted) {
+        const urls = Array.from(new Set(Array.from(this.pageDocument.scripts).map((script) => script.src))).filter((src) => {
+          try {
+            const url = new URL(src);
+            return url.origin === this.origin && /^\/_next\/static\/chunks\/.*\.js$/.test(url.pathname) && !this.scannedScripts.has(src);
+          } catch {
+            return false;
+          }
+        }).reverse();
+        const actionId = await this.scanScripts(urls, signal);
+        if (actionId) return actionId;
+        await new Promise((resolve, reject) => {
+          if (signal.aborted) {
+            reject(new Error("Muse action discovery timed out"));
+            return;
+          }
+          const observer = new MutationObserver(() => {
+            cleanup();
+            resolve();
+          });
+          const abort = () => {
+            cleanup();
+            reject(new Error("Muse action discovery timed out"));
+          };
+          const cleanup = () => {
+            observer.disconnect();
+            signal.removeEventListener("abort", abort);
+          };
+          observer.observe(this.pageDocument, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
+          signal.addEventListener("abort", abort, { once: true });
+          if (Array.from(this.pageDocument.scripts).some((script) => !this.scannedScripts.has(script.src) && urls.includes(script.src) === false && script.src.startsWith(`${this.origin}/_next/static/chunks/`))) {
+            cleanup();
+            resolve();
+          }
+        });
+      }
+      throw new Error("Muse action discovery timed out");
+    }
+    scanScripts(urls, signal) {
+      if (!urls.length) return Promise.resolve(null);
+      const controller = new AbortController();
+      return new Promise((resolve, reject) => {
+        let nextIndex = 0;
+        const workerCount = Math.min(4, urls.length);
+        let activeWorkers = workerCount;
+        let finished = false;
+        const finish = (actionId, error) => {
+          if (finished) return;
+          finished = true;
+          signal.removeEventListener("abort", abort);
+          controller.abort();
+          if (error) reject(error);
+          else resolve(actionId);
+        };
+        const abort = () => finish(null, new Error("Muse action discovery timed out"));
+        const worker = async () => {
+          try {
+            while (!finished && nextIndex < urls.length) {
+              const url = urls[nextIndex++];
+              try {
+                const response = await this.fetcher(url, { credentials: "same-origin", cache: "force-cache", signal: controller.signal });
+                if (!response.ok || finished) continue;
+                const actionId = findMuseSubscriptionAction(await response.text());
+                if (finished) return;
+                this.scannedScripts.set(url, actionId);
+                if (actionId) {
+                  this.actionId = actionId;
+                  finish(actionId);
+                }
+              } catch {
+                if (signal.aborted) abort();
+              }
+            }
+          } finally {
+            if (--activeWorkers === 0) finish(null);
+          }
+        };
+        if (signal.aborted) {
+          abort();
+          return;
+        }
+        signal.addEventListener("abort", abort, { once: true });
+        for (let index = 0; index < workerCount; index++) void worker();
+      });
+    }
+  }
   const FETCH_TIMEOUT_MS = 1e4;
   const ownedFetch = window.fetch.bind(window);
+  const museSubscription = new MuseSubscriptionBridge(ownedFetch);
   const chatGptControllers = /* @__PURE__ */ new Set();
   const chatGptSession = new ChatGptSession(ownedFetch, () => {
     for (const controller of chatGptControllers) controller.abort();
@@ -139,6 +365,10 @@
         platform: request.platform,
         error: { message: "Missing endpointKey" }
       });
+      return;
+    }
+    if (request.platform === "muse" && request.endpointKey === "muse:subscription") {
+      postResponse(await museSubscription.fetchUsage(request.requestId));
       return;
     }
     const endpoint = resolveEndpoint(request.platform, request.endpointKey, request.payload);
@@ -436,19 +666,31 @@
     function makePatchedFetch() {
       return async (input, init) => {
         rememberGeminiBatchExecuteRequest(input, init);
+        const requestedAt = Date.now();
         const rawUrl = requestUrl(input);
         if (rawUrl.startsWith("https://chatgpt.com/backend-api/") || rawUrl.startsWith("/backend-api/")) {
           chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
         }
-        chatGptSession.scope();
-        const usageRequest = getUsageRequest(input);
+        const scopeKey = chatGptSession.scope();
+        const usageRequest = getUsageRequest(input, init);
         const response = await originalFetch(input, init);
+        if (usageRequest?.platform === "muse") {
+          if (response.ok) {
+            void response.clone().text().then((text) => {
+              const json = parseMuseSubscriptionText(text);
+              if (json) postInterceptedUsage({ ...usageRequest, json, requestStartedAt: requestedAt });
+            }).catch(() => void 0);
+          } else if (response.status === 401 || response.status === 403) {
+            postInterceptedUsage({ ...usageRequest, json: { success: false, unauthorized: true }, requestStartedAt: requestedAt });
+          }
+          return response;
+        }
         if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
           void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => void 0);
         }
         if (usageRequest?.platform === "chatgpt") {
           if (response.ok) {
-            void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json })).catch(() => void 0);
+            void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => void 0);
           }
           return response;
         }
@@ -640,6 +882,14 @@
       return null;
     }
     const info = usageUrlInfo(rawUrl);
+    try {
+      const url = new URL(rawUrl, window.location.origin);
+      if (museSubscription.matches(url, init?.method ?? (input instanceof Request ? input.method : "GET"), requestHeaderValue(input, init, "Next-Action"))) {
+        return { platform: "muse", endpointKey: "muse:subscription", url: sanitizeUrl(rawUrl) };
+      }
+    } catch {
+      return null;
+    }
     if (!info) {
       return null;
     }
@@ -660,6 +910,8 @@
       url: args.url,
       json: args.json,
       text: args.text,
+      requestStartedAt: args.requestStartedAt,
+      scopeKey: args.scopeKey,
       ts: Date.now()
     };
     window.postMessage(message, window.location.origin);

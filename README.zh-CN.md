@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude、ChatGPT、Gemini、Kimi 和 Perplexity 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
+RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity 和 Muse 的用量与速率限制信号。它会在支持的网站中注入一个紧凑的浮动组件，让你直接看到额度窗口、重置时间、用量 meter 和平台特定的限制信息。
 
 本项目是独立的个人工具，不隶属于 OpenAI、Anthropic、xAI、Google、Moonshot AI、Perplexity AI。
 
@@ -10,7 +10,7 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
-最新 GitHub 扩展包见 [v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)。更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本为 v0.1.5，已发布的扩展包见 [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases)。本次变更见 [v0.1.5 更新公告](docs/releases/v0.1.5.md) 和 [CHANGELOG.md](CHANGELOG.md)。
 
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
@@ -18,13 +18,13 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 
 - 在支持的 AI 网页应用上显示浮动用量组件。
 - 支持紧凑折叠 chip 和展开详情面板。
-- 通过平台专用 normalizer 跟踪 Grok、Claude、ChatGPT、Gemini、Kimi 和 Perplexity 的用量信号。
+- 通过平台专用 normalizer 跟踪 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity 和 Muse 的用量信号。
 - Grok credits 会按一个加权总用量 bucket 展示，并把 Imagine、聊天、Grok Build 和 API 作为贡献分段显示。
 - 以 meter 为粒度合并兼容快照，让 ChatGPT 多个端点的数据可以一起展示，同时在功能被禁用时替换旧的正额度。
 - 在信号可用时展示 ChatGPT 订阅到期时间、输入/附件额度、功能额度、用量窗口和 Codex 相关窗口。
 - ChatGPT 标签页可见时每 30 秒主动查询额度，数值变化后无需重载网页即可更新。
 - 保存短期本地缓存和退避状态，避免频繁失败刷新。
-- 其他平台保留本地估算；ChatGPT 不再把发送次数作为额度兜底。
+- 其他平台保留本地估算；ChatGPT 和 Muse 使用接口返回的额度。
 - 支持英文和简体中文界面，可跟随浏览器语言，也可手动选择语言。
 
 ## 支持的平台
@@ -37,6 +37,7 @@ RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/�
 | Gemini | `https://gemini.google.com/*` | `/_/BardChatUi/data/batchexecute` 中的 `jSf9Qc` RPC |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`、`https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
+| Muse | `https://muse.ai/*` | 通过同源 `POST /` 调用 Next.js `fetchSubscriptionAction` |
 
 扩展也会观察页面自身对允许列表内用量端点的 fetch 响应。被观察到的响应会经过和主动刷新相同的 normalizer。
 主动查询在页面内存中复用当前网页会话，最长 60 秒，不持久保存令牌或 Authorization 请求头；不再通过隐藏的 Codex analytics iframe 探测用量。
@@ -54,11 +55,19 @@ RateBucket 是一个 Manifest V3 扩展：
 
 项目本身不使用自有外部后端。
 
+## Muse 额度更新
+
+Muse 展示每周套餐的已用／剩余比例、重置倒计时，以及额外使用额度的官方词元余额文字和“从不过期”。每次刷新都使用当次返回的余额、总额和官方文字，额外词元数没有固定值，也不把内部余额数值直接换算成词元数。套餐和余额文字沿用 Muse 页面语言；组件按钮随 RateBucket 的语言设置切换。
+
+首次打开会先检查当前登录，再显示 Muse 缓存读数。页面可见时每分钟查询一次，隐藏时暂停轮询，恢复可见时检查缓存是否过期，也支持手动刷新。临时查询失败会保留上次读数和查询时间并显示提示；认证失败会清空 Muse 读数及缓存。
+
+页面桥接从 Muse 已加载的同源脚本中识别当前 `fetchSubscriptionAction` 编号，优先扫描后加载的应用脚本，使用浏览器缓存、最多四路并发。各路独立继续扫描，找到编号立即停止并取消剩余扫描，避免无关慢脚本阻塞查询。编号缓存在当前页面内存中，服务器拒绝旧编号时重新识别一次。识别及额度请求共用十秒超时，错误提示会区分接口识别、请求及响应读取阶段。被动观察只匹配已识别的额度动作，直接返回 Muse 原始响应，保留其流读取行为；仅保留标准化额度字段。
+
 ## 下载 GitHub Release
 
 当前扩展包已作为 GitHub Release 资产发布：
 
-- [RateBucket v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)
+- [RateBucket 最新发布版本](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/latest)
 
 从 Release 页面下载 zip 资产，解压后在 `chrome://extensions` 中启用“开发者模式”，再加载解压后的扩展目录。
 
@@ -139,7 +148,7 @@ RateBucket 尽量保持本地运行：
 
 同站请求可能使用浏览器中该网站已有的登录态，但 RateBucket 不读取或保存 cookie 值。
 
-扩展只请求 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity的 host access。
+扩展只请求 Grok、Claude、ChatGPT、Gemini、Kimi、Perplexity 和 Muse 的 host access。
 
 ## ChatGPT 查询与显示
 

@@ -4,6 +4,8 @@ import type {
   PlatformId
 } from "../platforms/types";
 import { ChatGptSession } from "./chatgptSession";
+import { MuseSubscriptionBridge } from "./museSubscription";
+import { parseMuseSubscriptionText } from "../platforms/muse";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
 import { asRecord, getString } from "../utils/safeJson";
 
@@ -51,6 +53,7 @@ type GeminiWizGlobalData = {
 
 const FETCH_TIMEOUT_MS = 10_000;
 const ownedFetch = window.fetch.bind(window);
+const museSubscription = new MuseSubscriptionBridge(ownedFetch);
 const chatGptControllers = new Set<AbortController>();
 const chatGptSession = new ChatGptSession(ownedFetch, () => {
   for (const controller of chatGptControllers) controller.abort();
@@ -101,6 +104,11 @@ async function handleRequest(request: {
       platform: request.platform,
       error: { message: "Missing endpointKey" }
     });
+    return;
+  }
+
+  if (request.platform === "muse" && request.endpointKey === "muse:subscription") {
+    postResponse(await museSubscription.fetchUsage(request.requestId));
     return;
   }
 
@@ -443,6 +451,17 @@ function installFetchIntercept(): void {
       const scopeKey = chatGptSession.scope();
       const usageRequest = getUsageRequest(input, init);
       const response = await originalFetch(input, init);
+      if (usageRequest?.platform === "muse") {
+        if (response.ok) {
+          void response.clone().text().then((text) => {
+            const json = parseMuseSubscriptionText(text);
+            if (json) postInterceptedUsage({ ...usageRequest, json, requestStartedAt: requestedAt });
+          }).catch(() => undefined);
+        } else if (response.status === 401 || response.status === 403) {
+          postInterceptedUsage({ ...usageRequest, json: { success: false, unauthorized: true }, requestStartedAt: requestedAt });
+        }
+        return response;
+      }
       if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
         void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => undefined);
       }
@@ -701,6 +720,14 @@ function getUsageRequest(
   }
 
   const info = usageUrlInfo(rawUrl);
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    if (museSubscription.matches(url, init?.method ?? (input instanceof Request ? input.method : "GET"), requestHeaderValue(input, init, "Next-Action"))) {
+      return { platform: "muse", endpointKey: "muse:subscription", url: sanitizeUrl(rawUrl) };
+    }
+  } catch {
+    return null;
+  }
   if (!info) {
     return null;
   }
@@ -731,6 +758,8 @@ function postInterceptedUsage(args: {
     url: args.url,
     json: args.json,
     text: args.text,
+    requestStartedAt: args.requestStartedAt,
+    scopeKey: args.scopeKey,
     ts: Date.now()
   } as const;
 

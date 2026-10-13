@@ -32,7 +32,8 @@ const PLATFORM_LABEL: Record<PlatformId, string> = {
   chatgpt: "GPT",
   kimi: "Kimi",
   gemini: "Gemini",
-  perplexity: "Perplexity"
+  perplexity: "Perplexity",
+  muse: "Muse"
 };
 
 const GPT_SECTION_ORDER = [
@@ -561,7 +562,7 @@ export class UsageWidget {
         ? this.text("meta.waitSeconds", {
             seconds: Math.ceil(this.backoffRemainingMs() / 1000)
           })
-        : this.platform === "chatgpt" && this.snapshot?.checkedAt
+        : (this.platform === "chatgpt" || this.platform === "muse") && this.snapshot?.checkedAt
           ? this.text("meta.checkedAt", {
               age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.checkedAt)
             })
@@ -595,7 +596,9 @@ export class UsageWidget {
   private renderContent(): HTMLElement {
     const content = el("div", "content");
     if (this.snapshot?.errorMessage) {
-      content.append(textEl("div", "error", this.snapshot.errorMessage));
+      const saved = this.platform === "muse" && this.snapshot.meters.length
+        ? this.resolvedLanguage === "zh-CN" ? " · 显示上次读数" : " · Showing saved readings" : "";
+      content.append(textEl("div", "error", this.snapshot.errorMessage + saved));
     }
     const meters = (this.snapshot?.meters ?? []).filter(hasMeaningfulValue);
     if (meters.length === 0) {
@@ -701,6 +704,7 @@ export class UsageWidget {
     const row = el("div", "meter");
     row.dataset.nodeKey = `meter:${meter.key}`;
     const top = el("div", "meter-top");
+    if (meter.rawKind === "muse.topup") top.classList.add("meter-top-detail");
     top.append(
       textEl(
         "div",
@@ -736,7 +740,7 @@ export class UsageWidget {
     const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
     const uncalibrated = meter.quotaState === "unknown" ? (this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated") : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
     const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
-    const stale = this.platform === "chatgpt" && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS
+    const stale = (this.platform === "chatgpt" || this.platform === "muse") && meter.observedAt && Date.now() - meter.observedAt > STALE_METER_MS
       ? (this.resolvedLanguage === "zh-CN" ? " · 数据较旧" : " · Stale") : "";
     return `${source} · ${uncalibrated}${age ? ` · ${age}` : ""}${stale}`;
   }
@@ -752,6 +756,7 @@ export class UsageWidget {
   }
 
   private formatMeterTimePreview(meter: UsageMeter): string {
+    if (meter.rawKind === "muse.topup") return this.text("meter.neverExpires");
     if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
       const fmt = (n: number): string => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });
       return this.resolvedLanguage === "zh-CN" ? `已用 ${fmt(meter.used)} / 共 ${fmt(meter.total)} GiB` : `Used ${fmt(meter.used)} / ${fmt(meter.total)} GiB`;
@@ -774,6 +779,10 @@ export class UsageWidget {
 
   private primaryValue(): string {
     const meters = this.snapshot?.meters ?? [];
+    if (this.platform === "muse") {
+      const weekly = meters.find((meter) => meter.key === "muse:weekly");
+      return weekly ? formatMeterValueLocalized(this.resolvedLanguage, weekly) : "?";
+    }
     const byRemaining = meters
       .filter((meter) => typeof meter.remaining === "number")
       .sort((a, b) => (a.remaining ?? 0) - (b.remaining ?? 0))[0];

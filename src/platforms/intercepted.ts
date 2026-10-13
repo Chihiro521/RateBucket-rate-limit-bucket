@@ -4,6 +4,7 @@ import { normalizeChatGptIntercepted } from "./chatgpt";
 import { normalizeGeminiUsageText } from "./gemini";
 import { normalizeKimiUsage } from "./kimi";
 import { normalizePerplexityRateLimit } from "./perplexity";
+import { museSnapshotFromResult, parseMuseSubscriptionJson, parseMuseSubscriptionText } from "./muse";
 import type {
   EndpointKey,
   PlatformId,
@@ -18,7 +19,14 @@ export function normalizeInterceptedUsage(args: {
   text?: string;
   ts: number;
   endpointKey?: EndpointKey;
+  requestStartedAt?: number;
 }): UsageSnapshot {
+  if (args.platform === "muse") {
+    return museSnapshotFromResult(
+      typeof args.text === "string" ? parseMuseSubscriptionText(args.text) : parseMuseSubscriptionJson(args.json),
+      "intercepted", args.ts, args.requestStartedAt
+    );
+  }
   const meters = normalizeInterceptedMeters(args);
   return {
     platform: args.platform,

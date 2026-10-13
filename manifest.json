@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_name__",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "__MSG_description__",
   "default_locale": "zh_CN",
   "icons": {
@@ -24,7 +24,8 @@
     "https://gemini.google.com/*",
     "https://www.kimi.com/*",
     "https://perplexity.ai/*",
-    "https://www.perplexity.ai/*"
+    "https://www.perplexity.ai/*",
+    "https://muse.ai/*"
   ],
   "background": {
     "service_worker": "serviceWorker.js"
@@ -41,7 +42,8 @@
         "https://gemini.google.com/*",
         "https://www.kimi.com/*",
         "https://perplexity.ai/*",
-        "https://www.perplexity.ai/*"
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ]
     }
   ],
@@ -54,7 +56,8 @@
         "https://gemini.google.com/*",
         "https://www.kimi.com/*",
         "https://perplexity.ai/*",
-        "https://www.perplexity.ai/*"
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ],
       "js": [
         "mainWorldBridge.js"
@@ -73,7 +76,8 @@
         "https://gemini.google.com/*",
         "https://www.kimi.com/*",
         "https://perplexity.ai/*",
-        "https://www.perplexity.ai/*"
+        "https://www.perplexity.ai/*",
+        "https://muse.ai/*"
       ],
       "js": [
         "content.js"

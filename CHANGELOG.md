@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.1.5
+
+Prepared on 2026-10-13 for Chrome Web Store and GitHub publication.
+
+### Added
+
+- Support Muse weekly usage, remaining percentage, reset countdown, and additional usage balance using the current page's subscription action.
+- Display Muse's returned token balance text dynamically, without treating the internal balance as a fixed token conversion.
+- Query Muse on startup and every minute while visible; pause polling while hidden and retain manual refresh.
+
+### Fixed
+
+- Discover Muse's current action from later application chunks using four independent workers. Stop and cancel other scans as soon as the action is found, so one unrelated slow script cannot block discovery.
+- Distinguish Muse action-discovery, request, and response-reading timeouts within the shared ten-second deadline.
+- Clear Muse readings on authentication failure and retain the last successful readings and check time during temporary failures.
+- Keep Muse's collapsed widget on one line and remove excess spacing between its platform name and remaining quota.
+- Retain ChatGPT subscription expiry independently of the ordinary quota TTL and update its local countdown every second.
+
+### Validation
+
+- `npm test`: 149 tests in 19 files passed.
+- `npm run build`: TypeScript and all three extension builds passed.
+- Authenticated Muse requests returned HTTP 200; weekly percentage, reset timestamp, and official extra-balance text were verified.
+- Browser UI fixture checks covered desktop and narrow-screen layouts; regression tests cover slow chunks, action rediscovery, refresh visibility, authentication failure, and original response integrity.
+
 ## v0.1.4
 
 Prepared on 2026-10-02 for synchronized Chrome Web Store and GitHub publication.

@@ -2,7 +2,7 @@
 
 [中文文档](README.zh-CN.md)
 
-RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
+RateBucket is a local-first Chrome extension for checking AI usage and rate-limit signals on Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and Muse. It injects a compact floating widget into supported sites so you can see quota windows, reset times, usage meters, and platform-specific limit signals without opening a separate dashboard.
 
 This project is an independent personal-use tool. It is not affiliated with OpenAI, Anthropic, xAI, Google, Moonshot AI, Perplexity AI.
 
@@ -10,7 +10,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The latest GitHub package is available at [v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3). See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The source version is v0.1.5. Download published packages from [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases). See the [v0.1.5 announcement](docs/releases/v0.1.5.md) and [CHANGELOG.md](CHANGELOG.md) for updates.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -18,13 +18,13 @@ Before each public Chrome Web Store release or update, review the store listing 
 
 - Shows a floating usage widget on supported AI web apps.
 - Supports compact collapsed chips and expanded detail panels.
-- Tracks Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity usage signals through platform-specific normalizers.
+- Tracks Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and Muse usage signals through platform-specific normalizers.
 - Shows Grok credits as one combined weighted usage bucket, with Imagine, Chat, Grok Build, and API displayed as contribution segments.
 - Merges compatible snapshots at the meter level, so ChatGPT data from multiple endpoints can appear together without keeping stale feature quota when a feature becomes blocked.
 - Shows ChatGPT subscription expiry, input/attachment quotas, feature quotas, usage windows, and Codex-related windows when those signals are available.
 - Rechecks ChatGPT quotas every 30 seconds while its tab is visible, and updates changed values without reloading the page.
 - Keeps short-lived local cache and backoff state to avoid noisy refresh loops.
-- Provides local estimate counters on other platforms; ChatGPT no longer treats sent-message counters as quota.
+- Provides local estimate counters on other platforms; ChatGPT and Muse use server quota readings.
 - Supports English and Simplified Chinese UI, with browser-language auto detection and manual language selection.
 
 ## Supported Platforms
@@ -37,6 +37,7 @@ Before each public Chrome Web Store release or update, review the store listing 
 | Gemini | `https://gemini.google.com/*` | `jSf9Qc` RPC inside `/_/BardChatUi/data/batchexecute` |
 | Kimi | `https://www.kimi.com/*` | `/apiv2/kimi.gateway.membership.v2.MembershipService/GetSubscription` |
 | Perplexity | `https://perplexity.ai/*`, `https://www.perplexity.ai/*` | `/rest/rate-limit/all` |
+| Muse | `https://muse.ai/*` | `fetchSubscriptionAction` via same-origin `POST /` (Next.js server action) |
 
 The extension can also observe same-page fetch responses for allowlisted usage endpoints. Those intercepted responses go through the same normalizers as active refreshes.
 Active ChatGPT requests share the current web session lookup in page memory for up to 60 seconds; RateBucket does not persist the token or an Authorization header. The old hidden Codex analytics iframe is no longer used.
@@ -54,11 +55,19 @@ RateBucket is built as a Manifest V3 extension:
 
 No project-owned backend is used.
 
+## Muse quota updates
+
+Muse shows the weekly plan's used/remaining percentage and reset countdown, plus additional usage with the official token balance text and “Never expires”. Every refresh uses the returned balance, total, and official text; the extra token balance is not fixed, and its internal numeric unit is not converted into tokens. Official plan and balance text follows the Muse page language; widget controls follow RateBucket's language setting.
+
+On first load, RateBucket checks the current login before displaying cached Muse readings. Visible Muse tabs query once per minute, pause polling while hidden, and check freshness when visible again. Manual refresh is also available. Temporary failures keep the previous readings and query time with an explicit notice; authentication failures clear the Muse readings and cache.
+
+The page bridge discovers the current `fetchSubscriptionAction` reference from Muse's loaded, same-origin scripts, prioritizing later application chunks and scanning at most four at once using the browser cache. Workers continue independently, and discovery stops immediately and cancels remaining scans when a reference is found, so unrelated slow scripts cannot block it. It caches the reference in page memory and rediscovers it once if the server rejects an outdated action ID. Discovery and the quota request share a ten-second timeout; errors distinguish discovery, request, and response-reading stages. Passive observation matches only the discovered quota action and returns Muse's original response without consuming its stream. Only normalized quota fields are retained.
+
 ## Download A GitHub Release
 
 The current extension package is published as a GitHub Release asset:
 
-- [RateBucket v0.1.3](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/tag/v0.1.3)
+- [Latest RateBucket release](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases/latest)
 
 Download the zip asset from the release page, unzip it, and load the extracted extension directory through `chrome://extensions` with Developer mode enabled.
 
@@ -139,7 +148,7 @@ RateBucket is designed to stay local where possible:
 
 Same-site requests may use the browser's existing login session for that website, but RateBucket does not read or store cookie values.
 
-The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, and Perplexity.
+The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi, Perplexity, and Muse.
 
 ## ChatGPT quota updates
 

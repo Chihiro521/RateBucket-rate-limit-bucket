@@ -27,6 +27,7 @@ const ZH_TEXT = {
   "meta.updatedAt": "更新于 {age}",
   "meta.waitSeconds": "等待 {seconds}秒",
   "meter.unknown": "未知",
+  "meter.neverExpires": "从不过期",
   "meter.used": "已用 {used}/{total}",
   "meter.usedPercent": "{percent}% 已用",
   "meter.remaining": "剩余 {remaining}",
@@ -61,6 +62,7 @@ const EN_TEXT: Record<TextKey, string> = {
   "meta.updatedAt": "Updated {age}",
   "meta.waitSeconds": "Wait {seconds}s",
   "meter.unknown": "Unknown",
+  "meter.neverExpires": "Never expires",
   "meter.used": "Used {used}/{total}",
   "meter.usedPercent": "{percent}% used",
   "meter.remaining": "Remaining {remaining}",
@@ -177,7 +179,9 @@ const METER_LABELS_ZH: Record<string, string> = {
   Pro: "Pro",
   Labs: "Labs",
   "Agentic Research": "智能体研究",
-  "Free queries": "免费查询"
+  "Free queries": "免费查询",
+  "Muse weekly": "Muse 每周额度",
+  "Additional usage": "额外的使用额度"
 };
 
 export function isLanguageMode(value: unknown): value is LanguageMode {
@@ -310,6 +314,8 @@ export function formatMeterValueLocalized(
   meter: UsageMeter
 ): string {
   if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+  if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
+  if (meter.displayValue?.trim()) return meter.displayValue;
   if (meter.unit === "bytes") {
     const gib = (n: number): string => (n / 1073741824).toLocaleString(language, { maximumFractionDigits: 2 });
     return typeof meter.remaining === "number" ? (language === "zh-CN" ? "剩余 " : "Remaining ") + gib(meter.remaining) + " GiB" : t(language, "meter.unknown");

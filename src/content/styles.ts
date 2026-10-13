@@ -1382,10 +1382,15 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
 .meter-top { align-items: start; gap: 8px; }
 .meter-label { min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 13px; }
 .meter-value { text-align: right; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.meter-top-detail { flex-direction: column; gap: 4px; }
+.meter-top-detail .meter-value { max-width: 100%; white-space: normal; overflow-wrap: anywhere; text-align: left; }
 .meter-bottom { flex-wrap: wrap; gap: 5px 8px; font-size: 12px; }
 .badge, .meta, .settings-label, .settings-help, .model-meta { font-size: 12px; }
 .settings-popover { max-height: calc(100dvh - 16px); max-width: calc(100% - 16px); overflow-y: auto; width: min(360px, calc(100vw - 16px)); }
 .panel { width: min(314px, calc(100vw - 16px)); }
+:host([data-platform="muse"]) .collapsed { width: max-content; max-width: calc(100vw - 16px); grid-template-columns: 78px 7px max-content; }
+:host([data-platform="muse"]) .collapsed-main { grid-template-columns: max-content 1px max-content; column-gap: 4px; }
+:host([data-platform="muse"]) .primary { padding-left: 0; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 520px), (max-height: 600px) {
   :host([data-platform="chatgpt"]) { top: 8px; right: 8px; }

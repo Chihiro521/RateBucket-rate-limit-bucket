@@ -4,6 +4,7 @@ import type { UsageMeter, UsageSnapshot } from "../platforms/types";
 export const CHATGPT_POLL_CHECK_MS = 30_000;
 
 type PollingOptions = {
+  intervalMs?: number;
   isVisible: () => boolean;
   onVisibilityChange: (callback: () => void) => () => void;
   setInterval: (callback: () => void, intervalMs: number) => number;
@@ -18,7 +19,7 @@ export function startVisibleUsagePolling(options: PollingOptions): () => void {
     }
   };
   const stopVisibilityListener = options.onVisibilityChange(refreshIfVisible);
-  const intervalId = options.setInterval(refreshIfVisible, CHATGPT_POLL_CHECK_MS);
+  const intervalId = options.setInterval(refreshIfVisible, options.intervalMs ?? CHATGPT_POLL_CHECK_MS);
   return () => {
     options.clearInterval(intervalId);
     stopVisibilityListener();
@@ -67,6 +68,7 @@ export function withoutOlderMeters(
 function meterValue(meter: UsageMeter): string {
   return JSON.stringify({
     label: meter.label,
+    displayValue: meter.displayValue,
     modelName: meter.modelName,
     requestKind: meter.requestKind,
     remaining: meter.remaining,

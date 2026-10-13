@@ -4,7 +4,8 @@ export type PlatformId =
   | "chatgpt"
   | "kimi"
   | "gemini"
-  | "perplexity";
+  | "perplexity"
+  | "muse";
 
 export type UsageSource = "api" | "intercepted" | "estimate" | "unknown";
 
@@ -13,6 +14,7 @@ export type Confidence = "high" | "medium" | "low";
 export type UsageMeter = {
   key: string;
   label: string;
+  displayValue?: string;
   modelName?: string;
   requestKind?: string;
   remaining?: number | null;
@@ -43,6 +45,7 @@ export type UsageSnapshot = {
   cacheAgeMs?: number;
   status: "ok" | "partial" | "unknown" | "error";
   errorMessage?: string;
+  errorCode?: UsageError["code"];
   debug?: {
     endpoint?: string;
     parser?: string;
@@ -73,7 +76,8 @@ export type EndpointKey =
   | "chatgpt:libraryStorage"
   | "gemini:usageBatchExecute"
   | "kimi:subscription"
-  | "perplexity:rateLimitAll";
+  | "perplexity:rateLimitAll"
+  | "muse:subscription";
 
 export type BridgeAction = "fetchUsage" | "enableIntercept";
 
@@ -100,6 +104,7 @@ export type BridgeResponse = {
   observedAt?: number;
   text?: string;
   error?: {
+    code?: UsageError["code"];
     status?: number;
     message: string;
   };

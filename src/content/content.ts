@@ -1,7 +1,8 @@
 import { ChatGptUsageController } from "./chatgptUsageController";
 import { BridgeClient } from "./bridgeClient";
 import {
-  startVisibleUsagePolling
+  startVisibleUsagePolling,
+  sameUsageValues
 } from "./usagePolling";
 import { getEstimateSnapshot, installSendEstimator } from "./estimator";
 import { UsageWidget } from "./widget";
@@ -9,6 +10,7 @@ import { detectPlatform } from "../platforms/detect";
 import { fetchPlatformUsage } from "../platforms";
 import { normalizeInterceptedUsage } from "../platforms/intercepted";
 import { mergeUsageSnapshots } from "../platforms/merge";
+import { mergeMuseUsageSnapshots } from "../platforms/muse";
 import type { PlatformId, UsageSnapshot } from "../platforms/types";
 import {
   CACHE_TTL_MS,
@@ -18,6 +20,7 @@ import {
   getCachedSnapshot,
   getFailureCount,
   getLastRefreshAt,
+  clearCachedSnapshot,
   setBackoffUntil,
   setCachedSnapshot,
   setFailureCount,
@@ -66,6 +69,9 @@ async function start(platformId: PlatformId): Promise<void> {
   let refreshing = false;
   let chatGptController: ChatGptUsageController | undefined;
   let pendingEstimatorRefresh = 0;
+  let museSessionVerified = false;
+  let museInitialCheckPending = platformId === "muse";
+  let museSessionGeneration = 0;
 
   const saveLanguage = async (mode: LanguageMode): Promise<void> => {
     widget.setLanguageMode(await saveLanguageMode(mode));
@@ -91,10 +97,21 @@ async function start(platformId: PlatformId): Promise<void> {
     const shouldReplace =
       platformId === "grok" && snapshot.source === "intercepted";
     const previous = shouldReplace ? null : currentSnapshot;
-    const merged = mergeUsageSnapshots(previous, snapshot);
+    const merged = platformId === "muse" ? mergeMuseUsageSnapshots(previous, snapshot) : mergeUsageSnapshots(previous, snapshot);
+    if (platformId === "muse" && previous && sameUsageValues(previous, merged)) merged.updatedAt = previous.updatedAt;
+    if (platformId === "muse") {
+      if (snapshot.errorCode === "UNAUTHORIZED") {
+        museSessionVerified = false;
+        museSessionGeneration++;
+      } else if (snapshot.status !== "error" && snapshot.meters.length > 0) {
+        museSessionVerified = true;
+        museInitialCheckPending = false;
+      }
+    }
     currentSnapshot = merged;
     widget.setSnapshot(currentSnapshot);
-    await setCachedSnapshot(currentSnapshot);
+    if (platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED") await clearCachedSnapshot("muse");
+    else if (platformId !== "muse" || museSessionVerified) await setCachedSnapshot(currentSnapshot);
   };
 
   const refreshUsage = async (options: { force: boolean }): Promise<void> => {
@@ -105,12 +122,12 @@ async function start(platformId: PlatformId): Promise<void> {
 
     const now = Date.now();
     const backoffUntil = await getBackoffUntil(platformId);
-    widget.setBackoffUntil(backoffUntil);
-    if (backoffUntil > now) {
+    widget.setBackoffUntil(museInitialCheckPending ? 0 : backoffUntil);
+    if (backoffUntil > now && !museInitialCheckPending) {
       return;
     }
 
-    const cached = await getCachedSnapshot(platformId);
+    const cached = platformId === "muse" && !museSessionVerified ? null : await getCachedSnapshot(platformId);
     if (
       !options.force &&
       cached &&
@@ -122,7 +139,7 @@ async function start(platformId: PlatformId): Promise<void> {
     }
 
     const lastRefreshAt = await getLastRefreshAt(platformId);
-    if (lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
+    if (!museInitialCheckPending && !(platformId === "muse" && options.force) && lastRefreshAt > 0 && now - lastRefreshAt < MIN_REFRESH_INTERVAL_MS) {
       if (cached) {
         currentSnapshot = cached;
         widget.setSnapshot(cached);
@@ -130,12 +147,16 @@ async function start(platformId: PlatformId): Promise<void> {
       return;
     }
 
+    if (refreshing) return;
     refreshing = true;
+    museInitialCheckPending = false;
+    const museGeneration = museSessionGeneration;
     widget.setLoading(true);
     await setLastRefreshAt(platformId, now);
 
     try {
       const snapshot = await withEstimateFallback(platformId, await fetchPlatformUsage(platformId, (key, payload) => bridge.fetchUsage(platformId, key, payload)));
+      if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
       await applySnapshot(snapshot);
       await updateFailureState(
         platformId,
@@ -143,6 +164,7 @@ async function start(platformId: PlatformId): Promise<void> {
         widget
       );
     } catch (error) {
+      if (platformId === "muse" && museGeneration !== museSessionGeneration) return;
       const snapshot = await withEstimateFallback(platformId, {
         platform: platformId,
         meters: [],
@@ -174,12 +196,12 @@ async function start(platformId: PlatformId): Promise<void> {
     });
   }
 
-  const cached = await getCachedSnapshot(platformId);
+  const cached = platformId === "muse" ? null : await getCachedSnapshot(platformId);
   if (cached) {
     currentSnapshot = cached;
     widget.setSnapshot(cached);
   }
-  widget.setBackoffUntil(platformId === "chatgpt" ? 0 : await getBackoffUntil(platformId));
+  widget.setBackoffUntil(platformId === "chatgpt" || platformId === "muse" ? 0 : await getBackoffUntil(platformId));
 
   const onStorageChanged = (
     changes: Record<string, chrome.storage.StorageChange>,
@@ -211,18 +233,20 @@ async function start(platformId: PlatformId): Promise<void> {
       json: message.json,
       text: message.text,
       ts: message.ts,
-      endpointKey: message.endpointKey
+      endpointKey: message.endpointKey,
+      requestStartedAt: message.requestStartedAt
     });
-    if (snapshot.meters.length === 0) {
+    if (snapshot.meters.length === 0 && !(platformId === "muse" && snapshot.errorCode === "UNAUTHORIZED")) {
       return;
     }
     void applySnapshot(snapshot).catch((error: unknown) => {
       debugLog("failed to cache intercepted usage", error);
     });
+    if (platformId === "muse") void updateFailureState(platformId, snapshot, widget).catch((error: unknown) => debugLog("failed to update Muse retry state", error));
   });
 
   const stopEstimator = installSendEstimator(platformId, (snapshot) => {
-    if (platformId !== "chatgpt" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
+    if (platformId !== "chatgpt" && platformId !== "muse" && (!currentSnapshot || currentSnapshot.meters.length === 0)) {
       currentSnapshot = snapshot;
       widget.setSnapshot(snapshot);
     }
@@ -231,7 +255,7 @@ async function start(platformId: PlatformId): Promise<void> {
       if (chatGptController) void chatGptController.refresh("operation");
       else void refreshUsage({ force: false });
     }, 1_500);
-  }, { recordCounts: platformId !== "chatgpt" });
+  }, { recordCounts: platformId !== "chatgpt" && platformId !== "muse" });
 
   try {
     await injectMainWorld();
@@ -242,8 +266,9 @@ async function start(platformId: PlatformId): Promise<void> {
 
   await refreshUsage({ force: false });
 
-  const stopUsagePolling = platformId === "chatgpt"
+  const stopUsagePolling = platformId === "chatgpt" || platformId === "muse"
     ? startVisibleUsagePolling({
+        intervalMs: platformId === "muse" ? 60_000 : undefined,
         isVisible: () => document.visibilityState === "visible",
         onVisibilityChange: (callback) => {
           document.addEventListener("visibilitychange", callback);
@@ -295,6 +320,7 @@ async function withEstimateFallback(
   platform: PlatformId,
   snapshot: UsageSnapshot
 ): Promise<UsageSnapshot> {
+  if (platform === "muse") return snapshot;
   if (snapshot.meters.length > 0 && snapshot.status !== "error") {
     return snapshot;
   }

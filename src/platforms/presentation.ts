@@ -9,7 +9,7 @@ export function isChatPassPath(path: string): boolean {
 }
 
 export function hasMeaningfulValue(meter: UsageMeter): boolean {
-  return meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" ||
+  return Boolean(meter.displayValue?.trim()) || meter.quotaState === "blocked" || meter.quotaState === "unknown" || meter.metricKind === "subscription" ||
     meter.rawKind === "chatgpt.subscription" ||
     [meter.remaining, meter.total, meter.used, meter.remainingPercent, meter.usedPercent]
       .some((value) => typeof value === "number" && Number.isFinite(value)) ||

@@ -79,6 +79,16 @@ export function setCachedSnapshot(snapshot: UsageSnapshot): Promise<void> {
   return storageSet({ [snapshotKey(snapshot.platform, snapshot.scopeKey)]: persisted });
 }
 
+export function clearCachedSnapshot(platform: PlatformId): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.remove(snapshotKey(platform), () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
 export async function getLastRefreshAt(platform: PlatformId): Promise<number> {
   const key = lastRefreshKey(platform);
   const items = await storageGet(key);
