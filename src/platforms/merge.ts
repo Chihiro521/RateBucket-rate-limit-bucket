@@ -1,5 +1,7 @@
 import type { UsageMeter, UsageSnapshot } from "./types";
 import { isChatPassPath } from "./presentation";
+import { IMAGE_GENERATION_KEY, clearImageLimit } from "./chatgptImage";
+import { resolveResetMs } from "../utils/time";
 
 export const MERGED_METER_TTL_MS = 30 * 60_000;
 
@@ -8,11 +10,22 @@ export function shouldRetainMeter(
   now = Date.now(),
   fallbackObservedAt = now
 ): boolean {
+  if (meter.rawKind === "chatgpt.image_recovery") return true;
+  if (meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "blocked") {
+    const observedAt = meter.observedAt ?? fallbackObservedAt;
+    const expiresAt = resolveResetMs({ ...meter, observedAt }, now) ?? observedAt + MERGED_METER_TTL_MS;
+    return now < Math.min(expiresAt, observedAt + 86_400_000);
+  }
   // Subscription dates stay valid until the server sends a new entitlement.
   if (meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription") {
     return true;
   }
   return now - (meter.observedAt ?? fallbackObservedAt) <= MERGED_METER_TTL_MS;
+}
+
+export function expireImageLimit(meter: UsageMeter, now = Date.now(), fallbackObservedAt = now): UsageMeter {
+  return meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "blocked" && !shouldRetainMeter(meter, now, fallbackObservedAt)
+    ? { ...clearImageLimit(meter, now), rawKind: "chatgpt.image_recovery" } : meter;
 }
 
 export function mergeUsageSnapshots(
@@ -29,9 +42,13 @@ export function mergeUsageSnapshots(
   }
 
   const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+  normalizedExisting.meters = normalizedExisting.meters.map((meter) => expireImageLimit(meter, now, existing.updatedAt));
   normalizedIncoming.meters = normalizedIncoming.meters.map((meter) => {
     const previous = normalizedExisting.meters.find((item) => item.key === meter.key);
     if (!previous) return meter;
+    // An uncalibrated poll cannot confirm image recovery.
+    if (meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "unknown" &&
+      (previous.quotaState === "blocked" || previous.rawKind === "chatgpt.image_recovery")) return previous;
     if ((meter.requestStartedAt ?? meter.observedAt ?? 0) <
         (previous.requestStartedAt ?? previous.observedAt ?? 0)) return previous;
     if (previous.quotaState === "blocked" && meter.quotaState === "unknown") {

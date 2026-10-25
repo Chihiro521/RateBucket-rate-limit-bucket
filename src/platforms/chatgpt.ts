@@ -53,19 +53,20 @@ export function normalizeChatGptConversationInit(
     }
     const featureName = getString(record, "feature_name") ?? "unknown_feature";
     const remaining = getNumber(record, "remaining");
+    const imageQuotaExhausted = featureName === "image_gen" && remaining !== null && remaining <= 0;
     const resetAfter = resetAfterValue(record.reset_after);
     const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
     meters.push({
       key: `limits_progress:${featureName}`,
       label: FEATURE_LABELS[featureName] ?? titleFromKey(featureName),
-      remaining,
+      remaining: imageQuotaExhausted ? 0 : remaining,
       resetAt,
       resetAfterSeconds: resetAfter.resetAfterSeconds,
       source,
       metricKind: "quota",
       unit: "count",
-      quotaState: featureName === "image_gen" ? "unknown" : undefined,
-      confidence: featureName === "image_gen" ? "low" :
+      quotaState: imageQuotaExhausted ? "blocked" : featureName === "image_gen" ? "unknown" : undefined,
+      confidence: imageQuotaExhausted ? "high" : featureName === "image_gen" ? "low" :
         remaining !== null &&
         (resetAt !== null || resetAfter.resetAfterSeconds !== null)
           ? "high"

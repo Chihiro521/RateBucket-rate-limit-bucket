@@ -24,7 +24,7 @@ describe("quota correctness", () => {
     const result = normalizeChatGptConversationInit({ limits_progress: [{ feature_name: "image_gen", remaining: 120 }], blocked_features: ["image_gen"] });
     expect(result.meters).toHaveLength(1);
     expect(result.meters[0].quotaState).toBe("blocked");
-    expect(formatMeterValueLocalized("zh-CN", result.meters[0])).toBe("已达上限");
+    expect(formatMeterValueLocalized("zh-CN", result.meters[0])).toBe("已达到上限");
     expect(result.meters[0].remaining).not.toBe(0);
   });
   it("preserves a reliable block against uncalibrated image data until TTL", () => {
@@ -39,6 +39,14 @@ describe("quota correctness", () => {
     const m = normalizeChatGptConversationInit({ limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }).meters[0];
     expect(m.remaining).toBe(120); expect(m.confidence).toBe("low"); expect(m.quotaState).toBe("unknown");
     expect(meterProgress(m)).toBeNull();
+  });
+  it("marks an explicit zero image quota as exhausted", () => {
+    const m = normalizeChatGptConversationInit({ limits_progress: [{ feature_name: "image_gen", remaining: 0 }] }).meters[0];
+    expect(m.remaining).toBe(0);
+    expect(m.confidence).toBe("high");
+    expect(m.quotaState).toBe("blocked");
+    expect(isAlertMeter(m)).toBe(true);
+    expect(formatMeterValueLocalized("zh-CN", m)).toBe("已达到上限");
   });
   it("displays zero optional balances without exhausting the capsule", () => {
     const meters = normalizeChatGptWhamUsage({ rate_limit: { primary_window: { used_percent: 1 } }, credits: { balance: "0" }, rate_limit_reset_credits: { available_count: 0 } });

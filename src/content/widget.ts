@@ -4,6 +4,7 @@ import {
   formatAgeLocalized,
   formatConfidenceLabelLocalized,
   formatGptSectionLabelLocalized,
+  formatImageRecoveryLocalized,
   formatMeterLabelLocalized,
   formatMeterValueLocalized,
   formatResetLocalized,
@@ -19,6 +20,7 @@ import {
 import { reconcileChildren } from "./reconcileDom";
 import { hasMeaningfulValue, isAlertMeter, isChatPassPath, meterProgress, chatGptPrimaryMeter, STALE_METER_MS } from "../platforms/presentation";
 import { WIDGET_CSS } from "./styles";
+import { expireImageLimit, shouldRetainMeter } from "../platforms/merge";
 
 type RefreshHandler = () => void;
 type WidgetHandlers = {
@@ -163,6 +165,13 @@ export class UsageWidget {
 
   private tickTimes(): void {
     if (document.visibilityState === "hidden" || this.hidden || (this.platform !== "chatgpt" && !this.expanded)) return;
+    if (this.snapshot?.meters.some((meter) => meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked" &&
+      !shouldRetainMeter(meter, Date.now(), this.snapshot!.updatedAt))) {
+      this.snapshot = { ...this.snapshot, meters: this.snapshot.meters.map((meter) =>
+        expireImageLimit(meter, Date.now(), this.snapshot!.updatedAt)) };
+      this.render();
+      return;
+    }
     for (const node of this.root.querySelectorAll<HTMLElement>("[data-time]")) {
       let value = node.textContent ?? "";
       if (node.dataset.time === "updated" && this.snapshot) value = this.text("meta.updatedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt) });
@@ -737,6 +746,11 @@ export class UsageWidget {
   }
 
   private meterBadge(meter: UsageMeter): string {
+    if (meter.imageLimit) {
+      const origin = this.resolvedLanguage === "zh-CN" ? "助手回复" : "Assistant reply";
+      const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
+      return `${origin}${age ? ` · ${age}` : ""}`;
+    }
     const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
     const uncalibrated = meter.quotaState === "unknown" ? (this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated") : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
     const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
@@ -756,6 +770,9 @@ export class UsageWidget {
   }
 
   private formatMeterTimePreview(meter: UsageMeter): string {
+    if (meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked") {
+      return formatImageRecoveryLocalized(this.resolvedLanguage, meter);
+    }
     if (meter.rawKind === "muse.topup") return this.text("meter.neverExpires");
     if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
       const fmt = (n: number): string => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });

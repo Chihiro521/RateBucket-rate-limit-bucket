@@ -20,6 +20,98 @@ function setup(fetcher: (key: EndpointKey) => Promise<BridgeResponse>) {
 }
 
 describe("ChatGPT refresh controller", () => {
+  it("clears a daily limit immediately when an image succeeds before the estimated recovery time", async () => {
+    const s = setup(async (key) => response(key)), base = 1_700_000_000_000;
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant", cooldownSeconds: 71_880 }, base, base, "scope-a");
+    s.advance(1000);
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "success", evidence: "server" }, base + 1000, base + 500, "scope-a");
+    const meter = s.latest()!.meters.find((item) => item.key === "limits_progress:image_gen")!;
+    expect(meter.quotaState).toBe("unknown");
+    expect(meter.imageLimit).toBeUndefined();
+    expect(meter.resetAt).toBeUndefined();
+    expect(meter.rawKind).not.toBe("chatgpt.image_recovery");
+  });
+  it("keeps image limits per account and rechecks the old account's expiry when switching back", async () => {
+    const s = setup(async (key) => response(key)), base = 1_700_000_000_000;
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant", cooldownSeconds: 60 }, base, base, "scope-a");
+    const cached = s.latest()!;
+    s.readCache.mockImplementation(async (scope) => scope === "scope-a" ? cached : null);
+    s.controller.reset();
+    expect(s.latest()).toBeNull();
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 1, undefined, "scope-b");
+    expect(s.latest()!.scopeKey).toBe("scope-b");
+    expect(s.latest()!.meters[0].quotaState).toBe("unknown");
+    expect(s.latest()!.meters[0].resetAt).toBeNull();
+    s.advance(60_000); s.controller.reset();
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 60_000, undefined, "scope-a");
+    expect(s.latest()!.scopeKey).toBe("scope-a");
+    expect(s.latest()!.meters[0].rawKind).toBe("chatgpt.image_recovery");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "success", evidence: "server" }, base + 60_001, undefined, "scope-a");
+    expect(s.latest()!.meters[0].rawKind).not.toBe("chatgpt.image_recovery");
+  });
+  it("does not apply an old account's intercepted limit after its cache read loses a race", async () => {
+    const s = setup(async (key) => response(key)), oldCache = deferred<UsageSnapshot | null>(), base = 1_700_000_000_000;
+    s.readCache.mockImplementation(async (scope) => scope === "scope-a" ? oldCache.promise : null);
+    const old = s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant", cooldownSeconds: 7200 }, base, base, "scope-a");
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 1, undefined, "scope-b");
+    oldCache.resolve(null); await old;
+    expect(s.latest()!.scopeKey).toBe("scope-b");
+    expect(s.latest()!.meters[0].quotaState).toBe("unknown");
+    expect(s.latest()!.meters[0].imageLimit).toBeUndefined();
+  });
+  it("preserves an explicit server image cap until its reset and then requires actual recovery evidence", async () => {
+    const s = setup(async (key) => response(key)), base = 1_700_000_000_000;
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 0, reset_after: 7200 }] }, base, undefined, "scope-a");
+    s.advance(3_600_000);
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 3_600_000, undefined, "scope-a");
+    expect(s.latest()!.meters[0]).toMatchObject({ quotaState: "blocked", resetAt: base + 7_200_000 });
+    s.advance(3_600_000); await s.controller.refresh();
+    expect(s.latest()!.meters.find((meter) => meter.key === "limits_progress:image_gen")?.rawKind).toBe("chatgpt.image_recovery");
+  });
+  it("preserves a cached daily recovery time", async () => {
+    const s = setup(async (key) => response(key)), base = 1_700_000_000_000;
+    s.readCache.mockResolvedValue({ platform: "chatgpt", scopeKey: "scope-a", source: "intercepted", status: "partial", updatedAt: base, meters: [
+      { key: "limits_progress:image_gen", label: "Image Generation", source: "intercepted", confidence: "low", quotaState: "blocked",
+        imageLimit: true, resetAt: base + 7_200_000, observedAt: base }
+    ] });
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 1000, undefined, "scope-a");
+    expect(s.latest()!.meters).toHaveLength(1);
+    expect(s.latest()!.meters[0]).toMatchObject({ quotaState: "blocked", resetAt: base + 7_200_000 });
+  });
+  it("replaces the image value with the daily limit and preserves its recovery time across polls", async () => {
+    const s = setup(async (key) => response(key));
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, 1_700_000_000_001, undefined, "scope-a");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant", cooldownSeconds: 71_880 }, 1_700_000_000_000, undefined, "scope-a");
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, 1_700_000_000_001, undefined, "scope-a");
+    expect(s.latest()!.meters).toHaveLength(1);
+    expect(s.latest()!.meters[0]).toMatchObject({ key: "limits_progress:image_gen", quotaState: "blocked", confidence: "low", resetAt: 1_700_071_880_000 });
+    expect(s.latest()!.meters[0].remaining).toBeUndefined();
+    s.advance(3_600_000); await s.controller.refresh();
+    expect(s.latest()!.meters.find((meter) => meter.imageLimit)?.resetAt).toBe(1_700_071_880_000);
+  });
+  it("expires the daily limit without claiming availability and lets a newer actual image clear it", async () => {
+    const s = setup(async (key) => response(key));
+    const base = 1_700_000_000_000;
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant", cooldownSeconds: 60 }, base, base, "scope-a");
+    s.advance(60_000); await s.controller.refresh();
+    expect(s.latest()!.meters.find((meter) => meter.key === "limits_progress:image_gen")).toMatchObject({ quotaState: "unknown", remaining: null });
+    await s.controller.acceptIntercept("chatgpt:conversationInit", { limits_progress: [{ feature_name: "image_gen", remaining: 120 }] }, base + 60_001, undefined, "scope-a");
+    expect(s.latest()!.meters.find((meter) => meter.key === "limits_progress:image_gen")?.rawKind).toBe("chatgpt.image_recovery");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant" }, base + 60_000, base + 60_000, "scope-a");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "success", evidence: "server" }, base + 70_000, base + 70_000, "scope-a");
+    expect(s.latest()!.meters.find((meter) => meter.key === "limits_progress:image_gen")?.quotaState).toBe("unknown");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant" }, base + 80_000, base + 60_000, "scope-a");
+    expect(s.latest()!.meters.some((meter) => meter.imageLimit)).toBe(false);
+  });
+  it("does not clear a newer refusal when an older concurrent image finishes later", async () => {
+    const s = setup(async (key) => response(key)), base = 1_700_000_000_000;
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "daily_limit", evidence: "assistant" }, base + 100, base + 50, "scope-a");
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "success", evidence: "server" }, base + 200, base, "scope-a");
+    expect(s.latest()!.meters.some((meter) => meter.imageLimit)).toBe(true);
+    s.controller.reset();
+    await s.controller.acceptIntercept("chatgpt:imageGeneration", { kind: "success", evidence: "server" }, base + 300, base + 250, "scope-b");
+    expect(s.latest()?.meters.some((meter) => meter.imageLimit) ?? false).toBe(false);
+  });
   it("queries concurrently, publishes fast data before slow endpoints, and joins flights", async () => {
     const slow = deferred<BridgeResponse>();
     const fetcher = vi.fn(async (key: EndpointKey) => key === "chatgpt:libraryStorage" ? slow.promise : response(key));

@@ -103,19 +103,20 @@
       }
       const featureName = getString(record, "feature_name") ?? "unknown_feature";
       const remaining = getNumber(record, "remaining");
+      const imageQuotaExhausted = featureName === "image_gen" && remaining !== null && remaining <= 0;
       const resetAfter = resetAfterValue(record.reset_after);
       const resetAt = resetAfter.resetAt ?? resetValueFromRecord(record);
       meters.push({
         key: `limits_progress:${featureName}`,
         label: FEATURE_LABELS$1[featureName] ?? titleFromKey(featureName),
-        remaining,
+        remaining: imageQuotaExhausted ? 0 : remaining,
         resetAt,
         resetAfterSeconds: resetAfter.resetAfterSeconds,
         source,
         metricKind: "quota",
         unit: "count",
-        quotaState: featureName === "image_gen" ? "unknown" : void 0,
-        confidence: featureName === "image_gen" ? "low" : remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
+        quotaState: imageQuotaExhausted ? "blocked" : featureName === "image_gen" ? "unknown" : void 0,
+        confidence: imageQuotaExhausted ? "high" : featureName === "image_gen" ? "low" : remaining !== null && (resetAt !== null || resetAfter.resetAfterSeconds !== null) ? "high" : "medium",
         rawKind: "limits_progress"
       });
     }
@@ -827,12 +828,101 @@
       return "";
     }
   }
+  const IMAGE_GENERATION_KEY = "limits_progress:image_gen";
+  function imageSignal(value) {
+    const record = asRecord(value);
+    if (!record) return null;
+    if (record.kind === "success" && record.evidence === "server") return { kind: "success", evidence: "server" };
+    if (record.kind !== "daily_limit" || record.evidence !== "assistant") return null;
+    const seconds = record.cooldownSeconds;
+    return {
+      kind: "daily_limit",
+      evidence: "assistant",
+      ...typeof seconds === "number" && Number.isFinite(seconds) && seconds > 0 && seconds <= 86400 ? { cooldownSeconds: Math.ceil(seconds) } : {}
+    };
+  }
+  function imageLimitMeter(signal) {
+    return {
+      key: IMAGE_GENERATION_KEY,
+      label: "Image Generation",
+      imageLimit: true,
+      quotaState: "blocked",
+      source: "intercepted",
+      confidence: "low",
+      metricKind: "quota",
+      unit: "count",
+      resetAfterSeconds: signal.cooldownSeconds,
+      rawKind: "limits_progress"
+    };
+  }
+  function clearImageLimit(meter, observedAt) {
+    return {
+      key: IMAGE_GENERATION_KEY,
+      label: "Image Generation",
+      remaining: null,
+      quotaState: "unknown",
+      source: "unknown",
+      confidence: "low",
+      metricKind: "quota",
+      unit: "count",
+      observedAt,
+      requestStartedAt: meter.requestStartedAt,
+      rawKind: "limits_progress"
+    };
+  }
+  function resolveResetMs(meter, now = Date.now()) {
+    const anchor = meter.observedAt ?? now;
+    if (typeof meter.resetAfterSeconds === "number" && !meter.resetAt) {
+      return anchor + meter.resetAfterSeconds * 1e3;
+    }
+    if (typeof meter.resetAt === "number") {
+      if (meter.resetAt > 1e10) {
+        return meter.resetAt;
+      }
+      if (meter.resetAt > 1e9) {
+        return meter.resetAt * 1e3;
+      }
+      if (meter.resetAt > 0) {
+        return anchor + meter.resetAt * 1e3;
+      }
+    }
+    if (typeof meter.resetAt === "string") {
+      const numeric = Number(meter.resetAt.trim());
+      if (Number.isFinite(numeric)) {
+        return resolveNumericResetMs(numeric, anchor);
+      }
+      const parsed = Date.parse(meter.resetAt);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    return null;
+  }
+  function resolveNumericResetMs(value, now) {
+    if (value > 1e10) {
+      return value;
+    }
+    if (value > 1e9) {
+      return value * 1e3;
+    }
+    if (value > 0) {
+      return now + value * 1e3;
+    }
+    return null;
+  }
   const MERGED_METER_TTL_MS = 30 * 6e4;
   function shouldRetainMeter(meter, now = Date.now(), fallbackObservedAt = now) {
+    if (meter.rawKind === "chatgpt.image_recovery") return true;
+    if (meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "blocked") {
+      const observedAt = meter.observedAt ?? fallbackObservedAt;
+      const expiresAt = resolveResetMs({ ...meter, observedAt }, now) ?? observedAt + MERGED_METER_TTL_MS;
+      return now < Math.min(expiresAt, observedAt + 864e5);
+    }
     if (meter.metricKind === "subscription" || meter.rawKind === "chatgpt.subscription") {
       return true;
     }
     return now - (meter.observedAt ?? fallbackObservedAt) <= MERGED_METER_TTL_MS;
+  }
+  function expireImageLimit(meter, now = Date.now(), fallbackObservedAt = now) {
+    return meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "blocked" && !shouldRetainMeter(meter, now, fallbackObservedAt) ? { ...clearImageLimit(meter, now), rawKind: "chatgpt.image_recovery" } : meter;
   }
   function mergeUsageSnapshots(existing, incoming, now = Date.now()) {
     const normalizedIncoming = withObservedAt(incoming, incoming.updatedAt);
@@ -843,9 +933,11 @@
       };
     }
     const normalizedExisting = withObservedAt(existing, existing.updatedAt);
+    normalizedExisting.meters = normalizedExisting.meters.map((meter) => expireImageLimit(meter, now, existing.updatedAt));
     normalizedIncoming.meters = normalizedIncoming.meters.map((meter) => {
       const previous = normalizedExisting.meters.find((item) => item.key === meter.key);
       if (!previous) return meter;
+      if (meter.key === IMAGE_GENERATION_KEY && meter.quotaState === "unknown" && (previous.quotaState === "blocked" || previous.rawKind === "chatgpt.image_recovery")) return previous;
       if ((meter.requestStartedAt ?? meter.observedAt ?? 0) < (previous.requestStartedAt ?? previous.observedAt ?? 0)) return previous;
       if (previous.quotaState === "blocked" && meter.quotaState === "unknown") {
         return now - (previous.observedAt ?? 0) <= MERGED_METER_TTL_MS ? previous : { ...meter, remaining: null };
@@ -978,7 +1070,8 @@
       rawKind: meter.rawKind,
       metricKind: meter.metricKind,
       unit: meter.unit,
-      quotaState: meter.quotaState
+      quotaState: meter.quotaState,
+      imageLimit: meter.imageLimit
     });
   }
   const CHATGPT_REFRESH_MS = 3e4;
@@ -993,6 +1086,8 @@
     epoch = 0;
     states = /* @__PURE__ */ new Map();
     lastOperation = -Infinity;
+    lastImageRequest = 0;
+    lastImageObservation = 0;
     loading = 0;
     scopeLoad;
     writes = Promise.resolve();
@@ -1007,6 +1102,8 @@
       this.loading = 0;
       this.options.onLoading(false);
       this.lastOperation = -Infinity;
+      this.lastImageRequest = 0;
+      this.lastImageObservation = 0;
       this.options.onSnapshot(null);
     }
     destroy() {
@@ -1065,7 +1162,30 @@
       const epoch = this.epoch;
       if (this.scope && !scope) return;
       await this.adoptScope(scope);
-      if (this.disposed || epoch !== this.epoch) return;
+      if (this.disposed || epoch !== this.epoch || scope && scope !== this.scope) return;
+      if (key2 === "chatgpt:imageGeneration") {
+        const signal = imageSignal(json);
+        if (!signal) return;
+        const previous = this.snapshot?.meters.find((meter2) => meter2.key === IMAGE_GENERATION_KEY);
+        const newestRequest = Math.max(this.lastImageRequest, previous?.imageLimit ? previous.requestStartedAt ?? 0 : 0);
+        if (requestedAt < newestRequest || requestedAt === newestRequest && observedAt < this.lastImageObservation) return;
+        this.lastImageRequest = requestedAt;
+        this.lastImageObservation = observedAt;
+        if (signal.kind === "success" && !previous) return;
+        const meter = signal.kind === "success" ? clearImageLimit(previous, observedAt) : imageLimitMeter(signal);
+        const snapshot = this.snapshot ?? this.empty();
+        this.snapshot = {
+          ...snapshot,
+          source: "intercepted",
+          updatedAt: Math.max(snapshot.updatedAt, observedAt),
+          meters: [
+            ...snapshot.meters.filter((item) => item.key !== IMAGE_GENERATION_KEY),
+            ...this.stamp([meter], observedAt, requestedAt)
+          ]
+        };
+        this.publish();
+        return;
+      }
       const meters = this.stamp(normalizeChatGptEndpoint(key2, json, "intercepted"), observedAt, requestedAt);
       if (!meters.length) return;
       const state = this.state(key2);
@@ -1091,6 +1211,9 @@
       const epoch = this.epoch;
       this.scope = scope;
       this.snapshot = null;
+      this.options.onSnapshot(null);
+      this.lastImageRequest = 0;
+      this.lastImageObservation = 0;
       this.scopeLoad = this.options.readCache(scope).then((cached) => {
         if (epoch !== this.epoch || this.scope !== scope || this.disposed) return;
         if (cached?.scopeKey === scope) {
@@ -1110,8 +1233,9 @@
       }
       if (epoch !== this.epoch || this.disposed) return;
       if (response.ok) {
+        if (this.scope && !response.scopeKey) return;
         await this.adoptScope(response.scopeKey);
-        if (epoch !== this.epoch || this.disposed) return;
+        if (epoch !== this.epoch || this.disposed || response.scopeKey && response.scopeKey !== this.scope) return;
         const observedAt = response.observedAt ?? this.now();
         const meters = this.stamp(normalizeChatGptEndpoint(key2, response.json), observedAt, response.requestStartedAt ?? started);
         if (meters.length) {
@@ -1158,7 +1282,7 @@
       if (this.disposed) return;
       if (!this.snapshot) this.snapshot = this.empty();
       const now = this.now();
-      const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) && shouldRetainMeter(meter, now, this.snapshot.updatedAt));
+      const meters = this.snapshot.meters.map((meter) => expireImageLimit(meter, now, this.snapshot.updatedAt)).filter((meter) => !isChatPassPath(meter.key) && shouldRetainMeter(meter, now, this.snapshot.updatedAt));
       const failed = [...this.states.values()].some((state) => state.failures > 0);
       this.snapshot = {
         ...this.snapshot,
@@ -1474,44 +1598,6 @@
     ].filter((value) => Boolean(value)).join(" ").toLowerCase();
     return /\bsend\b|发送|submit|composer-submit|send-button/.test(label);
   }
-  function resolveResetMs(meter, now = Date.now()) {
-    const anchor = meter.observedAt ?? now;
-    if (typeof meter.resetAfterSeconds === "number" && !meter.resetAt) {
-      return anchor + meter.resetAfterSeconds * 1e3;
-    }
-    if (typeof meter.resetAt === "number") {
-      if (meter.resetAt > 1e10) {
-        return meter.resetAt;
-      }
-      if (meter.resetAt > 1e9) {
-        return meter.resetAt * 1e3;
-      }
-      if (meter.resetAt > 0) {
-        return anchor + meter.resetAt * 1e3;
-      }
-    }
-    if (typeof meter.resetAt === "string") {
-      const numeric = Number(meter.resetAt.trim());
-      if (Number.isFinite(numeric)) {
-        return resolveNumericResetMs(numeric, anchor);
-      }
-      const parsed = Date.parse(meter.resetAt);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-    return null;
-  }
-  function resolveNumericResetMs(value, now) {
-    if (value > 1e10) {
-      return value;
-    }
-    if (value > 1e9) {
-      return value * 1e3;
-    }
-    if (value > 0) {
-      return now + value * 1e3;
-    }
-    return null;
-  }
   const DEFAULT_LANGUAGE_MODE = "auto";
   const ZH_TEXT = {
     "action.closeSettings": "关闭设置",
@@ -1738,6 +1824,13 @@
     }
     return language === "zh-CN" ? `${days}天` : `${days}d`;
   }
+  function formatImageRecoveryLocalized(language, meter) {
+    const resetMs = resolveResetMs(meter);
+    if (resetMs === null) return language === "zh-CN" ? "恢复时间未知" : "Recovery time unknown";
+    const date = new Date(resetMs);
+    const exact = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+    return language === "zh-CN" ? `${meter.imageLimit ? "预计恢复" : "恢复时间"} ${exact}` : `${meter.imageLimit ? "Estimated recovery" : "Recovers"} ${exact}`;
+  }
   function formatSubscriptionExpiryLocalized(language, meter) {
     const resetMs = resolveResetMs(meter);
     if (resetMs === null) {
@@ -1755,7 +1848,14 @@
     return `${verb} ${exact}`;
   }
   function formatMeterValueLocalized(language, meter) {
+    if (meter.rawKind === "chatgpt.image_recovery") return language === "zh-CN" ? "待确认恢复" : "Recovery unconfirmed";
+    if (meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked") {
+      return language === "zh-CN" ? "已达到上限" : "Limit reached";
+    }
     if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+    if (meter.key === "limits_progress:image_gen" && meter.quotaState === "unknown" && typeof meter.remaining === "number") {
+      return `${language === "zh-CN" ? "未校准读数 " : "Uncalibrated: "}${meter.remaining}`;
+    }
     if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
     if (meter.displayValue?.trim()) return meter.displayValue;
     if (meter.unit === "bytes") {
@@ -3393,6 +3493,11 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
     }
     tickTimes() {
       if (document.visibilityState === "hidden" || this.hidden || this.platform !== "chatgpt" && !this.expanded) return;
+      if (this.snapshot?.meters.some((meter) => meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked" && !shouldRetainMeter(meter, Date.now(), this.snapshot.updatedAt))) {
+        this.snapshot = { ...this.snapshot, meters: this.snapshot.meters.map((meter) => expireImageLimit(meter, Date.now(), this.snapshot.updatedAt)) };
+        this.render();
+        return;
+      }
       for (const node2 of this.root.querySelectorAll("[data-time]")) {
         let value = node2.textContent ?? "";
         if (node2.dataset.time === "updated" && this.snapshot) value = this.text("meta.updatedAt", { age: formatAgeLocalized(this.resolvedLanguage, this.snapshot.updatedAt) });
@@ -3926,6 +4031,11 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       return row;
     }
     meterBadge(meter) {
+      if (meter.imageLimit) {
+        const origin = this.resolvedLanguage === "zh-CN" ? "助手回复" : "Assistant reply";
+        const age2 = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
+        return `${origin}${age2 ? ` · ${age2}` : ""}`;
+      }
       const source = formatSourceLabelLocalized(this.resolvedLanguage, meter.source);
       const uncalibrated = meter.quotaState === "unknown" ? this.resolvedLanguage === "zh-CN" ? "未校准" : "Uncalibrated" : formatConfidenceLabelLocalized(this.resolvedLanguage, meter.confidence);
       const age = meter.observedAt ? formatAgeLocalized(this.resolvedLanguage, meter.observedAt) : "";
@@ -3944,6 +4054,9 @@ button:focus-visible, select:focus-visible { outline: 2px solid var(--rb-blue); 
       return bottom;
     }
     formatMeterTimePreview(meter) {
+      if (meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked") {
+        return formatImageRecoveryLocalized(this.resolvedLanguage, meter);
+      }
       if (meter.rawKind === "muse.topup") return this.text("meter.neverExpires");
       if (meter.unit === "bytes" && typeof meter.used === "number" && typeof meter.total === "number") {
         const fmt = (n) => (n / 1073741824).toLocaleString(this.resolvedLanguage, { maximumFractionDigits: 2 });

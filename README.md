@@ -164,7 +164,7 @@ RateBucket is designed to stay local where possible:
 - It does not save cookies.
 - It does not save platform tokens.
 - It does not read Authorization headers.
-- It does not read or save chat content.
+- Image notices transiently inspect final replies in page memory and retain only the notice type, provenance and cooldown; chat content and raw message streams are not stored.
 - It does not include analytics or telemetry.
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
 - It stores only normalized usage data, local counters, retry metadata, language preference in `chrome.storage.local`.
@@ -176,6 +176,8 @@ The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi,
 ## ChatGPT quota updates
 
 ChatGPT uses conversation/init, wham/usage, and library storage usage. The visible page checks every 30 seconds and also accepts observed quota responses. Requests run independently; failures do not reset the age of successful readings. File capacity uses GiB; optional Credits and reset opportunities are not ordinary plan quotas. Image quota remains visible as an uncalibrated reading, not a verified live image balance. No seven-day image statistics are collected.
+
+When a final assistant reply to a current-page request reports a daily image limit, the existing Image Generation row shows “Limit reached” and a local estimated recovery time derived from the reply. Missing times remain unknown. Subsequent uncalibrated readings of 120 cannot override the limit. At the estimated time the row changes to “Recovery unconfirmed”; a later actual image result clears it, while another daily-limit report updates the time. Timed limits last at most 24 hours; those without a time become unconfirmed after 30 minutes. Assistant provenance is labelled and is not a calibrated server quota. This feature only observes current-page requests and related responses; it does not generate images, retry requests or fetch historical chats.
 
 Subscription expiry is retained within the same account scope, independently of the 30-minute quota TTL. Its local countdown updates every second, catches up when the tab becomes visible, and is recalibrated only when a new subscription response arrives.
 
@@ -408,7 +410,7 @@ RateBucket 尽量保持本地运行：
 - 不保存 cookie。
 - 不保存平台 token。
 - 不读取 Authorization header。
-- 不读取或保存聊天内容。
+- 图像提醒在页面内临时识别最终回复中的限流提示，仅保存提醒类型、来源与等待时间；不保存聊天内容或原始消息流。
 - 不包含分析或遥测。
 - 不申请 `cookies`、`webRequest`、`tabs` 或 `activeTab` 权限。
 - 只在 `chrome.storage.local` 中保存标准化用量数据、本地计数、重试元数据、语言偏好。
@@ -422,6 +424,8 @@ RateBucket 尽量保持本地运行：
 前台每 30 秒独立查询 conversation/init、wham/usage 和文件库容量，也接收页面自然返回的额度数据。并发请求逐项更新，失败不会刷新旧读数的成功时间。
 
 文件库按 GiB 展示；额外 Credits 与可用重置次数不是套餐内普通额度。图像读数暂时保留并标注未校准，不增加近 7 天图像统计。超出 2 分钟未更新的项目标为旧数据，旧读数最多保留 30 分钟。
+
+当前页面的助手最终回复报告每日图像额度耗尽时，直接在原有“图像生成”行显示“已达到上限”，并根据回复的等待时长显示本地预计恢复时间。缺少等待时长时显示“恢复时间未知”。后续未校准的 120 不会覆盖这个状态。恢复时间到期后改为“待确认恢复”，实际成功出图才清除；再次报告达到上限则更新时间。等待时间最多保留 24 小时，未提供时间则 30 分钟后转为待确认。仅被动观察当前页面请求及其相关响应，不新增生图、重试或历史聊天查询。助手文字的来源会明确标注，不作为已校准的服务器额度。
 
 订阅到期时间在同一账号内持续保留，不受额度数据 30 分钟有效期影响。剩余时长每秒在本地更新，切回页面时立即补齐倒计时，只在收到新的服务器订阅响应时校准到期时间。
 

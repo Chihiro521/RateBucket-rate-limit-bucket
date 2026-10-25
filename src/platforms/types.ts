@@ -11,6 +11,12 @@ export type UsageSource = "api" | "intercepted" | "estimate" | "unknown";
 
 export type Confidence = "high" | "medium" | "low";
 
+export type ImageGenerationSignal = {
+  kind: "daily_limit";
+  evidence: "assistant";
+  cooldownSeconds?: number;
+} | { kind: "success"; evidence: "server" };
+
 export type UsageMeter = {
   key: string;
   label: string;
@@ -30,6 +36,7 @@ export type UsageMeter = {
   metricKind?: "quota" | "balance" | "subscription";
   unit?: "count" | "percent" | "credits" | "bytes";
   quotaState?: "blocked" | "unknown";
+  imageLimit?: true;
   requestStartedAt?: number;
   observedAt?: number;
   rawKind?: string;
@@ -74,6 +81,7 @@ export type EndpointKey =
   | "chatgpt:whamTasksRateLimit"
   | "chatgpt:accountsCheck"
   | "chatgpt:libraryStorage"
+  | "chatgpt:imageGeneration"
   | "gemini:usageBatchExecute"
   | "kimi:subscription"
   | "perplexity:rateLimitAll"

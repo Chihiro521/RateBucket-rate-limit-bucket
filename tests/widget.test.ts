@@ -33,6 +33,27 @@ beforeEach(() => {
 afterEach(() => { widgets.forEach((widget) => widget.destroy()); document.documentElement.querySelectorAll("#ai-usage-floating-monitor").forEach((node) => node.remove()); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("existing widget experience", () => {
+  it("shows the daily limit and recovery time in the existing image row and expires it locally", () => {
+    const { widget, root } = mount();
+    widget.setSnapshot({ ...snapshot("chatgpt"), meters: [snapshot("chatgpt").meters[0], {
+      key: "limits_progress:image_gen", label: "Image Generation", source: "intercepted", confidence: "low",
+      quotaState: "blocked", rawKind: "limits_progress", observedAt: Date.now(), resetAt: Date.now() + 60_000,
+      imageLimit: true
+    }] }); flush();
+    const row = root.querySelector('[data-node-key="meter:limits_progress:image_gen"]')!;
+    expect(row.textContent).toContain("图像生成");
+    expect(row.textContent).toContain("已达到上限");
+    expect(row.textContent).toContain("预计恢复");
+    expect(row.textContent).toContain("助手回复");
+    expect(row.querySelector(".bar")).toBeNull();
+    expect(root.textContent).not.toContain("未校准");
+    expect(root.textContent).not.toContain("图像生成提醒");
+    expect(root.querySelectorAll('[data-node-key="meter:limits_progress:image_gen"]')).toHaveLength(1);
+    vi.advanceTimersByTime(60_000); flush();
+    expect(root.querySelector('[data-node-key="meter:chatgpt:imageNotice"]')).toBeNull();
+    expect(root.querySelector('[data-node-key="meter:limits_progress:image_gen"]')?.textContent).not.toContain("已达到上限");
+    expect(root.querySelector('[data-node-key="meter:limits_progress:image_gen"]')?.textContent).toContain("待确认恢复");
+  });
   it.each<PlatformId>(["chatgpt", "grok", "claude", "kimi", "gemini", "perplexity", "muse"])("keeps %s theme, mascot and language settings without IP UI", (platform) => {
     const { root } = mount(platform);
     expect(root.querySelector(".capsule-mascot")).toBeNull(); // mascot is retained in the collapsed chip, not duplicated in a panel

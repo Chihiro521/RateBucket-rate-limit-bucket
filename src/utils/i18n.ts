@@ -282,6 +282,15 @@ export function formatResetLocalized(
   return language === "zh-CN" ? `${days}天` : `${days}d`;
 }
 
+export function formatImageRecoveryLocalized(language: ResolvedLanguage, meter: UsageMeter): string {
+  const resetMs = resolveResetMs(meter);
+  if (resetMs === null) return language === "zh-CN" ? "恢复时间未知" : "Recovery time unknown";
+  const date = new Date(resetMs);
+  const exact = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  return language === "zh-CN" ? `${meter.imageLimit ? "预计恢复" : "恢复时间"} ${exact}`
+    : `${meter.imageLimit ? "Estimated recovery" : "Recovers"} ${exact}`;
+}
+
 export function formatSubscriptionExpiryLocalized(
   language: ResolvedLanguage,
   meter: UsageMeter
@@ -313,7 +322,14 @@ export function formatMeterValueLocalized(
   language: ResolvedLanguage,
   meter: UsageMeter
 ): string {
+  if (meter.rawKind === "chatgpt.image_recovery") return language === "zh-CN" ? "待确认恢复" : "Recovery unconfirmed";
+  if (meter.key === "limits_progress:image_gen" && meter.quotaState === "blocked") {
+    return language === "zh-CN" ? "已达到上限" : "Limit reached";
+  }
   if (meter.quotaState === "blocked") return language === "zh-CN" ? "已达上限" : "Limit reached";
+  if (meter.key === "limits_progress:image_gen" && meter.quotaState === "unknown" && typeof meter.remaining === "number") {
+    return `${language === "zh-CN" ? "未校准读数 " : "Uncalibrated: "}${meter.remaining}`;
+  }
   if (meter.rawKind === "muse.unlimited") return language === "zh-CN" ? "无限" : "Unlimited";
   if (meter.displayValue?.trim()) return meter.displayValue;
   if (meter.unit === "bytes") {

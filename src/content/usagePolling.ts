@@ -84,6 +84,7 @@ function meterValue(meter: UsageMeter): string {
     rawKind: meter.rawKind,
     metricKind: meter.metricKind,
     unit: meter.unit,
-    quotaState: meter.quotaState
+    quotaState: meter.quotaState,
+    imageLimit: meter.imageLimit
   });
 }

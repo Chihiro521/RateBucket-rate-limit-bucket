@@ -157,7 +157,7 @@ RateBucket is designed to stay local where possible:
 - It does not save cookies.
 - It does not save platform tokens.
 - It does not read Authorization headers.
-- It does not read or save chat content.
+- Image notices transiently inspect final replies in page memory and retain only the notice type, provenance and cooldown; chat content and raw message streams are not stored.
 - It does not include analytics or telemetry.
 - It does not request `cookies`, `webRequest`, `tabs`, or `activeTab` permissions.
 - It stores only normalized usage data, local counters, retry metadata, language preference in `chrome.storage.local`.
@@ -169,6 +169,8 @@ The extension requests host access only for Grok, Claude, ChatGPT, Gemini, Kimi,
 ## ChatGPT quota updates
 
 ChatGPT uses conversation/init, wham/usage, and library storage usage. The visible page checks every 30 seconds and also accepts observed quota responses. Requests run independently; failures do not reset the age of successful readings. File capacity uses GiB; optional Credits and reset opportunities are not ordinary plan quotas. Image quota remains visible as an uncalibrated reading, not a verified live image balance. No seven-day image statistics are collected.
+
+When a final assistant reply to a current-page request reports a daily image limit, the existing Image Generation row shows “Limit reached” and a local estimated recovery time derived from the reply. Missing times remain unknown. Subsequent uncalibrated readings of 120 cannot override the limit. At the estimated time the row changes to “Recovery unconfirmed”; a later actual image result clears it, while another daily-limit report updates the time. Timed limits last at most 24 hours; those without a time become unconfirmed after 30 minutes. Assistant provenance is labelled and is not a calibrated server quota. This feature only observes current-page requests and related responses; it does not generate images, retry requests or fetch historical chats.
 
 Subscription expiry is retained within the same account scope, independently of the 30-minute quota TTL. Its local countdown updates every second, catches up when the tab becomes visible, and is recalibrated only when a new subscription response arrives.
 

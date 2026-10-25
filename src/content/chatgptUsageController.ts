@@ -1,5 +1,6 @@
 import { CHATGPT_USAGE_ENDPOINTS, normalizeChatGptEndpoint } from "../platforms/chatgpt";
-import { mergeUsageSnapshots, shouldRetainMeter } from "../platforms/merge";
+import { IMAGE_GENERATION_KEY, clearImageLimit, imageLimitMeter, imageSignal } from "../platforms/chatgptImage";
+import { expireImageLimit, mergeUsageSnapshots, shouldRetainMeter } from "../platforms/merge";
 import { hasMeaningfulValue, isChatPassPath } from "../platforms/presentation";
 import type { BridgeResponse, EndpointKey, UsageEndpointFetcher, UsageMeter, UsageSnapshot } from "../platforms/types";
 import { sameUsageValues } from "./usagePolling";
@@ -23,6 +24,8 @@ export class ChatGptUsageController {
   private epoch = 0;
   private states = new Map<EndpointKey, EndpointState>();
   private lastOperation = -Infinity;
+  private lastImageRequest = 0;
+  private lastImageObservation = 0;
   private loading = 0;
   private scopeLoad?: Promise<void>;
   private writes = Promise.resolve();
@@ -40,6 +43,8 @@ export class ChatGptUsageController {
     this.loading = 0;
     this.options.onLoading(false);
     this.lastOperation = -Infinity;
+    this.lastImageRequest = 0;
+    this.lastImageObservation = 0;
     this.options.onSnapshot(null);
   }
 
@@ -90,7 +95,24 @@ export class ChatGptUsageController {
     const epoch = this.epoch;
     if (this.scope && !scope) return;
     await this.adoptScope(scope);
-    if (this.disposed || epoch !== this.epoch) return;
+    if (this.disposed || epoch !== this.epoch || (scope && scope !== this.scope)) return;
+    if (key === "chatgpt:imageGeneration") {
+      const signal = imageSignal(json);
+      if (!signal) return;
+      const previous = this.snapshot?.meters.find((meter) => meter.key === IMAGE_GENERATION_KEY);
+      const newestRequest = Math.max(this.lastImageRequest, previous?.imageLimit ? previous.requestStartedAt ?? 0 : 0);
+      if (requestedAt < newestRequest || (requestedAt === newestRequest && observedAt < this.lastImageObservation)) return;
+      this.lastImageRequest = requestedAt;
+      this.lastImageObservation = observedAt;
+      if (signal.kind === "success" && !previous) return;
+      const meter = signal.kind === "success" ? clearImageLimit(previous!, observedAt) : imageLimitMeter(signal);
+      const snapshot = this.snapshot ?? this.empty();
+      this.snapshot = { ...snapshot, source: "intercepted", updatedAt: Math.max(snapshot.updatedAt, observedAt),
+        meters: [...snapshot.meters.filter((item) => item.key !== IMAGE_GENERATION_KEY),
+          ...this.stamp([meter], observedAt, requestedAt)] };
+      this.publish();
+      return;
+    }
     const meters = this.stamp(normalizeChatGptEndpoint(key, json, "intercepted"), observedAt, requestedAt);
     if (!meters.length) return;
     const state = this.state(key);
@@ -112,6 +134,9 @@ export class ChatGptUsageController {
     const epoch = this.epoch;
     this.scope = scope;
     this.snapshot = null;
+    this.options.onSnapshot(null);
+    this.lastImageRequest = 0;
+    this.lastImageObservation = 0;
     this.scopeLoad = this.options.readCache(scope).then((cached) => {
       if (epoch !== this.epoch || this.scope !== scope || this.disposed) return;
       if (cached?.scopeKey === scope) {
@@ -129,8 +154,9 @@ export class ChatGptUsageController {
     catch { response = { source: "ai-usage-floating-monitor", direction: "main-to-content", requestId: "failed", platform: "chatgpt", ok: false }; }
     if (epoch !== this.epoch || this.disposed) return;
     if (response.ok) {
+      if (this.scope && !response.scopeKey) return;
       await this.adoptScope(response.scopeKey);
-      if (epoch !== this.epoch || this.disposed) return;
+      if (epoch !== this.epoch || this.disposed || (response.scopeKey && response.scopeKey !== this.scope)) return;
       const observedAt = response.observedAt ?? this.now();
       const meters = this.stamp(normalizeChatGptEndpoint(key, response.json), observedAt, response.requestStartedAt ?? started);
       if (meters.length) {
@@ -174,7 +200,8 @@ export class ChatGptUsageController {
     if (this.disposed) return;
     if (!this.snapshot) this.snapshot = this.empty();
     const now = this.now();
-    const meters = this.snapshot.meters.filter((meter) => !isChatPassPath(meter.key) &&
+    const meters = this.snapshot.meters.map((meter) => expireImageLimit(meter, now, this.snapshot!.updatedAt))
+      .filter((meter) => !isChatPassPath(meter.key) &&
       shouldRetainMeter(meter, now, this.snapshot!.updatedAt));
     const failed = [...this.states.values()].some((state) => state.failures > 0);
     this.snapshot = { ...this.snapshot, meters,

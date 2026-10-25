@@ -105,6 +105,254 @@
       return flight;
     }
   }
+  const MAX_TEXT = 16384;
+  const MAX_FRAME = 262144;
+  function classifyImageReport(text) {
+    const value = text.slice(0, MAX_TEXT).replace(/[*_`]/g, "");
+    if (!/(?:图像|图片|生图|image)/i.test(value) || /(?:例如|举例|假如|如果|假设|示例|for example|hypothetical|if you)/i.test(value) || /(?:没有|尚未|并未|未).{0,4}达到|(?:not|haven't|hasn't).{0,10}(?:reached|exceeded|hit)/i.test(value)) return null;
+    const daily = /(?:已达(?:到)?|用完|耗尽|撞[上到]|达到).{0,30}(?:每日|每天|今日|今天).{0,30}(?:额度|上限|限额)|(?:每日|每天|今日|今天).{0,30}(?:额度|上限|限额).{0,12}(?:用完|耗尽|已达)|(?:reached|exceeded|hit).{0,40}daily.{0,30}(?:limit|quota)|daily.{0,30}(?:limit|quota).{0,20}(?:reached|exceeded|exhausted)/i.test(value);
+    if (!daily) return null;
+    return { kind: "daily_limit", evidence: "assistant", cooldownSeconds: reportCooldown(value) };
+  }
+  function reportCooldown(text) {
+    const context = text.match(/(?:等待|请等|稍等|冷却|重置时间|恢复|请.{0,8}后|wait|try again|retry|reset).{0,100}/i)?.[0] ?? text.match(/[^。.!?\n]{0,70}(?:后再试|后重试|再次尝试)/)?.[0];
+    if (!context) return void 0;
+    let seconds = 0;
+    for (const match of context.matchAll(/(\d+(?:\.\d+)?)\s*(小时|分钟|秒|hours?|hrs?|minutes?|mins?|seconds?|secs?)/gi)) {
+      const unit = match[2].toLowerCase();
+      seconds += Number(match[1]) * (/小时|hour|hr/.test(unit) ? 3600 : /分钟|min/.test(unit) ? 60 : 1);
+    }
+    return seconds > 0 && seconds <= 86400 ? Math.ceil(seconds) : void 0;
+  }
+  class ChatGptImageStream {
+    constructor(emit, conversation) {
+      this.emit = emit;
+      this.conversation = conversation;
+    }
+    buffer = "";
+    path = "";
+    operation = "";
+    message = { text: "", image: false };
+    stopped = false;
+    push(chunk) {
+      if (this.stopped) return;
+      this.buffer = (this.buffer + chunk).replace(/\r\n/g, "\n");
+      let end;
+      while ((end = this.buffer.indexOf("\n\n")) >= 0) {
+        const frame = this.buffer.slice(0, end);
+        this.buffer = this.buffer.slice(end + 2);
+        if (frame.length <= MAX_FRAME) this.frame(frame);
+      }
+      if (this.buffer.length > MAX_FRAME) this.dispose();
+    }
+    finish() {
+      this.flush();
+      this.dispose();
+    }
+    dispose() {
+      this.stopped = true;
+      this.buffer = "";
+      this.message = { text: "", image: false };
+    }
+    frame(frame) {
+      const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+      if (data === "[DONE]") {
+        this.flush();
+        return;
+      }
+      let value;
+      try {
+        value = JSON.parse(data);
+      } catch {
+        return;
+      }
+      const record = asRecord(value);
+      if (!record) return;
+      if (record.type === "input_message") return;
+      if (typeof record.conversation_id === "string") this.conversation?.(record.conversation_id);
+      if (record.message) this.acceptMessage(record.message);
+      else if ("v" in record) this.patch(record);
+      if (record.type === "message_stream_complete") this.flush();
+    }
+    acceptMessage(value) {
+      const record = asRecord(value);
+      if (!record) return;
+      this.flush();
+      const author = asRecord(record.author), content = asRecord(record.content);
+      this.message = {
+        role: typeof author?.role === "string" ? author.role : void 0,
+        channel: typeof record.channel === "string" ? record.channel : void 0,
+        status: typeof record.status === "string" ? record.status : void 0,
+        text: "",
+        image: false
+      };
+      this.content(content);
+      if (this.message.status === "finished_successfully") this.flush();
+    }
+    content(value) {
+      const record = asRecord(value);
+      if (record) {
+        this.message.type = typeof record.content_type === "string" ? record.content_type : void 0;
+        this.parts(typeof record.text === "string" ? record.text : record.parts);
+      }
+    }
+    parts(value, append = false) {
+      const parts = Array.isArray(value) ? value : [value];
+      if (this.message.role === "tool" && parts.some((part) => asRecord(part)?.content_type === "image_asset_pointer")) this.message.image = true;
+      if (this.message.role !== "assistant" || this.message.channel !== "final" || this.message.type !== "text") return;
+      const text = parts.filter((part) => typeof part === "string").join("");
+      this.message.text = (append ? this.message.text + text : text).slice(0, MAX_TEXT);
+    }
+    patch(record) {
+      const path = typeof record.p === "string" ? record.p : this.path;
+      const operation = typeof record.o === "string" ? record.o : this.operation;
+      this.path = path;
+      this.operation = operation;
+      if (operation === "patch" && Array.isArray(record.v)) {
+        for (const entry of record.v) {
+          const child = asRecord(entry);
+          if (child) this.patch(child);
+        }
+        this.path = path;
+        this.operation = operation;
+        return;
+      }
+      const value = record.v;
+      if (path === "" && asRecord(value)) {
+        const root = asRecord(value);
+        if (typeof root.conversation_id === "string") this.conversation?.(root.conversation_id);
+        if (root.message) this.acceptMessage(root.message);
+      } else if (path === "/message") this.acceptMessage(value);
+      else if (path === "/message/author/role" && typeof value === "string") this.message.role = value;
+      else if (path === "/message/channel" && typeof value === "string") this.message.channel = value;
+      else if (path === "/message/content") this.content(value);
+      else if (path === "/message/content/content_type" && typeof value === "string") this.message.type = value;
+      else if (path === "/message/content/parts" || /^\/message\/content\/(?:parts\/\d+|text)$/.test(path)) this.parts(value, operation === "append");
+      else if (/^\/message\/content\/parts\/\d+\/content_type$/.test(path) && value === "image_asset_pointer" && this.message.role === "tool") this.message.image = true;
+      else if (path === "/message/status" && typeof value === "string") {
+        this.message.status = value;
+        if (value === "finished_successfully") this.flush();
+      }
+    }
+    flush() {
+      if (this.message.status !== "finished_successfully") return;
+      this.message.status = void 0;
+      const signal = this.message.image ? { kind: "success", evidence: "server" } : classifyImageReport(this.message.text);
+      if (!signal) return;
+      this.emit(signal);
+    }
+  }
+  const MAX_BYTES = 2 * 1024 * 1024;
+  class ChatGptImageObserver {
+    constructor(emit) {
+      this.emit = emit;
+    }
+    conversations = /* @__PURE__ */ new Map();
+    readers = /* @__PURE__ */ new Set();
+    epoch = 0;
+    reset() {
+      this.epoch++;
+      this.conversations.clear();
+      for (const reader of this.readers) void reader.cancel().catch(() => void 0);
+      this.readers.clear();
+    }
+    observe(rawUrl, input, init, response, startedAt, scope) {
+      let url;
+      try {
+        url = new URL(rawUrl, window.location.origin);
+      } catch {
+        return;
+      }
+      if (url.origin !== "https://chatgpt.com") return;
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+      if (method === "POST" && url.pathname === "/backend-api/f/conversation") {
+        const context2 = { startedAt, scope, epoch: this.epoch };
+        if (typeof init?.body === "string" && init.body.length < MAX_BYTES) {
+          try {
+            const body = asRecord(JSON.parse(init.body));
+            if (typeof body?.conversation_id === "string") this.remember(body.conversation_id, context2);
+          } catch {
+          }
+        }
+        if (response.headers.get("Content-Type")?.includes("text/event-stream")) {
+          const parser = this.parser(context2);
+          void this.read(response.clone(), (text) => parser.push(text)).then((complete) => complete ? parser.finish() : parser.dispose());
+        }
+        return;
+      }
+      const id = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)$/)?.[1];
+      const context = id && this.conversations.get(id);
+      if (method !== "GET" || !response.ok || !context || context.scope && context.scope !== scope) return;
+      if (!context.scope && scope) context.scope = scope;
+      void this.readConversation(response.clone(), context);
+    }
+    parser(context) {
+      return new ChatGptImageStream((signal) => this.report(signal, context), (id) => this.remember(id, context));
+    }
+    async readConversation(response, context) {
+      let text = "";
+      if (!await this.read(response, (chunk) => {
+        text += chunk;
+      })) return;
+      const parser = this.parser(context);
+      try {
+        const root = asRecord(JSON.parse(text));
+        for (const entry of Array.isArray(root?.messages) ? root.messages : []) {
+          const wrapper = asRecord(entry), message = asRecord(wrapper?.message) ?? wrapper;
+          if (typeof message?.create_time === "number" && message.create_time * 1e3 >= context.startedAt - 2e3) parser.acceptMessage(message);
+        }
+      } catch {
+      } finally {
+        parser.dispose();
+      }
+    }
+    remember(id, context) {
+      if (context.epoch !== this.epoch || !/^[\da-f-]{36}$/i.test(id)) return;
+      if ((this.conversations.get(id)?.startedAt ?? 0) > context.startedAt) return;
+      this.conversations.set(id, context);
+      if (this.conversations.size > 32) this.conversations.delete(this.conversations.keys().next().value);
+    }
+    report(signal, context) {
+      if (context.epoch !== this.epoch) return;
+      const key = JSON.stringify(signal);
+      if (context.lastSignal === key) return;
+      context.lastSignal = key;
+      this.emit(signal, context);
+    }
+    async read(response, chunk) {
+      const reader = response.body?.getReader();
+      if (!reader) return false;
+      const epoch = this.epoch, decoder = new TextDecoder();
+      this.readers.add(reader);
+      let bytes = 0, timedOut = false;
+      const timer = window.setTimeout(() => {
+        timedOut = true;
+        void reader.cancel().catch(() => void 0);
+      }, 12e4);
+      try {
+        while (true) {
+          const result = await reader.read();
+          if (epoch !== this.epoch || timedOut) return false;
+          if (result.done) {
+            chunk(decoder.decode());
+            return true;
+          }
+          bytes += result.value.byteLength;
+          if (bytes > MAX_BYTES) {
+            void reader.cancel().catch(() => void 0);
+            return false;
+          }
+          chunk(decoder.decode(result.value, { stream: true }));
+        }
+      } catch {
+        return false;
+      } finally {
+        window.clearTimeout(timer);
+        this.readers.delete(reader);
+        reader.releaseLock();
+      }
+    }
+  }
   const MUSE_ENDPOINT_KEY = "muse:subscription";
   function parseMuseSubscriptionJson(value) {
     const root = asRecord(value);
@@ -325,8 +573,21 @@
   const ownedFetch = window.fetch.bind(window);
   const museSubscription = new MuseSubscriptionBridge(ownedFetch);
   const chatGptControllers = /* @__PURE__ */ new Set();
+  let chatGptContext = 0;
+  const chatGptImages = new ChatGptImageObserver((signal, context) => {
+    postInterceptedUsage({
+      platform: "chatgpt",
+      endpointKey: "chatgpt:imageGeneration",
+      url: "https://chatgpt.com/backend-api/f/conversation",
+      json: signal,
+      scopeKey: context.scope ?? chatGptSession.scope(),
+      requestStartedAt: context.startedAt
+    });
+  });
   const chatGptSession = new ChatGptSession(ownedFetch, () => {
+    chatGptContext++;
     for (const controller of chatGptControllers) controller.abort();
+    chatGptImages.reset();
     window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
   });
   const GEMINI_USAGE_RPC_ID = "jSf9Qc";
@@ -558,6 +819,8 @@
     return JSON.stringify(endpoint.body);
   }
   async function fetchEndpoint(endpoint, requestId, endpointKey) {
+    const requestedAt = Date.now();
+    const context = chatGptContext;
     let scopeKey;
     const controller = new AbortController();
     if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
@@ -566,6 +829,7 @@
       const headers = endpointHeaders(endpoint) ?? {};
       if (endpoint.platform === "chatgpt") {
         const session = await chatGptSession.read();
+        if (controller.signal.aborted || context !== chatGptContext) throw new Error("Account context changed");
         headers.Authorization = `Bearer ${session.token}`;
         if (session.account) headers["ChatGPT-Account-ID"] = session.account;
         scopeKey = session.scopeKey;
@@ -578,6 +842,7 @@
         body: endpointBody(endpoint),
         signal: controller.signal
       });
+      if (endpoint.platform === "chatgpt" && (controller.signal.aborted || context !== chatGptContext)) throw new Error("Account context changed");
       if (!response.ok) {
         if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
         return {
@@ -632,6 +897,7 @@
           }
         };
       }
+      if (endpoint.platform === "chatgpt" && (controller.signal.aborted || context !== chatGptContext)) throw new Error("Account context changed");
       return {
         source: SOURCE,
         direction: "main-to-content",
@@ -639,7 +905,8 @@
         ok: true,
         platform: endpoint.platform,
         endpointKey,
-        json
+        json,
+        ...endpoint.platform === "chatgpt" ? { scopeKey, requestStartedAt: requestedAt, observedAt: Date.now() } : {}
       };
     } catch (error) {
       return {
@@ -655,6 +922,7 @@
       };
     } finally {
       window.clearTimeout(timeoutId);
+      chatGptControllers.delete(controller);
     }
   }
   function installFetchIntercept() {
@@ -672,8 +940,15 @@
           chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
         }
         const scopeKey = chatGptSession.scope();
+        const context = chatGptContext;
         const usageRequest = getUsageRequest(input, init);
         const response = await originalFetch(input, init);
+        const chatGptRequest = rawUrl.startsWith("https://chatgpt.com/") || rawUrl.startsWith("/backend-api/") || rawUrl === "/api/auth/session";
+        if (chatGptRequest && context !== chatGptContext) return response;
+        try {
+          chatGptImages.observe(rawUrl, input, init, response, requestedAt, scopeKey ?? chatGptSession.scope());
+        } catch {
+        }
         if (usageRequest?.platform === "muse") {
           if (response.ok) {
             void response.clone().text().then((text) => {
@@ -686,11 +961,20 @@
           return response;
         }
         if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
-          void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => void 0);
+          void response.clone().json().then((json) => {
+            if (context === chatGptContext) return chatGptSession.observeSession(json);
+          }).catch(() => void 0);
         }
         if (usageRequest?.platform === "chatgpt") {
           if (response.ok) {
-            void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => void 0);
+            void response.clone().json().then((json) => {
+              if (context === chatGptContext) postInterceptedUsage({
+                ...usageRequest,
+                json,
+                scopeKey: scopeKey ?? chatGptSession.scope(),
+                requestStartedAt: requestedAt
+              });
+            }).catch(() => void 0);
           }
           return response;
         }

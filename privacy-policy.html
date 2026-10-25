@@ -103,6 +103,7 @@
   <h2>Data We Collect</h2>
   <p>ChatGPT normalized readings are isolated using a locally stored hash of the signed-in user and selected account. Authentication is held only in page memory for up to 60 seconds and is never persisted or transmitted to an extension-owned service. Retired IP-check settings and unscoped ChatGPT caches are removed once on upgrade.</p>
   <p>Muse queries use the current page's login session. The extension reads same-origin script text to identify the subscription action, then retains only normalized quota fields and official balance display text. Billing agreements and raw responses are not stored; authentication failures clear Muse readings.</p>
+  <p>ChatGPT image-limit detection transiently inspects final assistant replies and image-result markers in responses to current-page requests. Only a derived daily-limit status, provenance, recovery time and recovery-confirmation state are retained. Assistant reports are labelled as such. Raw streams, reply text, prompts, reasoning and image asset URLs are not stored or exported. This observation does not create image requests, retry them or fetch historical chats.</p>
 
   <h3>1. Usage Quota Data (Functional Data)</h3>
   <table>
@@ -134,7 +135,7 @@
   <h2>Data We Do NOT Collect</h2>
   <ul>
     <li><strong>Cookies, session tokens, or Authorization headers</strong></li>
-    <li><strong>Chat content, prompts, or conversations</strong></li>
+    <li><strong>Stored or exported chat content, prompts, or conversations</strong> (final replies may be transiently inspected locally for image-limit notices as described above)</li>
     <li><strong>Browsing history outside the supported platforms</strong></li>
     <li><strong>Personal identifiers</strong> (name, email, phone, address)</li>
     <li><strong>Analytics or telemetry</strong> of any kind</li>
@@ -150,11 +151,11 @@
     <tr><td>Personally identifiable information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td>Financial and payment information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td>Authentication information</td><td><strong>No</strong></td><td>&mdash;</td></tr>
-    <tr><td>Personal communications</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Personal communications</td><td><strong>Local transient processing only</strong></td><td>Final image-limit reports; no text stored or transmitted</td></tr>
     <tr><td>Location</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td>Web history</td><td><strong>No</strong></td><td>&mdash;</td></tr>
     <tr><td>User activity</td><td><strong>No</strong></td><td>&mdash;</td></tr>
-    <tr><td>Website content</td><td><strong>No</strong></td><td>&mdash;</td></tr>
+    <tr><td>Website content</td><td><strong>Local transient processing only</strong></td><td>Derived image notices only; raw responses are discarded</td></tr>
     <tr><td><strong>Non-personal usage data</strong> (quota numbers)</td><td><strong>Yes</strong></td><td>Core functionality — display usage widget</td></tr>
     <tr><td><strong>IP address</strong></td><td><strong>No</strong></td><td>No IP reputation service is used.</td></tr>
   </table>

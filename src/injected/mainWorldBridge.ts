@@ -4,6 +4,7 @@ import type {
   PlatformId
 } from "../platforms/types";
 import { ChatGptSession } from "./chatgptSession";
+import { ChatGptImageObserver } from "./chatgptImageObserver";
 import { MuseSubscriptionBridge } from "./museSubscription";
 import { parseMuseSubscriptionText } from "../platforms/muse";
 import { SOURCE, isBridgeRequest } from "../utils/protocol";
@@ -55,8 +56,16 @@ const FETCH_TIMEOUT_MS = 10_000;
 const ownedFetch = window.fetch.bind(window);
 const museSubscription = new MuseSubscriptionBridge(ownedFetch);
 const chatGptControllers = new Set<AbortController>();
+let chatGptContext = 0;
+const chatGptImages = new ChatGptImageObserver((signal, context) => {
+  postInterceptedUsage({ platform: "chatgpt", endpointKey: "chatgpt:imageGeneration",
+    url: "https://chatgpt.com/backend-api/f/conversation", json: signal,
+    scopeKey: context.scope ?? chatGptSession.scope(), requestStartedAt: context.startedAt });
+});
 const chatGptSession = new ChatGptSession(ownedFetch, () => {
+  chatGptContext++;
   for (const controller of chatGptControllers) controller.abort();
+  chatGptImages.reset();
   window.postMessage({ source: SOURCE, direction: "main-to-content", kind: "chatgptContextChanged", platform: "chatgpt" }, window.location.origin);
 });
 const GEMINI_USAGE_RPC_ID = "jSf9Qc";
@@ -327,6 +336,7 @@ async function fetchEndpoint(
   endpointKey: EndpointKey
 ): Promise<BridgeResponse> {
   const requestedAt = Date.now();
+  const context = chatGptContext;
   let scopeKey: string | undefined;
   const controller = new AbortController();
   if (endpoint.platform === "chatgpt") chatGptControllers.add(controller);
@@ -335,6 +345,7 @@ async function fetchEndpoint(
     const headers = endpointHeaders(endpoint) ?? {};
     if (endpoint.platform === "chatgpt") {
       const session = await chatGptSession.read();
+      if (controller.signal.aborted || context !== chatGptContext) throw new Error("Account context changed");
       headers.Authorization = `Bearer ${session.token}`;
       if (session.account) headers["ChatGPT-Account-ID"] = session.account;
       scopeKey = session.scopeKey;
@@ -348,6 +359,7 @@ async function fetchEndpoint(
       body: endpointBody(endpoint),
       signal: controller.signal
     });
+    if (endpoint.platform === "chatgpt" && (controller.signal.aborted || context !== chatGptContext)) throw new Error("Account context changed");
 
     if (!response.ok) {
       if (endpoint.platform === "chatgpt" && response.status === 401) chatGptSession.invalidate();
@@ -407,6 +419,7 @@ async function fetchEndpoint(
       };
     }
 
+    if (endpoint.platform === "chatgpt" && (controller.signal.aborted || context !== chatGptContext)) throw new Error("Account context changed");
     return {
       source: SOURCE,
       direction: "main-to-content",
@@ -414,7 +427,8 @@ async function fetchEndpoint(
       ok: true,
       platform: endpoint.platform,
       endpointKey,
-      json
+      json,
+      ...(endpoint.platform === "chatgpt" ? { scopeKey, requestStartedAt: requestedAt, observedAt: Date.now() } : {})
     };
   } catch (error) {
     return {
@@ -430,6 +444,7 @@ async function fetchEndpoint(
     };
   } finally {
     window.clearTimeout(timeoutId);
+    chatGptControllers.delete(controller);
   }
 }
 
@@ -449,8 +464,13 @@ function installFetchIntercept(): void {
         chatGptSession.observeAccount(requestHeaderValue(input, init, "ChatGPT-Account-ID"));
       }
       const scopeKey = chatGptSession.scope();
+      const context = chatGptContext;
       const usageRequest = getUsageRequest(input, init);
       const response = await originalFetch(input, init);
+      const chatGptRequest = rawUrl.startsWith("https://chatgpt.com/") || rawUrl.startsWith("/backend-api/") || rawUrl === "/api/auth/session";
+      if (chatGptRequest && context !== chatGptContext) return response;
+      try { chatGptImages.observe(rawUrl, input, init, response, requestedAt, scopeKey ?? chatGptSession.scope()); }
+      catch { /* Observation never changes the website's response. */ }
       if (usageRequest?.platform === "muse") {
         if (response.ok) {
           void response.clone().text().then((text) => {
@@ -463,11 +483,16 @@ function installFetchIntercept(): void {
         return response;
       }
       if (rawUrl === "https://chatgpt.com/api/auth/session" || rawUrl === "/api/auth/session") {
-        void response.clone().json().then((json) => chatGptSession.observeSession(json)).catch(() => undefined);
+        void response.clone().json().then((json) => {
+          if (context === chatGptContext) return chatGptSession.observeSession(json);
+        }).catch(() => undefined);
       }
       if (usageRequest?.platform === "chatgpt") {
         if (response.ok) {
-          void response.clone().json().then((json) => postInterceptedUsage({ ...usageRequest, json, scopeKey, requestStartedAt: requestedAt })).catch(() => undefined);
+          void response.clone().json().then((json) => {
+            if (context === chatGptContext) postInterceptedUsage({ ...usageRequest, json,
+              scopeKey: scopeKey ?? chatGptSession.scope(), requestStartedAt: requestedAt });
+          }).catch(() => undefined);
         }
         return response;
       }
