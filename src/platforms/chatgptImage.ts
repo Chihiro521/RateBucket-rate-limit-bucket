@@ -3,7 +3,6 @@ import { asRecord } from "../utils/safeJson";
 
 export const IMAGE_GENERATION_KEY = "limits_progress:image_gen";
 const MAX_TEXT = 16_384;
-const MAX_FRAME = 262_144;
 
 export function imageSignal(value: unknown): ImageGenerationSignal | null {
   const record = asRecord(value);
@@ -51,114 +50,53 @@ function reportCooldown(text: string): number | undefined {
   return seconds > 0 && seconds <= 86_400 ? Math.ceil(seconds) : undefined;
 }
 
-type Projection = { role?: string; channel?: string; type?: string; status?: string; text: string; image: boolean };
+export function imageMessageSignal(value: unknown): ImageGenerationSignal | null {
+  const message = asRecord(value), content = asRecord(message?.content);
+  if (message?.status !== "finished_successfully" || !content) return null;
+  const role = asRecord(message.author)?.role;
+  const parts = Array.isArray(content.parts) ? content.parts : [];
+  if (role === "tool" && parts.some((part) => asRecord(part)?.content_type === "image_asset_pointer")) return { kind: "success", evidence: "server" };
+  if (role !== "assistant" || message.channel !== "final" || content.content_type !== "text") return null;
+  return classifyImageReport(typeof content.text === "string" ? content.text : parts.filter((part) => typeof part === "string").join(""));
+}
 
-// Only a bounded projection of the current message is retained in page memory.
-// User/system messages, reasoning, image URLs, IDs and raw frames are never emitted.
-export class ChatGptImageStream {
-  private buffer = "";
-  private path = "";
-  private operation = "";
-  private message: Projection = { text: "", image: false };
-  private stopped = false;
-
-  constructor(private emit: (signal: ImageGenerationSignal) => void, private conversation?: (id: string) => void) {}
-
-  push(chunk: string): void {
-    if (this.stopped) return;
-    this.buffer = (this.buffer + chunk).replace(/\r\n/g, "\n");
-    let end: number;
-    while ((end = this.buffer.indexOf("\n\n")) >= 0) {
-      const frame = this.buffer.slice(0, end);
-      this.buffer = this.buffer.slice(end + 2);
-      if (frame.length <= MAX_FRAME) this.frame(frame);
-    }
-    if (this.buffer.length > MAX_FRAME) this.dispose();
-  }
-
-  finish(): void { this.flush(); this.dispose(); }
-
-  dispose(): void {
-    this.stopped = true;
-    this.buffer = "";
-    this.message = { text: "", image: false };
-  }
-
-  private frame(frame: string): void {
-    const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-    if (data === "[DONE]") { this.flush(); return; }
-    let value: unknown;
-    try { value = JSON.parse(data); } catch { return; }
-    const record = asRecord(value);
-    if (!record) return;
+// Responses are bounded by the reader; only a derived result leaves page memory.
+export function parseImageStream(text: string): ImageGenerationSignal | null {
+  let message: Record<string, unknown> | null = null, result: ImageGenerationSignal | null = null;
+  let path = "", operation = "";
+  const visit = (record: Record<string, unknown>): void => {
     if (record.type === "input_message") return;
-    if (typeof record.conversation_id === "string") this.conversation?.(record.conversation_id);
-    if (record.message) this.acceptMessage(record.message);
-    else if ("v" in record) this.patch(record);
-    if (record.type === "message_stream_complete") this.flush();
-  }
-
-  acceptMessage(value: unknown): void {
-    const record = asRecord(value);
-    if (!record) return;
-    this.flush();
-    const author = asRecord(record.author), content = asRecord(record.content);
-    this.message = { role: typeof author?.role === "string" ? author.role : undefined,
-      channel: typeof record.channel === "string" ? record.channel : undefined,
-      status: typeof record.status === "string" ? record.status : undefined, text: "", image: false };
-    this.content(content);
-    if (this.message.status === "finished_successfully") this.flush();
-  }
-
-  private content(value: unknown): void {
-    const record = asRecord(value);
-    if (record) {
-      this.message.type = typeof record.content_type === "string" ? record.content_type : undefined;
-      this.parts(typeof record.text === "string" ? record.text : record.parts);
+    const root = asRecord(record.v);
+    if (record.message) message = asRecord(record.message);
+    if ("v" in record) {
+      path = typeof record.p === "string" ? record.p : path;
+      operation = typeof record.o === "string" ? record.o : operation;
+      if (operation === "patch" && Array.isArray(record.v)) {
+        const parentPath = path, parentOperation = operation;
+        for (const entry of record.v) { const child = asRecord(entry); if (child) visit(child); }
+        path = parentPath; operation = parentOperation;
+      } else if (path === "" && root?.message) message = asRecord(root.message);
+      else if (path === "/message") message = root;
+      else if (message) {
+        const content = asRecord(message.content), index = path.match(/^\/message\/content\/parts\/(\d+)$/)?.[1];
+        if (path === "/message/status") message.status = record.v;
+        else if (path === "/message/content") message.content = record.v;
+        else if (content && index !== undefined && Array.isArray(content.parts) && Number(index) <= content.parts.length) {
+          content.parts[Number(index)] = operation === "append" && typeof record.v === "string"
+            ? String(content.parts[Number(index)] ?? "") + record.v : record.v;
+        } else if (content && path === "/message/content/text") {
+          content.text = operation === "append" ? String(content.text ?? "") + String(record.v) : record.v;
+        } else if (content && path === "/message/content/parts") {
+          const parts = Array.isArray(record.v) ? record.v : [record.v];
+          content.parts = operation === "append" && Array.isArray(content.parts) ? [...content.parts, ...parts] : parts;
+        }
+      }
     }
+    result = imageMessageSignal(message) ?? result;
+  };
+  for (const frame of text.split(/\r?\n\r?\n/)) {
+    const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+    try { const record = asRecord(JSON.parse(data)); if (record) visit(record); } catch { /* Includes [DONE]. */ }
   }
-
-  private parts(value: unknown, append = false): void {
-    const parts = Array.isArray(value) ? value : [value];
-    if (this.message.role === "tool" && parts.some((part) => asRecord(part)?.content_type === "image_asset_pointer")) this.message.image = true;
-    if (this.message.role !== "assistant" || this.message.channel !== "final" || this.message.type !== "text") return;
-    const text = parts.filter((part): part is string => typeof part === "string").join("");
-    this.message.text = (append ? this.message.text + text : text).slice(0, MAX_TEXT);
-  }
-
-  private patch(record: Record<string, unknown>): void {
-    const path = typeof record.p === "string" ? record.p : this.path;
-    const operation = typeof record.o === "string" ? record.o : this.operation;
-    this.path = path; this.operation = operation;
-    if (operation === "patch" && Array.isArray(record.v)) {
-      for (const entry of record.v) { const child = asRecord(entry); if (child) this.patch(child); }
-      this.path = path; this.operation = operation;
-      return;
-    }
-    const value = record.v;
-    if (path === "" && asRecord(value)) {
-      const root = asRecord(value)!;
-      if (typeof root.conversation_id === "string") this.conversation?.(root.conversation_id);
-      if (root.message) this.acceptMessage(root.message);
-    } else if (path === "/message") this.acceptMessage(value);
-    else if (path === "/message/author/role" && typeof value === "string") this.message.role = value;
-    else if (path === "/message/channel" && typeof value === "string") this.message.channel = value;
-    else if (path === "/message/content") this.content(value);
-    else if (path === "/message/content/content_type" && typeof value === "string") this.message.type = value;
-    else if (path === "/message/content/parts" || /^\/message\/content\/(?:parts\/\d+|text)$/.test(path)) this.parts(value, operation === "append");
-    else if (/^\/message\/content\/parts\/\d+\/content_type$/.test(path) && value === "image_asset_pointer" && this.message.role === "tool") this.message.image = true;
-    else if (path === "/message/status" && typeof value === "string") {
-      this.message.status = value;
-      if (value === "finished_successfully") this.flush();
-    }
-  }
-
-  private flush(): void {
-    if (this.message.status !== "finished_successfully") return;
-    this.message.status = undefined;
-    const signal = this.message.image ? { kind: "success", evidence: "server" } as const
-      : classifyImageReport(this.message.text);
-    if (!signal) return;
-    this.emit(signal);
-  }
+  return result;
 }

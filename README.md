@@ -19,7 +19,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The source version is v0.1.5. Download published packages from [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases). See the [v0.1.5 announcement](docs/releases/v0.1.5.md) and [CHANGELOG.md](CHANGELOG.md) for updates.
+The source version is v0.1.6. Download published packages from [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases). See the [v0.1.6 announcement](docs/releases/v0.1.6.md) and [CHANGELOG.md](CHANGELOG.md) for updates.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -124,6 +124,8 @@ Load it in Chrome:
 ## Development
 
 Daily development takes place on `dev`. Merge validated changes into `master`. Published versions are preserved as Git tags and GitHub Releases.
+
+The Release extension workflow tests, builds, and saves a ZIP for each `master` update. Submit that artifact to the Chrome Web Store; after it is published, push the matching `v<version>` tag. GitHub then publishes the same tested ZIP automatically, without rebuilding it. Release artifacts are retained for 90 days.
 
 Edit `README.en.md` or `README.zh-CN.md`, then run `npm run docs:build` to update the bilingual repository README.
 
@@ -265,7 +267,7 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
-当前源码版本为 v0.1.5，已发布的扩展包见 [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases)。本次变更见 [v0.1.5 更新公告](docs/releases/v0.1.5.md) 和 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本为 v0.1.6，已发布的扩展包见 [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases)。本次变更见 [v0.1.6 更新公告](docs/releases/v0.1.6.md) 和 [CHANGELOG.md](CHANGELOG.md)。
 
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
@@ -370,6 +372,8 @@ npm run build
 ## 开发
 
 日常开发使用 `dev` 分支，完成验证后合并到 `master`；已发布版本通过 Git 标签和 GitHub Release 保留。
+
+Release extension 工作流会在 `master` 更新后自动测试、构建并保存 ZIP。将该产物提交商店，审核上线后推送对应的 `v<版本号>` 标签，GitHub 即自动发布同一份已验证的 ZIP，不重新构建。构建产物保留 90 天。
 
 修改 `README.en.md` 或 `README.zh-CN.md` 后，运行 `npm run docs:build` 更新仓库首页的双语 README。
 

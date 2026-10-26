@@ -106,7 +106,6 @@
     }
   }
   const MAX_TEXT = 16384;
-  const MAX_FRAME = 262144;
   function classifyImageReport(text) {
     const value = text.slice(0, MAX_TEXT).replace(/[*_`]/g, "");
     if (!/(?:图像|图片|生图|image)/i.test(value) || /(?:例如|举例|假如|如果|假设|示例|for example|hypothetical|if you)/i.test(value) || /(?:没有|尚未|并未|未).{0,4}达到|(?:not|haven't|hasn't).{0,10}(?:reached|exceeded|hit)/i.test(value)) return null;
@@ -124,123 +123,60 @@
     }
     return seconds > 0 && seconds <= 86400 ? Math.ceil(seconds) : void 0;
   }
-  class ChatGptImageStream {
-    constructor(emit, conversation) {
-      this.emit = emit;
-      this.conversation = conversation;
-    }
-    buffer = "";
-    path = "";
-    operation = "";
-    message = { text: "", image: false };
-    stopped = false;
-    push(chunk) {
-      if (this.stopped) return;
-      this.buffer = (this.buffer + chunk).replace(/\r\n/g, "\n");
-      let end;
-      while ((end = this.buffer.indexOf("\n\n")) >= 0) {
-        const frame = this.buffer.slice(0, end);
-        this.buffer = this.buffer.slice(end + 2);
-        if (frame.length <= MAX_FRAME) this.frame(frame);
-      }
-      if (this.buffer.length > MAX_FRAME) this.dispose();
-    }
-    finish() {
-      this.flush();
-      this.dispose();
-    }
-    dispose() {
-      this.stopped = true;
-      this.buffer = "";
-      this.message = { text: "", image: false };
-    }
-    frame(frame) {
-      const data = frame.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
-      if (data === "[DONE]") {
-        this.flush();
-        return;
-      }
-      let value;
-      try {
-        value = JSON.parse(data);
-      } catch {
-        return;
-      }
-      const record = asRecord(value);
-      if (!record) return;
+  function imageMessageSignal(value) {
+    const message = asRecord(value), content = asRecord(message?.content);
+    if (message?.status !== "finished_successfully" || !content) return null;
+    const role = asRecord(message.author)?.role;
+    const parts = Array.isArray(content.parts) ? content.parts : [];
+    if (role === "tool" && parts.some((part) => asRecord(part)?.content_type === "image_asset_pointer")) return { kind: "success", evidence: "server" };
+    if (role !== "assistant" || message.channel !== "final" || content.content_type !== "text") return null;
+    return classifyImageReport(typeof content.text === "string" ? content.text : parts.filter((part) => typeof part === "string").join(""));
+  }
+  function parseImageStream(text) {
+    let message = null, result = null;
+    let path = "", operation = "";
+    const visit = (record) => {
       if (record.type === "input_message") return;
-      if (typeof record.conversation_id === "string") this.conversation?.(record.conversation_id);
-      if (record.message) this.acceptMessage(record.message);
-      else if ("v" in record) this.patch(record);
-      if (record.type === "message_stream_complete") this.flush();
-    }
-    acceptMessage(value) {
-      const record = asRecord(value);
-      if (!record) return;
-      this.flush();
-      const author = asRecord(record.author), content = asRecord(record.content);
-      this.message = {
-        role: typeof author?.role === "string" ? author.role : void 0,
-        channel: typeof record.channel === "string" ? record.channel : void 0,
-        status: typeof record.status === "string" ? record.status : void 0,
-        text: "",
-        image: false
-      };
-      this.content(content);
-      if (this.message.status === "finished_successfully") this.flush();
-    }
-    content(value) {
-      const record = asRecord(value);
-      if (record) {
-        this.message.type = typeof record.content_type === "string" ? record.content_type : void 0;
-        this.parts(typeof record.text === "string" ? record.text : record.parts);
-      }
-    }
-    parts(value, append = false) {
-      const parts = Array.isArray(value) ? value : [value];
-      if (this.message.role === "tool" && parts.some((part) => asRecord(part)?.content_type === "image_asset_pointer")) this.message.image = true;
-      if (this.message.role !== "assistant" || this.message.channel !== "final" || this.message.type !== "text") return;
-      const text = parts.filter((part) => typeof part === "string").join("");
-      this.message.text = (append ? this.message.text + text : text).slice(0, MAX_TEXT);
-    }
-    patch(record) {
-      const path = typeof record.p === "string" ? record.p : this.path;
-      const operation = typeof record.o === "string" ? record.o : this.operation;
-      this.path = path;
-      this.operation = operation;
-      if (operation === "patch" && Array.isArray(record.v)) {
-        for (const entry of record.v) {
-          const child = asRecord(entry);
-          if (child) this.patch(child);
+      const root = asRecord(record.v);
+      if (record.message) message = asRecord(record.message);
+      if ("v" in record) {
+        path = typeof record.p === "string" ? record.p : path;
+        operation = typeof record.o === "string" ? record.o : operation;
+        if (operation === "patch" && Array.isArray(record.v)) {
+          const parentPath = path, parentOperation = operation;
+          for (const entry of record.v) {
+            const child = asRecord(entry);
+            if (child) visit(child);
+          }
+          path = parentPath;
+          operation = parentOperation;
+        } else if (path === "" && root?.message) message = asRecord(root.message);
+        else if (path === "/message") message = root;
+        else if (message) {
+          const content = asRecord(message.content), index = path.match(/^\/message\/content\/parts\/(\d+)$/)?.[1];
+          if (path === "/message/status") message.status = record.v;
+          else if (path === "/message/content") message.content = record.v;
+          else if (content && index !== void 0 && Array.isArray(content.parts) && Number(index) <= content.parts.length) {
+            content.parts[Number(index)] = operation === "append" && typeof record.v === "string" ? String(content.parts[Number(index)] ?? "") + record.v : record.v;
+          } else if (content && path === "/message/content/text") {
+            content.text = operation === "append" ? String(content.text ?? "") + String(record.v) : record.v;
+          } else if (content && path === "/message/content/parts") {
+            const parts = Array.isArray(record.v) ? record.v : [record.v];
+            content.parts = operation === "append" && Array.isArray(content.parts) ? [...content.parts, ...parts] : parts;
+          }
         }
-        this.path = path;
-        this.operation = operation;
-        return;
       }
-      const value = record.v;
-      if (path === "" && asRecord(value)) {
-        const root = asRecord(value);
-        if (typeof root.conversation_id === "string") this.conversation?.(root.conversation_id);
-        if (root.message) this.acceptMessage(root.message);
-      } else if (path === "/message") this.acceptMessage(value);
-      else if (path === "/message/author/role" && typeof value === "string") this.message.role = value;
-      else if (path === "/message/channel" && typeof value === "string") this.message.channel = value;
-      else if (path === "/message/content") this.content(value);
-      else if (path === "/message/content/content_type" && typeof value === "string") this.message.type = value;
-      else if (path === "/message/content/parts" || /^\/message\/content\/(?:parts\/\d+|text)$/.test(path)) this.parts(value, operation === "append");
-      else if (/^\/message\/content\/parts\/\d+\/content_type$/.test(path) && value === "image_asset_pointer" && this.message.role === "tool") this.message.image = true;
-      else if (path === "/message/status" && typeof value === "string") {
-        this.message.status = value;
-        if (value === "finished_successfully") this.flush();
+      result = imageMessageSignal(message) ?? result;
+    };
+    for (const frame of text.split(/\r?\n\r?\n/)) {
+      const data = frame.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trimStart()).join("\n");
+      try {
+        const record = asRecord(JSON.parse(data));
+        if (record) visit(record);
+      } catch {
       }
     }
-    flush() {
-      if (this.message.status !== "finished_successfully") return;
-      this.message.status = void 0;
-      const signal = this.message.image ? { kind: "success", evidence: "server" } : classifyImageReport(this.message.text);
-      if (!signal) return;
-      this.emit(signal);
-    }
+    return result;
   }
   const MAX_BYTES = 2 * 1024 * 1024;
   class ChatGptImageObserver {
@@ -257,95 +193,59 @@
       this.readers.clear();
     }
     observe(rawUrl, input, init, response, startedAt, scope) {
-      let url;
-      try {
-        url = new URL(rawUrl, window.location.origin);
-      } catch {
-        return;
-      }
+      const url = new URL(rawUrl, window.location.origin);
       if (url.origin !== "https://chatgpt.com") return;
       const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-      if (method === "POST" && url.pathname === "/backend-api/f/conversation") {
-        const context2 = { startedAt, scope, epoch: this.epoch };
-        if (typeof init?.body === "string" && init.body.length < MAX_BYTES) {
-          try {
-            const body = asRecord(JSON.parse(init.body));
-            if (typeof body?.conversation_id === "string") this.remember(body.conversation_id, context2);
-          } catch {
-          }
-        }
-        if (response.headers.get("Content-Type")?.includes("text/event-stream")) {
-          const parser = this.parser(context2);
-          void this.read(response.clone(), (text) => parser.push(text)).then((complete) => complete ? parser.finish() : parser.dispose());
-        }
-        return;
-      }
-      const id = url.pathname.match(/^\/backend-api\/conversations\/([^/]+)$/)?.[1];
-      const context = id && this.conversations.get(id);
-      if (method !== "GET" || !response.ok || !context || context.scope && context.scope !== scope) return;
-      if (!context.scope && scope) context.scope = scope;
-      void this.readConversation(response.clone(), context);
-    }
-    parser(context) {
-      return new ChatGptImageStream((signal) => this.report(signal, context), (id) => this.remember(id, context));
-    }
-    async readConversation(response, context) {
-      let text = "";
-      if (!await this.read(response, (chunk) => {
-        text += chunk;
-      })) return;
-      const parser = this.parser(context);
-      try {
-        const root = asRecord(JSON.parse(text));
-        for (const entry of Array.isArray(root?.messages) ? root.messages : []) {
-          const wrapper = asRecord(entry), message = asRecord(wrapper?.message) ?? wrapper;
-          if (typeof message?.create_time === "number" && message.create_time * 1e3 >= context.startedAt - 2e3) parser.acceptMessage(message);
-        }
-      } catch {
-      } finally {
-        parser.dispose();
-      }
+      let context = this.conversations.get(url.pathname.split("/").pop());
+      const stream = method === "POST" && url.pathname === "/backend-api/f/conversation" && response.headers.get("Content-Type")?.includes("text/event-stream");
+      if (stream) {
+        context = { startedAt, scope, epoch: this.epoch };
+      } else if (method !== "GET" || !/^\/backend-api\/conversations\/[^/]+$/.test(url.pathname) || !response.ok || !context || context.scope && context.scope !== scope) return;
+      context.scope ??= scope;
+      void this.consume(response.clone(), context, Boolean(stream));
     }
     remember(id, context) {
-      if (context.epoch !== this.epoch || !/^[\da-f-]{36}$/i.test(id)) return;
-      if ((this.conversations.get(id)?.startedAt ?? 0) > context.startedAt) return;
+      if (context.epoch !== this.epoch || !/^[\da-f-]{36}$/i.test(id) || (this.conversations.get(id)?.startedAt ?? 0) > context.startedAt) return;
       this.conversations.set(id, context);
       if (this.conversations.size > 32) this.conversations.delete(this.conversations.keys().next().value);
     }
-    report(signal, context) {
-      if (context.epoch !== this.epoch) return;
-      const key = JSON.stringify(signal);
-      if (context.lastSignal === key) return;
-      context.lastSignal = key;
-      this.emit(signal, context);
-    }
-    async read(response, chunk) {
+    async consume(response, context, stream) {
       const reader = response.body?.getReader();
-      if (!reader) return false;
-      const epoch = this.epoch, decoder = new TextDecoder();
-      this.readers.add(reader);
-      let bytes = 0, timedOut = false;
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let text = "", bytes = 0, timedOut = false, knownId = false;
       const timer = window.setTimeout(() => {
         timedOut = true;
         void reader.cancel().catch(() => void 0);
       }, 12e4);
+      this.readers.add(reader);
       try {
         while (true) {
-          const result = await reader.read();
-          if (epoch !== this.epoch || timedOut) return false;
-          if (result.done) {
-            chunk(decoder.decode());
-            return true;
-          }
-          bytes += result.value.byteLength;
+          const part = await reader.read();
+          if (context.epoch !== this.epoch || timedOut) return;
+          if (part.done) break;
+          bytes += part.value.byteLength;
           if (bytes > MAX_BYTES) {
             void reader.cancel().catch(() => void 0);
-            return false;
+            return;
           }
-          chunk(decoder.decode(result.value, { stream: true }));
+          text += decoder.decode(part.value, { stream: true });
+          const id = stream && !knownId ? text.match(/"conversation_id"\s*:\s*"([\da-f-]{36})"/i)?.[1] : void 0;
+          if (id) {
+            this.remember(id, context);
+            knownId = true;
+          }
+        }
+        text += decoder.decode();
+        const root = !stream ? asRecord(JSON.parse(text)) : null;
+        const messages = Array.isArray(root?.messages) ? root.messages.map((entry) => asRecord(asRecord(entry)?.message) ?? asRecord(entry)).filter((message) => typeof message?.create_time === "number" && message.create_time * 1e3 >= context.startedAt - 2e3) : [];
+        const signals = stream ? [parseImageStream(text)] : messages.map(imageMessageSignal);
+        for (const signal of signals) {
+          if (!signal || JSON.stringify(signal) === context.lastSignal) continue;
+          context.lastSignal = JSON.stringify(signal);
+          this.emit(signal, context);
         }
       } catch {
-        return false;
       } finally {
         window.clearTimeout(timer);
         this.readers.delete(reader);

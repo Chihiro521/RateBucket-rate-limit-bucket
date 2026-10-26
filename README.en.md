@@ -12,7 +12,7 @@ This project is an independent personal-use tool. It is not affiliated with Open
 
 RateBucket can be installed from source, and Chrome Web Store submission/update materials are maintained under `chrome-webstore-archive/`.
 
-The source version is v0.1.5. Download published packages from [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases). See the [v0.1.5 announcement](docs/releases/v0.1.5.md) and [CHANGELOG.md](CHANGELOG.md) for updates.
+The source version is v0.1.6. Download published packages from [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases). See the [v0.1.6 announcement](docs/releases/v0.1.6.md) and [CHANGELOG.md](CHANGELOG.md) for updates.
 
 Before each public Chrome Web Store release or update, review the store listing copy, hosted privacy policy, permissions, screenshots, and bundled visual assets so they match the current extension behavior.
 
@@ -117,6 +117,8 @@ Load it in Chrome:
 ## Development
 
 Daily development takes place on `dev`. Merge validated changes into `master`. Published versions are preserved as Git tags and GitHub Releases.
+
+The Release extension workflow tests, builds, and saves a ZIP for each `master` update. Submit that artifact to the Chrome Web Store; after it is published, push the matching `v<version>` tag. GitHub then publishes the same tested ZIP automatically, without rebuilding it. Release artifacts are retained for 90 days.
 
 Edit `README.en.md` or `README.zh-CN.md`, then run `npm run docs:build` to update the bilingual repository README.
 

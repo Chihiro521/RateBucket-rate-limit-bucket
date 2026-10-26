@@ -12,7 +12,7 @@ RateBucket 是一个本地优先的 Chrome 扩展，用来查看 Grok、Claude�
 
 RateBucket 可以从源码本地安装，也维护了 Chrome Web Store 提交/更新材料，见 `chrome-webstore-archive/`。
 
-当前源码版本为 v0.1.5，已发布的扩展包见 [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases)。本次变更见 [v0.1.5 更新公告](docs/releases/v0.1.5.md) 和 [CHANGELOG.md](CHANGELOG.md)。
+当前源码版本为 v0.1.6，已发布的扩展包见 [GitHub Releases](https://github.com/Chihiro521/RateBucket-rate-limit-bucket/releases)。本次变更见 [v0.1.6 更新公告](docs/releases/v0.1.6.md) 和 [CHANGELOG.md](CHANGELOG.md)。
 
 每次公开上架或更新前，请复核商店文案、托管隐私政策、权限说明、截图和打包视觉资源，确保它们和当前扩展行为一致。
 
@@ -117,6 +117,8 @@ npm run build
 ## 开发
 
 日常开发使用 `dev` 分支，完成验证后合并到 `master`；已发布版本通过 Git 标签和 GitHub Release 保留。
+
+Release extension 工作流会在 `master` 更新后自动测试、构建并保存 ZIP。将该产物提交商店，审核上线后推送对应的 `v<版本号>` 标签，GitHub 即自动发布同一份已验证的 ZIP，不重新构建。构建产物保留 90 天。
 
 修改 `README.en.md` 或 `README.zh-CN.md` 后，运行 `npm run docs:build` 更新仓库首页的双语 README。
 

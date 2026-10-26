@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { ChatGptImageStream, classifyImageReport, imageLimitMeter, imageSignal } from "../src/platforms/chatgptImage";
+import { parseImageStream, classifyImageReport, imageLimitMeter, imageSignal } from "../src/platforms/chatgptImage";
 import { shouldRetainMeter } from "../src/platforms/merge";
 import { formatImageRecoveryLocalized, formatMeterLabelLocalized, formatMeterValueLocalized } from "../src/utils/i18n";
-import type { ImageGenerationSignal } from "../src/platforms/types";
 
 const frame = (value: unknown) => `data: ${JSON.stringify(value)}\n\n`;
 const message = (text: string, extra = {}) => ({ author: { role: "assistant" }, channel: "final",
@@ -52,42 +51,28 @@ describe("image generation reports", () => {
   });
 });
 
-describe("image SSE projection", () => {
-  it("handles split UTF-8 strings, CRLF boundaries, inherited delta paths and nested patches", () => {
-    const signals: ImageGenerationSignal[] = [];
-    const parser = new ChatGptImageStream((signal) => signals.push(signal));
+describe("completed image responses", () => {
+  it("handles CRLF boundaries, inherited delta paths and nested patches", () => {
     const stream = frame({ p: "", o: "add", v: { message: message("", { status: "in_progress" }) } }) +
       frame({ p: "/message/content/parts/0", o: "append", v: "图片未能生成，已达到每日图像生成" }) +
       frame({ v: "上限。剩余冷却时间：19 小时 58 分钟。" }) +
       frame({ p: "", o: "patch", v: [{ p: "/message/status", o: "replace", v: "finished_successfully" }] }) + "data: [DONE]\n\n";
-    const bytes = new TextEncoder().encode(stream.replace(/\n/g, "\r\n"));
-    const decoder = new TextDecoder();
-    for (const byte of bytes) parser.push(decoder.decode(new Uint8Array([byte]), { stream: true }));
-    parser.push(decoder.decode()); parser.finish();
-    expect(signals).toEqual([{ kind: "daily_limit", evidence: "assistant", cooldownSeconds: 71_880 }]);
+    expect(parseImageStream(stream.replace(/\n/g, "\r\n"))).toEqual({ kind: "daily_limit", evidence: "assistant", cooldownSeconds: 71_880 });
   });
   it("ignores user prompts, hidden content, unfinished text and quota metadata with positive remaining", () => {
-    const signals: ImageGenerationSignal[] = [];
-    const parser = new ChatGptImageStream((signal) => signals.push(signal));
-    for (const extra of [{ author: { role: "user" } }, { channel: "analysis" }, { content: { content_type: "reasoning_recap", parts: ["已达到每日图像上限"] } }, { status: "in_progress" }]) {
-      parser.push(frame({ message: message("已达到每日图像上限", extra) }));
-    }
-    parser.push(frame({ type: "conversation_detail_metadata", limits_progress: [{ feature_name: "image_gen", remaining: 120 }], blocked_features: [] }));
-    parser.finish(); expect(signals).toEqual([]);
+    const stream = [{ author: { role: "user" } }, { channel: "analysis" }, { content: { content_type: "reasoning_recap", parts: ["已达到每日图像上限"] } }, { status: "in_progress" }]
+      .map((extra) => frame({ message: message("已达到每日图像上限", extra) })).join("") +
+      frame({ type: "conversation_detail_metadata", limits_progress: [{ feature_name: "image_gen", remaining: 120 }], blocked_features: [] });
+    expect(parseImageStream(stream)).toBeNull();
   });
-  it("recognizes an actual tool image and clears its transient projection", () => {
-    const signals: ImageGenerationSignal[] = [];
-    const parser = new ChatGptImageStream((signal) => signals.push(signal));
-    parser.push(frame({ message: { author: { role: "tool" }, status: "finished_successfully", content: {
+  it("recognizes an actual tool image without returning private asset data", () => {
+    const result = parseImageStream(frame({ message: { author: { role: "tool" }, status: "finished_successfully", content: {
       content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer", asset_pointer: "private-asset" }]
     } } }));
-    parser.finish(); expect(signals).toEqual([{ kind: "success", evidence: "server" }]);
-    expect(JSON.stringify(parser)).not.toContain("private-asset");
+    expect(result).toEqual({ kind: "success", evidence: "server" });
+    expect(JSON.stringify(result)).not.toContain("private-asset");
   });
-  it("bounds malformed frames without emitting a guessed limit", () => {
-    const signals: ImageGenerationSignal[] = [];
-    const parser = new ChatGptImageStream((signal) => signals.push(signal));
-    parser.push("x".repeat(300_000)); parser.push(frame({ message: message("已达到每日图像上限") }));
-    parser.finish(); expect(signals).toEqual([]);
+  it("ignores malformed frames without completing an unfinished reply", () => {
+    expect(parseImageStream("data: malformed\n\n" + frame({ message: message("已达到每日图像上限", { status: "in_progress" }) }))).toBeNull();
   });
 });

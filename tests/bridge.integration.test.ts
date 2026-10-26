@@ -101,7 +101,9 @@ describe("main-world bridge integration", () => {
     expect(result).toBe(original); expect(original.bodyUsed).toBe(false);
     const body = `data: ${JSON.stringify({ message: { author: { role: "assistant" }, channel: "analysis", content: { content_type: "text", parts: ["synthetic-private-analysis"] } } })}\n\n` +
       `data: ${JSON.stringify({ message: { author: { role: "assistant" }, channel: "final", status: "finished_successfully", content: { content_type: "text", parts: ["已达到每日图像生成上限，请等待 19 小时 58 分钟后再试。synthetic-private-text"] } } })}\n\ndata: [DONE]\n\n`;
-    stream.enqueue(new TextEncoder().encode(body)); stream.close();
+    const bytes = new TextEncoder().encode(body);
+    for (let i = 0; i < bytes.length; i += 7) stream.enqueue(bytes.slice(i, i + 7));
+    stream.close();
     await vi.waitFor(() => expect(posted.mock.calls.some(([data]) => data.endpointKey === "chatgpt:imageGeneration")).toBe(true));
     const notices = posted.mock.calls.map(([data]) => data).filter((data) => data.endpointKey === "chatgpt:imageGeneration");
     expect(notices).toHaveLength(1);
@@ -118,11 +120,20 @@ describe("main-world bridge integration", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(posted.mock.calls.some(([data]) => data.endpointKey === "chatgpt:imageGeneration")).toBe(false);
   });
+  it("leaves an oversized image response intact without forwarding a partial report", async () => {
+    const body = `data: ${JSON.stringify({ message: { author: { role: "assistant" }, channel: "final", status: "finished_successfully",
+      content: { content_type: "text", parts: ["已达到每日图像生成上限"] } } })}\n\n` + "x".repeat(2 * 1024 * 1024);
+    const response = new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+    const posted = await installChatGptBridge(vi.fn(async () => response));
+    expect(await (await window.fetch("/backend-api/f/conversation", { method: "POST" })).text()).toBe(body);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(posted.mock.calls.some(([data]) => data.endpointKey === "chatgpt:imageGeneration")).toBe(false);
+  });
   it("recognizes a live asynchronous image result but ignores unrelated and old conversation messages", async () => {
     const id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", now = Date.now();
     const unrelated = new Response("private unrelated conversation"), clone = vi.spyOn(unrelated, "clone");
     const posted = await installChatGptBridge(vi.fn(async (url) => {
-      if (String(url).endsWith("/f/conversation")) return new Response("data: [DONE]\n\n", { headers: { "Content-Type": "text/event-stream" } });
+      if (String(url).endsWith("/f/conversation")) return new Response(`data: ${JSON.stringify({ conversation_id: id })}\n\ndata: [DONE]\n\n`, { headers: { "Content-Type": "text/event-stream" } });
       if (!String(url).endsWith(id)) return unrelated;
       return new Response(JSON.stringify({ messages: [
         { author: { role: "assistant" }, channel: "final", status: "finished_successfully", create_time: now / 1000 - 100,
@@ -133,7 +144,7 @@ describe("main-world bridge integration", () => {
     }));
     await window.fetch("/backend-api/conversations/unrelated");
     expect(clone).not.toHaveBeenCalled();
-    await window.fetch("/backend-api/f/conversation", { method: "POST", body: JSON.stringify({ conversation_id: id }) });
+    await (await window.fetch("/backend-api/f/conversation", { method: "POST" })).text();
     await window.fetch(`/backend-api/conversations/${id}`);
     await vi.waitFor(() => expect(posted.mock.calls.some(([data]) => data.endpointKey === "chatgpt:imageGeneration")).toBe(true));
     const notices = posted.mock.calls.filter(([data]) => data.endpointKey === "chatgpt:imageGeneration").map(([data]) => data.json);

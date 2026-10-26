@@ -1,0 +1,77 @@
+name: Release extension
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extension-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Package extension
+        id: package
+        shell: bash
+        run: |
+          VERSION=$(node -p 'require("./package.json").version')
+          test "$VERSION" = "$(node -p 'require("./manifest.json").version')"
+          test "$VERSION" = "$(node -p 'require("./dist/manifest.json").version')"
+          test -f "docs/releases/v$VERSION.md"
+          mkdir -p .release
+          (cd dist && zip -r -X "../.release/RateBucket-v$VERSION.zip" .)
+          sha256sum ".release/RateBucket-v$VERSION.zip" > ".release/RateBucket-v$VERSION.sha256"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: RateBucket-v${{ steps.package.outputs.version }}
+          path: |
+            .release/*.zip
+            .release/*.sha256
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - name: Publish the previously tested package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          VERSION=$(node -p 'require("./package.json").version')
+          test "$TAG" = "v$VERSION"
+          RUN=$(gh run list --workflow release.yml --branch master --commit "$GITHUB_SHA" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+          test -n "$RUN" && test "$RUN" != null
+          gh run download "$RUN" --name "RateBucket-v$VERSION" --dir .release
+          sha256sum --check ".release/RateBucket-v$VERSION.sha256"
+          test "$VERSION" = "$(unzip -p ".release/RateBucket-v$VERSION.zip" manifest.json | jq -r .version)"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --draft --title "RateBucket $TAG" --notes-file "docs/releases/$TAG.md"
+          fi
+          gh release upload "$TAG" ".release/RateBucket-v$VERSION.zip" ".release/RateBucket-v$VERSION.sha256" --clobber
+          gh release edit "$TAG" --draft=false --latest

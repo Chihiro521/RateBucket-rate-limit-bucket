@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.6
+
+Prepared on 2026-10-26 for synchronized Chrome Web Store and GitHub publication.
+
+- Show ChatGPT image-limit reports and estimated recovery time in the existing image row.
+- Require actual image success to confirm recovery; do not treat uncalibrated 120 readings as available quota.
+- Isolate account state and discard late responses from a previous account.
+- Simplify image detection by inspecting completed responses and related asynchronous results.
+- Add GitHub Actions packaging and tag-triggered releases that reuse the tested ZIP.
+- Validation: 186 tests passed; TypeScript and extension builds passed.
+
 ## v0.1.5
 
 Prepared on 2026-10-13 for Chrome Web Store and GitHub publication.
